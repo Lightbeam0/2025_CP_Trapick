@@ -3,10 +3,9 @@ Capstone Project 2025-2026
 
 ##  Overview
 
-TrafficVision is an intelligent traffic monitoring system that:
+Trapick is an intelligent traffic monitoring system that:
 - Automatically detects and classifies vehicles in pre-recorded videos
 - Tracks individual vehicles across frames
-- Estimates vehicle speeds
 - Generates comprehensive traffic analytics
 - Predicts peak congestion times
 
