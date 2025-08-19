@@ -1,6 +1,8 @@
 # Trapick-Camera-based-Traffic-Data-Analysis-System-for-Smart-Traffic-Solution
 Capstone Project 2025-2026
 
+The project codes are all located in the master branch
+
 ##  Overview
 
 Trapick is an intelligent traffic monitoring system that:
