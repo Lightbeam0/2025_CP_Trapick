@@ -1,0 +1,13 @@
+django
+djangorestframework
+django-cors-headers
+celery
+redis
+opencv-python
+ultralytics  # for YOLOv8
+pandas
+numpy
+matplotlib
+react
+react-chartjs-2
+chart.js
