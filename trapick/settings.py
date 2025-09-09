@@ -26,7 +26,7 @@ SECRET_KEY = 'django-insecure-_u9zxz!@e8mafz9^@b$)*hi-egorgmvgg+16%7re0@9g3k*d9=
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0']
 
 
 # Application definition
@@ -45,14 +45,13 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.security.SecurityMiddleware',
 ]
 
 
@@ -61,7 +60,7 @@ ROOT_URLCONF = 'trapick.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [os.path.join(BASE_DIR, 'frontend', 'build')], 
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -122,7 +121,10 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'frontend', 'build', 'static'),
+]
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
@@ -133,7 +135,8 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Allow React dev server to access Django
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # React default port
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
 ]
 
 # Optional: Allow all headers and methods for development
