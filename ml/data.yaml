@@ -1,6 +1,11 @@
-# trapick/ml/data.yaml
-train: trapick/ml/dataset/images/train
-val:   trapick/ml/dataset/images/val
+# data.yaml
+path: ./dataset
+train: images/train
+val: images/val
 
-nc: 3
-names: ['tricycle','jeepney','piaggio_tricycle']
+# Number of classes (1 since you only have "Jeepney")
+nc: 1
+
+# Class names (only "Jeepney" in your case)
+names: ['Jeepney']
+
