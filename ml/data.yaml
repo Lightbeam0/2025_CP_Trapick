@@ -1,0 +1,6 @@
+# trapick/ml/data.yaml
+train: trapick/ml/dataset/images/train
+val:   trapick/ml/dataset/images/val
+
+nc: 3
+names: ['tricycle','jeepney','piaggio_tricycle']
