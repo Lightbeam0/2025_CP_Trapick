@@ -1,3 +1,23 @@
+# Videos
 *.mp4
-"/frontend/node_modules/" 
-"/frontend/build/" 
+
+# ==========================
+# Frontend (React / Node.js)
+# ==========================
+frontend/node_modules/
+frontend/build/
+
+# ==========================
+# Machine Learning (YOLO / datasets)
+# ==========================
+# Raw datasets (too big for git)
+ml/dataset/images/
+ml/dataset/labels/
+
+# ==========================
+# PyTorch / YOLO training outputs
+# ==========================
+runs/
+video_results/
+*.pt
+*.cache
