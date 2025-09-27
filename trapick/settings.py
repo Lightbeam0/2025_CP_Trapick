@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'trapickapp',  # Assuming 'trapickapp' is your main app
     'corsheaders',
     'rest_framework',
+    'channels',
 ]
 
 MIDDLEWARE = [
@@ -140,4 +141,31 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 # Optional: Allow all headers and methods for development
-CORS_ALLOW_ALL_ORIGINS = True 
+CORS_ALLOW_ALL_ORIGINS = True
+
+
+# NEW: Add Channels configuration
+ASGI_APPLICATION = 'trapick.asgi.application'
+
+# Channel layers configuration (using Redis for production, InMemory for development)
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',  # Use Redis in production
+        # 'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        # 'CONFIG': {
+        #     "hosts": [('127.0.0.1', 6379)],
+        # },
+    },
+}
+
+# Add REST framework configuration
+REST_FRAMEWORK = {
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
+    'DEFAULT_PARSER_CLASSES': [
+        'rest_framework.parsers.JSONParser',
+        'rest_framework.parsers.MultiPartParser',
+        'rest_framework.parsers.FormParser',
+    ],
+}

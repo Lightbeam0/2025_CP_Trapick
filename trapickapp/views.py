@@ -1,156 +1,159 @@
-from django.shortcuts import render
-from rest_framework import viewsets, status
-from rest_framework.views import APIView
-from rest_framework.parsers import MultiPartParser
-from rest_framework.response import Response
-from rest_framework.decorators import action
+# trapickapp/views.py
+import json
+import threading
+import os
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.utils.decorators import method_decorator
-from django.views import View
-from django.conf import settings
-from celery import shared_task
-from django.db.models import Sum
-import os
-from django.views.generic import TemplateView
-from .models import VideoFile, Detection, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction, VehicleType
-from .serializers import VideoFileSerializer
-from .utils.detection import VehicleDetector
-from .utils.analysis import analyze_traffic_patterns, predict_congestion
-import sklearn
+from django.core.files.storage import FileSystemStorage
+from django.utils import timezone
+from .models import VideoFile, TrafficAnalysis
 
+# Import your ML module
+try:
+    from ml.vehicle_detector import RTXVehicleDetector
+    ML_AVAILABLE = True
+    print("✓ ML module imported successfully")
+except ImportError as e:
+    print(f"✗ ML module import error: {e}")
+    ML_AVAILABLE = False
 
-
-# ------------------ API HELLO ------------------
-@method_decorator(csrf_exempt, name='dispatch')
-class HelloAPI(View):
-    def get(self, request):
-        return JsonResponse({
-            'message': 'Hello from Django API!',
-            'status': 'success'
-        })
-
-
-# ------------------ VIDEO UPLOAD ------------------
-class VideoFileViewSet(viewsets.ModelViewSet):
-    queryset = VideoFile.objects.all()
-    serializer_class = VideoFileSerializer
-
-    @action(detail=True, methods=['post'])
-    def process(self, request, pk=None):
-        video = self.get_object()
-        if video.processed:
-            return Response({'status': 'already processed'})
-
-        # Start async task
-        process_video.delay(str(video.id))
-        return Response({'status': 'processing started'})
-
-
-class VideoUploadView(APIView):
-    parser_classes = [MultiPartParser]
-
-    def post(self, request):
-        serializer = VideoFileSerializer(data=request.data)
-        if serializer.is_valid():
-            video = serializer.save()
-
-            # Run detection immediately (or you can delegate to Celery)
-            detector = VehicleDetector()
-            results = detector.process_video(video.file_path.path)
-
-            # Save detections
-            for det in results.get("detections", []):
-                Detection.objects.create(
-                    video_file=video,
-                    frame_number=det["frame"],
-                    timestamp=det["timestamp"],
-                    vehicle_type=VehicleType.objects.get_or_create(name=det["vehicle_type"])[0],
-                    confidence=det["confidence"],
-                    bbox_x=det["bbox"][0],
-                    bbox_y=det["bbox"][1],
-                    bbox_width=det["bbox"][2],
-                    bbox_height=det["bbox"][3],
-                )
-
-            # Save hourly summaries
-            for hour, counts in results.get("hourly_counts", {}).items():
-                for vtype, count in counts.items():
-                    vobj, _ = VehicleType.objects.get_or_create(name=vtype)
-                    HourlyTrafficSummary.objects.create(
-                        date=video.uploaded_at.date(),
-                        hour=hour,
-                        vehicle_type=vobj,
-                        count=count,
-                    )
-
-            video.processed = True
-            video.processing_status = "completed"
-            video.save()
-
-            return Response({"status": "success", "video_id": str(video.id)})
-
-        return Response(serializer.errors, status=400)
-
-
-# ------------------ BACKGROUND TASK ------------------
-@shared_task
-def process_video(video_id):
+def process_video_background(video_id, video_path):
+    """Process video in background thread"""
+    if not ML_AVAILABLE:
+        print("ML module not available - skipping video processing")
+        return
+        
     try:
-        video = VideoFile.objects.get(id=video_id)
-        detector = VehicleDetector()
-        video_path = os.path.join(settings.MEDIA_ROOT, video.file_path.name)
-        results = detector.process_video(video_path)
-
-        # Save detections
-        for det in results.get("detections", []):
-            Detection.objects.create(
-                video_file=video,
-                frame_number=det["frame"],
-                timestamp=det["timestamp"],
-                vehicle_type=VehicleType.objects.get_or_create(name=det["vehicle_type"])[0],
-                confidence=det["confidence"],
-                bbox_x=det["bbox"][0],
-                bbox_y=det["bbox"][1],
-                bbox_width=det["bbox"][2],
-                bbox_height=det["bbox"][3],
-            )
-
-        # Save hourly summaries
-        for hour, counts in results.get("hourly_counts", {}).items():
-            for vtype, count in counts.items():
-                vobj, _ = VehicleType.objects.get_or_create(name=vtype)
-                HourlyTrafficSummary.objects.create(
-                    date=video.uploaded_at.date(),
-                    hour=hour,
-                    vehicle_type=vobj,
-                    count=count,
-                )
-
-        video.processed = True
-        video.processing_status = "completed"
-        video.save()
-
-        # Trigger prediction task
-        predict_congestion.delay()
-
-    except Exception as e:
-        video = VideoFile.objects.get(id=video_id)
-        video.processing_status = "failed"
-        video.save()
-        raise e
-
-
-# ------------------ TRAFFIC ANALYSIS ------------------
-class TrafficAnalysisView(APIView):
-    def get(self, request):
-        data = (
-            HourlyTrafficSummary.objects.values("hour")
-            .annotate(total_vehicles=Sum("count"))
-            .order_by("hour")
+        video_obj = VideoFile.objects.get(id=video_id)
+        video_obj.processing_status = 'processing'
+        video_obj.save()
+        
+        print(f"Starting video analysis for: {video_obj.filename}")
+        
+        # Analyze video
+        detector = RTXVehicleDetector()
+        report = detector.analyze_video(video_path)
+        
+        print(f"Analysis completed. Creating database record...")
+        
+        # Create TrafficAnalysis record
+        analysis = TrafficAnalysis.objects.create(
+            video_file=video_obj,
+            total_vehicles=report['summary']['total_vehicles_counted'],
+            processing_time_seconds=report['metadata']['processing_time'],
+            analyzed_at=timezone.now(),
+            car_count=report['summary']['vehicle_breakdown'].get('car', 0),
+            truck_count=report['summary']['vehicle_breakdown'].get('truck', 0),
+            motorcycle_count=report['summary']['vehicle_breakdown'].get('motorcycle', 0),
+            bus_count=report['summary']['vehicle_breakdown'].get('bus', 0),
+            bicycle_count=report['summary']['vehicle_breakdown'].get('bicycle', 0),
+            peak_traffic=report['summary']['peak_traffic'],
+            average_traffic=report['summary']['average_traffic_density'],
+            congestion_level=report['metrics']['congestion_level'],
+            traffic_pattern=report['metrics']['traffic_pattern'],
+            analysis_data=report
         )
-        return Response({"data": list(data)})
+        
+        # Update video status
+        video_obj.processing_status = 'completed'
+        video_obj.processed = True
+        video_obj.processed_at = timezone.now()
+        video_obj.save()
+        
+        print(f"✓ Video processing completed: {video_obj.filename}")
+        
+    except Exception as e:
+        print(f"✗ Video processing failed: {e}")
+        video_obj = VideoFile.objects.get(id=video_id)
+        video_obj.processing_status = 'failed'
+        video_obj.save()
 
+@csrf_exempt
+def upload_video(request):
+    if request.method == 'POST' and request.FILES.get('video'):
+        try:
+            video_file = request.FILES['video']
+            fs = FileSystemStorage()
+            
+            # Save video file
+            filename = fs.save(f'videos/{video_file.name}', video_file)
+            video_path = fs.path(filename)
+            
+            # Create VideoFile record
+            video_obj = VideoFile.objects.create(
+                filename=video_file.name,
+                file_path=filename,
+                processing_status='uploaded'
+            )
+            
+            # Start background processing if ML is available
+            if ML_AVAILABLE:
+                thread = threading.Thread(
+                    target=process_video_background,
+                    args=(video_obj.id, video_path)
+                )
+                thread.daemon = True
+                thread.start()
+                message = 'Video uploaded and processing started'
+            else:
+                video_obj.processing_status = 'completed'
+                video_obj.save()
+                message = 'Video uploaded (ML processing disabled)'
+            
+            return JsonResponse({
+                'status': 'success',
+                'message': message,
+                'upload_id': str(video_obj.id)
+            })
+            
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)})
+    
+    return JsonResponse({'status': 'error', 'message': 'Invalid request'})
 
-class ReactAppView(TemplateView):
-    template_name = "index.html"
+@csrf_exempt
+def get_analysis_results(request, upload_id):
+    """Get analysis results for a video"""
+    try:
+        video_obj = VideoFile.objects.get(id=upload_id)
+        
+        if video_obj.processing_status != 'completed':
+            return JsonResponse({
+                'status': video_obj.processing_status,
+                'message': 'Processing not completed yet'
+            })
+        
+        # Check if analysis exists
+        if hasattr(video_obj, 'traffic_analysis'):
+            analysis = video_obj.traffic_analysis
+            analysis_data = {
+                'total_vehicles': analysis.total_vehicles,
+                'vehicle_breakdown': analysis.get_vehicle_breakdown(),
+                'processing_time': analysis.processing_time_seconds,
+                'congestion_level': analysis.congestion_level,
+                'traffic_pattern': analysis.traffic_pattern,
+                'analyzed_at': analysis.analyzed_at.isoformat()
+            }
+        else:
+            analysis_data = {'message': 'No analysis data available'}
+        
+        return JsonResponse({
+            'status': 'completed',
+            'analysis': analysis_data,
+            'video_info': {
+                'filename': video_obj.filename,
+                'uploaded_at': video_obj.uploaded_at.isoformat()
+            }
+        })
+        
+    except VideoFile.DoesNotExist:
+        return JsonResponse({'status': 'error', 'message': 'Video not found'})
+
+def health_check(request):
+    """Simple health check endpoint"""
+    return JsonResponse({
+        'status': 'healthy',
+        'ml_available': ML_AVAILABLE,
+        'video_count': VideoFile.objects.count(),
+        'analysis_count': TrafficAnalysis.objects.count()
+    })

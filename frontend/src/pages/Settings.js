@@ -7,16 +7,18 @@ function Settings() {
   const [language, setLanguage] = useState("en");
 
   return (
-    <div className="flex-1 overflow-y-auto p-8">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-800">Traffic Monitor</h1>
-        <p className="text-gray-600">Manage your account and system information</p>
+    <div className="main-content">
+      <header style={{ marginBottom: '32px' }}>
+        <h1 style={{ fontSize: '32px', fontWeight: 'bold', color: '#2d3748', margin: '0 0 8px 0' }}>
+          Traffic Monitor
+        </h1>
+        <p style={{ color: '#666' }}>Manage your account and system information</p>
       </header>
 
-      <div className="dashboard-card mb-8">
+      <div className="dashboard-card" style={{ marginBottom: '32px' }}>
         <h2 className="section-title">Account Information</h2>
         
-        <div className="table-container mb-6">
+        <div className="table-container" style={{ marginBottom: '24px' }}>
           <table className="data-table">
             <thead>
               <tr>
@@ -37,66 +39,83 @@ function Settings() {
 
         <div className="info-box">
           <h3 className="info-title">How to Use the System</h3>
-          <ul className="info-text list-disc pl-5 space-y-2">
-            <li><strong>Viewing Traffic Data</strong> - The Overview page displays weekly traffic patterns and daily vehicle counts. Data is collected automatically from our traffic cameras.</li>
+          <ul style={{ color: '#4a5568', lineHeight: '1.5', listStyle: 'disc', paddingLeft: '20px' }}>
+            <li style={{ marginBottom: '8px' }}><strong>Viewing Traffic Data</strong> - The Overview page displays weekly traffic patterns and daily vehicle counts. Data is collected automatically from our traffic cameras.</li>
             <li><strong>Analyzing Congestion</strong> - The Congestion Results page shows peak traffic hours for specific areas. Use this data to identify problem areas and optimize traffic flow.</li>
           </ul>
         </div>
 
         <div className="divider"></div>
 
-        <h3 className="text-lg font-medium mb-4">Developers</h3>
-        <p className="text-gray-600 mb-6">Developed by Students of Western Mindanao State University (WMSU)</p>
+        <h3 style={{ fontSize: '18px', fontWeight: '500', marginBottom: '16px' }}>Developers</h3>
+        <p style={{ color: '#666', marginBottom: '24px' }}>Developed by Students of Western Mindanao State University (WMSU)</p>
 
         <div className="divider"></div>
 
-        <h3 className="text-lg font-medium mb-4">Session</h3>
-        <p className="text-gray-600">Logged in as Administrator</p>
+        <h3 style={{ fontSize: '18px', fontWeight: '500', marginBottom: '16px' }}>Session</h3>
+        <p style={{ color: '#666' }}>Logged in as Administrator</p>
       </div>
 
       <div className="dashboard-card">
         <h2 className="section-title">System Settings</h2>
         
-        <div className="flex items-center justify-between border-b py-4">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #e2e8f0', padding: '16px 0' }}>
           <div>
-            <p className="font-medium">Dark Mode</p>
-            <p className="text-sm text-gray-600">Switch between light and dark themes</p>
+            <p style={{ fontWeight: '500' }}>Dark Mode</p>
+            <p style={{ fontSize: '14px', color: '#666' }}>Switch between light and dark themes</p>
           </div>
-          <label className="inline-flex items-center cursor-pointer">
+          <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
             <input
               type="checkbox"
               checked={darkMode}
               onChange={() => setDarkMode(!darkMode)}
-              className="sr-only peer"
+              style={{ position: 'absolute', opacity: 0 }}
             />
-            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:bg-blue-600 relative">
-              <span className="absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition peer-checked:translate-x-5"></span>
+            <div style={{
+              width: '44px',
+              height: '24px',
+              backgroundColor: darkMode ? '#3b82f6' : '#e5e7eb',
+              borderRadius: '12px',
+              position: 'relative',
+              transition: 'background-color 0.2s'
+            }}>
+              <span style={{
+                position: 'absolute',
+                left: '2px',
+                top: '2px',
+                backgroundColor: 'white',
+                width: '20px',
+                height: '20px',
+                borderRadius: '50%',
+                transition: 'transform 0.2s',
+                transform: darkMode ? 'translateX(20px)' : 'translateX(0)'
+              }}></span>
             </div>
           </label>
         </div>
 
-        <div className="flex items-center justify-between border-b py-4">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #e2e8f0', padding: '16px 0' }}>
           <div>
-            <p className="font-medium">Notifications</p>
-            <p className="text-sm text-gray-600">Receive alerts for traffic events</p>
+            <p style={{ fontWeight: '500' }}>Notifications</p>
+            <p style={{ fontSize: '14px', color: '#666' }}>Receive alerts for traffic events</p>
           </div>
           <input
             type="checkbox"
             checked={notifications}
             onChange={() => setNotifications(!notifications)}
-            className="w-5 h-5"
+            style={{ width: '20px', height: '20px' }}
           />
         </div>
 
-        <div className="flex items-center justify-between py-4">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 0' }}>
           <div>
-            <p className="font-medium">Language</p>
-            <p className="text-sm text-gray-600">Interface language preference</p>
+            <p style={{ fontWeight: '500' }}>Language</p>
+            <p style={{ fontSize: '14px', color: '#666' }}>Interface language preference</p>
           </div>
           <select
             value={language}
             onChange={(e) => setLanguage(e.target.value)}
-            className="border rounded p-2"
+            className="select-input"
           >
             <option value="en">English</option>
             <option value="ph">Filipino</option>
@@ -104,8 +123,8 @@ function Settings() {
           </select>
         </div>
 
-        <div className="mt-6 text-center">
-          <button className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+        <div style={{ marginTop: '24px', textAlign: 'center' }}>
+          <button className="button button-primary">
             Save Changes
           </button>
         </div>

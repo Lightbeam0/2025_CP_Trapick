@@ -26,32 +26,50 @@ ChartJS.register(
 );
 
 function Home() {
-  const [weeklyData, setWeeklyData] = useState([]);
+  const [overviewData, setOverviewData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  // Fetch weekly data from Django API
+  // Fetch data from Django API
   useEffect(() => {
-    axios.get("/api/analyze/")
-      .then((res) => {
-        // Example weekly aggregation (placeholder for now)
-        setWeeklyData([12500, 11800, 13200, 12700, 14200, 9800, 8500]);
-      })
-      .catch((err) => {
+    const fetchOverviewData = async () => {
+      try {
+        const response = await axios.get("http://127.0.0.1:8000/api/analyze/");
+        setOverviewData(response.data);
+        setLoading(false);
+      } catch (err) {
         console.error("API error:", err);
-        // Fallback data for demo purposes
-        setWeeklyData([12500, 11800, 13200, 12700, 14200, 9800, 8500]);
-      });
+        setError("Failed to load data");
+        setLoading(false);
+      }
+    };
+
+    fetchOverviewData();
   }, []);
 
-  // Calculate total weekly vehicles
-  const totalWeeklyVehicles = weeklyData.reduce((sum, value) => sum + value, 0);
+  if (loading) return <div className="main-content">Loading...</div>;
+  if (error) return <div className="main-content">Error: {error}</div>;
+  if (!overviewData) return <div className="main-content">No data available</div>;
+
+  const weeklyData = overviewData.weekly_data || [12500, 11800, 13200, 12700, 14200, 9800, 8500];
+  const totalWeeklyVehicles = overviewData.total_vehicles || weeklyData.reduce((sum, value) => sum + value, 0);
 
   return (
-    <div className="flex-1 overflow-y-auto p-8">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-800">Traffic Monitor</h1>
-        <div className="flex items-center mt-2">
-          <p className="text-gray-600 mr-4">System Operational</p>
-          <span className="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-0.5 rounded">
+    <div className="main-content">
+      <header style={{ marginBottom: '32px' }}>
+        <h1 style={{ fontSize: '32px', fontWeight: 'bold', color: '#2d3748', margin: '0 0 8px 0' }}>
+          Traffic Monitor
+        </h1>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <p style={{ color: '#666', marginRight: '16px' }}>System Operational</p>
+          <span style={{
+            backgroundColor: '#f0fff4',
+            color: '#276749',
+            fontSize: '12px',
+            fontWeight: '500',
+            padding: '2px 10px',
+            borderRadius: '4px'
+          }}>
             Live
           </span>
         </div>
@@ -60,7 +78,7 @@ function Home() {
       <div className="stats-grid">
         <div className="stat-card">
           <div className="stat-label">Congested Roads</div>
-          <div className="stat-value">12</div>
+          <div className="stat-value">{overviewData.congested_roads || 12}</div>
           <div className="stat-change positive-change">
             <span>+2 from yesterday</span>
           </div>
@@ -68,7 +86,7 @@ function Home() {
         
         <div className="stat-card">
           <div className="stat-label">Vehicles Passing</div>
-          <div className="stat-value">54,200</div>
+          <div className="stat-value">{totalWeeklyVehicles.toLocaleString()}</div>
           <div className="stat-change positive-change">
             <span>+5.2% from last week</span>
           </div>
@@ -76,7 +94,7 @@ function Home() {
         
         <div className="stat-card">
           <div className="stat-label">Peak Hour</div>
-          <div className="stat-value">8:00 AM</div>
+          <div className="stat-value">{overviewData.peak_hour || '8:00 AM'}</div>
           <div className="stat-change negative-change">
             <span>↑ 1:25 longer than average</span>
           </div>
@@ -86,17 +104,14 @@ function Home() {
       <div className="dashboard-card">
         <div className="card-header">
           <h2 className="card-title">Traffic Overview</h2>
-          <select 
-            className="border rounded p-2 text-sm"
-            defaultValue="current"
-          >
+          <select className="select-input" defaultValue="current">
             <option value="current">Current Week</option>
             <option value="previous">Previous Week</option>
           </select>
         </div>
-        <p className="text-gray-600 mb-4">Weekly traffic data from camera captures</p>
+        <p style={{ color: '#666', marginBottom: '16px' }}>Weekly traffic data from camera captures</p>
         
-        <div className="h-80 mb-6">
+        <div style={{ height: '320px', marginBottom: '24px' }}>
           <Line
             data={{
               labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
@@ -124,55 +139,42 @@ function Home() {
           />
         </div>
         
-        <div className="flex justify-between items-center">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <p className="text-sm text-gray-600">Total weekly vehicles</p>
-            <p className="text-xl font-bold">${totalWeeklyVehicles.toLocaleString()}</p>
+            <p style={{ fontSize: '14px', color: '#666' }}>Total weekly vehicles</p>
+            <p style={{ fontSize: '20px', fontWeight: 'bold' }}>{totalWeeklyVehicles.toLocaleString()}</p>
           </div>
-          <div className="text-right">
-            <p className="text-sm text-gray-600">Daily Cars Passing By</p>
-            <p className="text-xl font-bold">7,842</p>
-            <p className="text-sm text-green-600">+5.2% from last week</p>
+          <div style={{ textAlign: 'right' }}>
+            <p style={{ fontSize: '14px', color: '#666' }}>Daily Average</p>
+            <p style={{ fontSize: '20px', fontWeight: 'bold' }}>{(totalWeeklyVehicles / 7).toLocaleString(undefined, {maximumFractionDigits: 0})}</p>
+            <p style={{ fontSize: '14px', color: '#38a169' }}>+5.2% from last week</p>
           </div>
         </div>
       </div>
 
-      <div className="dashboard-card mt-6">
+      <div className="dashboard-card" style={{ marginTop: '24px' }}>
         <div className="card-header">
           <h2 className="card-title">Peak Hour Traffic</h2>
-          <p className="text-sm text-gray-600">Busiest times in monitored areas</p>
+          <p style={{ fontSize: '14px', color: '#666' }}>Busiest times in monitored areas</p>
         </div>
         
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="area-card">
-            <h3 className="area-name">Baliwasan Area</h3>
-            <div className="peak-time">
-              <span className="peak-label">Morning Peak</span>
-              <span className="peak-value">7:30 - 9:00 AM</span>
+        <div className="grid grid-cols-2 gap-4">
+          {overviewData.areas && overviewData.areas.map((area, index) => (
+            <div key={index} className="area-card">
+              <h3 className="area-name">{area.name}</h3>
+              <div className="peak-time">
+                <span className="peak-label">Morning Peak</span>
+                <span className="peak-value">{area.morning_peak}</span>
+              </div>
+              <p style={{ fontSize: '14px', color: '#666' }}>Average vehicles: {area.morning_volume?.toLocaleString()}/hr</p>
+              
+              <div className="peak-time" style={{ marginTop: '12px' }}>
+                <span className="peak-label">Evening Peak</span>
+                <span className="peak-value">{area.evening_peak}</span>
+              </div>
+              <p style={{ fontSize: '14px', color: '#666' }}>Average vehicles: {area.evening_volume?.toLocaleString()}/hr</p>
             </div>
-            <p className="text-sm text-gray-600">Average vehicles: 2,450/hr</p>
-            
-            <div className="peak-time mt-3">
-              <span className="peak-label">Evening Peak</span>
-              <span className="peak-value">4:30 - 6:30 PM</span>
-            </div>
-            <p className="text-sm text-gray-600">Average vehicles: 2,150/hr</p>
-          </div>
-          
-          <div className="area-card">
-            <h3 className="area-name">San Roque Area</h3>
-            <div className="peak-time">
-              <span className="peak-label">Morning Peak</span>
-              <span className="peak-value">7:45 - 9:15 AM</span>
-            </div>
-            <p className="text-sm text-gray-600">Average vehicles: 1,950/hr</p>
-            
-            <div className="peak-time mt-3">
-              <span className="peak-label">Evening Peak</span>
-              <span className="peak-value">5:00 - 6:30 PM</span>
-            </div>
-            <p className="text-sm text-gray-600">Average vehicles: 1,800/hr</p>
-          </div>
+          ))}
         </div>
       </div>
     </div>

@@ -1,11 +1,14 @@
 // src/pages/CongestedRoads.js
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import axios from "axios";
 
 function CongestedRoads() {
   const [timeFilter, setTimeFilter] = useState("today");
+  const [congestionData, setCongestionData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  // Sample congestion data
-  const congestionData = [
+  const defaultCongestionData = [
     {
       road: "Baliwasan Road",
       area: "Baliwasan Area",
@@ -18,73 +21,83 @@ function CongestedRoads() {
       road: "San Roque Highway",
       area: "San Roque Area",
       time: "7:45 - 9:15 AM",
-      congestionLevel: "High",
+      congestionLevel: "High", 
       vehiclesPerHour: 1950,
-      trend: "stable"
-    },
-    {
-      road: "Zamboanga City Boulevard",
-      area: "Downtown Area",
-      time: "8:00 - 9:30 AM",
-      congestionLevel: "Medium",
-      vehiclesPerHour: 1650,
-      trend: "decreasing"
-    },
-    {
-      road: "Tumaga Road",
-      area: "Tumaga Area",
-      time: "4:30 - 6:30 PM",
-      congestionLevel: "High",
-      vehiclesPerHour: 2150,
-      trend: "increasing"
-    },
-    {
-      road: "Gov. Camins Avenue",
-      area: "San Jose Area",
-      time: "5:00 - 6:30 PM",
-      congestionLevel: "Medium",
-      vehiclesPerHour: 1800,
       trend: "stable"
     }
   ];
 
-  const getCongestionColor = (level) => {
-    switch(level.toLowerCase()) {
-      case "high":
-        return "text-red-600";
-      case "medium":
-        return "text-yellow-600";
-      case "low":
-        return "text-green-600";
-      default:
-        return "text-gray-600";
-    }
-  };
+  useEffect(() => {
+    const fetchCongestionData = async () => {
+      try {
+        const response = await axios.get("http://127.0.0.1:8000/api/congestion/");
+        let apiData = response.data;
+        
+        if (Array.isArray(apiData)) {
+          const normalizedData = apiData.map(item => ({
+            road: item.road || "Unknown Road",
+            area: item.area || "Unknown Area",
+            time: item.time || "Unknown Time",
+            congestionLevel: item.congestionLevel || "Unknown",
+            vehiclesPerHour: item.vehiclesPerHour || 0,
+            trend: item.trend || "stable"
+          }));
+          
+          setCongestionData(normalizedData);
+        } else {
+          setCongestionData(defaultCongestionData);
+        }
+        
+        setLoading(false);
+      } catch (err) {
+        console.error("API error:", err);
+        setError("Failed to load congestion data. Using sample data for demonstration.");
+        setCongestionData(defaultCongestionData);
+        setLoading(false);
+      }
+    };
 
-  const getTrendIcon = (trend) => {
-    switch(trend.toLowerCase()) {
-      case "increasing":
-        return "↗";
-      case "decreasing":
-        return "↘";
-      case "stable":
-        return "→";
-      default:
-        return "";
-    }
-  };
+    fetchCongestionData();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="main-content">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '400px' }}>
+          <div style={{ fontSize: '18px', color: '#666' }}>Loading congestion data...</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex-1 overflow-y-auto p-8">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-800">Traffic Monitor</h1>
-        <p className="text-gray-600">Congestion results and peak traffic information</p>
+    <div className="main-content">
+      <header style={{ marginBottom: '32px' }}>
+        <h1 style={{ fontSize: '32px', fontWeight: 'bold', color: '#2d3748', margin: '0 0 8px 0' }}>
+          Traffic Monitor
+        </h1>
+        <p style={{ color: '#666', margin: 0 }}>Congestion results and peak traffic information</p>
       </header>
 
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="section-title">Congested Roads</h2>
+      {error && (
+        <div style={{ 
+          backgroundColor: '#fff3cd', 
+          border: '1px solid #ffeaa7', 
+          color: '#856404',
+          padding: '12px 16px',
+          borderRadius: '4px',
+          marginBottom: '24px'
+        }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+        <h2 style={{ fontSize: '24px', fontWeight: '600', color: '#2d3748', margin: 0 }}>
+          Congested Roads
+        </h2>
         <select 
-          className="border rounded p-2 text-sm"
+          className="select-input"
           value={timeFilter}
           onChange={(e) => setTimeFilter(e.target.value)}
         >
@@ -94,49 +107,10 @@ function CongestedRoads() {
         </select>
       </div>
 
-      <div className="dashboard-card mb-8">
-        <div className="card-header">
-          <h3 className="card-title">Peak Hour Traffic</h3>
-          <p className="text-sm text-gray-600">Busiest times in monitored areas</p>
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="area-card">
-            <h3 className="area-name">Baliwasan Area</h3>
-            <div className="peak-time">
-              <span className="peak-label">Morning Peak</span>
-              <span className="peak-value">7:30 - 9:00 AM</span>
-            </div>
-            <p className="text-sm text-gray-600">Average vehicles: 2,450/hr</p>
-            
-            <div className="peak-time mt-3">
-              <span className="peak-label">Evening Peak</span>
-              <span className="peak-value">4:30 - 6:30 PM</span>
-            </div>
-            <p className="text-sm text-gray-600">Average vehicles: 2,150/hr</p>
-          </div>
-          
-          <div className="area-card">
-            <h3 className="area-name">San Roque Area</h3>
-            <div className="peak-time">
-              <span className="peak-label">Morning Peak</span>
-              <span className="peak-value">7:45 - 9:15 AM</span>
-            </div>
-            <p className="text-sm text-gray-600">Average vehicles: 1,950/hr</p>
-            
-            <div className="peak-time mt-3">
-              <span className="peak-label">Evening Peak</span>
-              <span className="peak-value">5:00 - 6:30 PM</span>
-            </div>
-            <p className="text-sm text-gray-600">Average vehicles: 1,800/hr</p>
-          </div>
-        </div>
-      </div>
-
       <div className="dashboard-card">
         <div className="card-header">
           <h3 className="card-title">Current Road Congestion</h3>
-          <p className="text-sm text-gray-600">Live congestion data from traffic cameras</p>
+          <p style={{ fontSize: '14px', color: '#666' }}>Live congestion data from traffic cameras</p>
         </div>
         
         <div className="table-container">
@@ -154,14 +128,42 @@ function CongestedRoads() {
             <tbody>
               {congestionData.map((data, index) => (
                 <tr key={index}>
-                  <td className="font-medium">{data.road}</td>
+                  <td style={{ fontWeight: '600' }}>{data.road}</td>
                   <td>{data.area}</td>
                   <td>{data.time}</td>
-                  <td className={`font-bold ${getCongestionColor(data.congestionLevel)}`}>
-                    {data.congestionLevel}
+                  <td>
+                    <span style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      padding: '4px 12px',
+                      borderRadius: '16px',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      backgroundColor: 
+                        data.congestionLevel === 'High' ? '#fee2e2' : 
+                        data.congestionLevel === 'Medium' ? '#fef3c7' : '#d1fae5',
+                      color: 
+                        data.congestionLevel === 'High' ? '#dc2626' : 
+                        data.congestionLevel === 'Medium' ? '#d97706' : '#065f46'
+                    }}>
+                      {data.congestionLevel}
+                    </span>
                   </td>
-                  <td>{data.vehiclesPerHour.toLocaleString()}</td>
-                  <td>{getTrendIcon(data.trend)} {data.trend}</td>
+                  <td style={{ fontWeight: '600' }}>{(data.vehiclesPerHour || 0).toLocaleString()}</td>
+                  <td>
+                    <span style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      fontSize: '14px',
+                      color: 
+                        data.trend === 'increasing' ? '#dc2626' : 
+                        data.trend === 'decreasing' ? '#16a34a' : '#2563eb'
+                    }}>
+                      {data.trend === 'increasing' ? '↗' : data.trend === 'decreasing' ? '↘' : '→'}
+                      {data.trend}
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>

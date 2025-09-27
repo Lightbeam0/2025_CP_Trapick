@@ -16,11 +16,9 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include, path, re_path
-from trapickapp.views import ReactAppView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("trapickapp.urls")),  # API routes
-    re_path(r"^.*$", ReactAppView.as_view(), name="react_app"),  # React fallback
 ]
 
