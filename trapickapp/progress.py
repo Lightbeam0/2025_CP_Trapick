@@ -1,3 +1,4 @@
+# trapickapp/progress.py
 import json
 import os
 import time
@@ -16,7 +17,7 @@ class ProgressTracker:
     def set_progress(self, progress, message=""):
         """Set progress percentage and message with WebSocket broadcast"""
         data = {
-            'progress': max(0, min(100, progress)),  # Ensure between 0-100
+            'progress': max(0, min(100, progress)),
             'message': message,
             'timestamp': time.time()
         }
@@ -33,8 +34,11 @@ class ProgressTracker:
                     'message': data['message']
                 }
             )
+            print(f"✓ Progress broadcast: {data['progress']}% - {message}")
         except Exception as e:
             print(f"WebSocket error: {e}")
+            # Fallback: store in progress_store for HTTP polling
+            progress_store[self.video_id] = data
         
         print(f"Progress updated for {self.video_id}: {progress}% - {message}")
     
@@ -49,6 +53,7 @@ class ProgressTracker:
                     'message': message
                 }
             )
+            print(f"✓ Processing complete broadcast: {message}")
         except Exception as e:
             print(f"WebSocket completion error: {e}")
     

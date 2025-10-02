@@ -30,16 +30,29 @@ function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Fetch data from Django API
   useEffect(() => {
     const fetchOverviewData = async () => {
       try {
         const response = await axios.get("http://127.0.0.1:8000/api/analyze/");
-        setOverviewData(response.data);
+        
+        // Handle case where we have real data but it's all zeros
+        if (response.data.weekly_data && response.data.weekly_data.every(val => val === 0)) {
+          setOverviewData({
+            ...response.data,
+            hasData: false, // Flag to show "no data" state
+            message: "No traffic data available yet. Upload videos to see analysis results."
+          });
+        } else {
+          setOverviewData({
+            ...response.data,
+            hasData: true // Flag to show real data
+          });
+        }
+        
         setLoading(false);
       } catch (err) {
         console.error("API error:", err);
-        setError("Failed to load data");
+        setError("Failed to load traffic data");
         setLoading(false);
       }
     };
@@ -47,12 +60,60 @@ function Home() {
     fetchOverviewData();
   }, []);
 
-  if (loading) return <div className="main-content">Loading...</div>;
-  if (error) return <div className="main-content">Error: {error}</div>;
-  if (!overviewData) return <div className="main-content">No data available</div>;
+  // Show loading state
+  if (loading) {
+    return (
+      <div className="main-content">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '400px' }}>
+          <div style={{ fontSize: '18px', color: '#666' }}>Loading real traffic data...</div>
+        </div>
+      </div>
+    );
+  }
 
-  const weeklyData = overviewData.weekly_data || [12500, 11800, 13200, 12700, 14200, 9800, 8500];
-  const totalWeeklyVehicles = overviewData.total_vehicles || weeklyData.reduce((sum, value) => sum + value, 0);
+  // Show error state
+  if (error) {
+    return (
+      <div className="main-content">
+        <div style={{ textAlign: 'center', padding: '40px' }}>
+          <div style={{ color: '#ef4444', fontSize: '18px', marginBottom: '16px' }}>{error}</div>
+          <button onClick={() => window.location.reload()} className="button button-primary">
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Show "no data" state
+  if (overviewData && !overviewData.hasData) {
+    return (
+      <div className="main-content">
+        <header style={{ marginBottom: '32px' }}>
+          <h1 style={{ fontSize: '32px', fontWeight: 'bold', color: '#2d3748', margin: '0 0 8px 0' }}>
+            Traffic Monitor
+          </h1>
+          <p style={{ color: '#666', margin: 0 }}>System Ready - Waiting for Data</p>
+        </header>
+
+        <div className="dashboard-card" style={{ textAlign: 'center', padding: '60px' }}>
+          <div style={{ fontSize: '48px', marginBottom: '20px' }}>📊</div>
+          <h2 style={{ fontSize: '24px', marginBottom: '16px', color: '#4b5563' }}>
+            No Traffic Data Yet
+          </h2>
+          <p style={{ color: '#6b7280', marginBottom: '24px', fontSize: '16px' }}>
+            {overviewData.message}
+          </p>
+          <p style={{ color: '#9ca3af', fontSize: '14px' }}>
+            Upload traffic videos to start generating analysis reports and visualizations.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const weeklyData = overviewData?.weekly_data || [0, 0, 0, 0, 0, 0, 0];
+  const totalWeeklyVehicles = overviewData?.total_vehicles || 0;
 
   return (
     <div className="main-content">

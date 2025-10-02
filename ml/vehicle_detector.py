@@ -1,3 +1,4 @@
+import threading
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -9,7 +10,7 @@ import os
 
 class Config:
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-    MODEL_PATH = 'yolov11s.pt'
+    MODEL_PATH = 'yolov8l.pt'
     VEHICLE_CLASSES = {
         2: 'car',
         3: 'motorcycle', 
@@ -17,8 +18,12 @@ class Config:
         7: 'truck',
         1: 'bicycle'
     }
-    CONFIDENCE_THRESHOLD = 0.4
-    PROCESS_EVERY_N_FRAMES = 2  # Process more frames for better accuracy
+    CONFIDENCE_THRESHOLD = 0.3  # Lower threshold for better detection
+    PROCESS_EVERY_N_FRAMES = 1  # Process every frame for better counting accuracy
+    
+    # Counting zone settings (will be set dynamically)
+    ZONE_HEIGHT_RATIO = (0.60, 0.85)  # 60% to 85% of frame height
+    ZONE_WIDTH_RATIO = (0.05, 0.95)   # 5% to 95% of frame width
 
 class RTXVehicleDetector:
     def __init__(self, model_path=Config.MODEL_PATH):
@@ -47,16 +52,25 @@ class RTXVehicleDetector:
         print("✓ RTXVehicleDetector initialized successfully")
 
     def setup_counting_zone(self, frame):
-        """Setup counting zone with visual indicators"""
+        """Setup higher counting zone to capture vehicles earlier"""
         height, width = frame.shape[:2]
-        self.zone_top = int(height * 0.3)
-        self.zone_bottom = int(height * 0.7)
-        self.zone_left = int(width * 0.2)
-        self.zone_right = int(width * 0.8)
         
-        # Zone visualization properties
-        self.zone_color = (0, 255, 255)  # Yellow
-        self.zone_thickness = 2
+        # HIGHER COUNTING ZONE: Positioned in the upper part of the frame
+        # Use 30% to 60% of frame height (moved much higher)
+        self.zone_top = int(height * 0.30)     # 30% from top (much higher)
+        self.zone_bottom = int(height * 0.60)  # 60% from top (still high)
+        
+        # Maintain wide horizontal coverage
+        self.zone_left = int(width * 0.05)     # 5% from left
+        self.zone_right = int(width * 0.95)    # 95% from left
+        
+        # Visual settings
+        self.zone_color = (0, 255, 255)  # Bright yellow
+        self.zone_thickness = 3
+        
+        print(f"✓ HIGHER Counting zone configured: {self.zone_top}-{self.zone_bottom}px height")
+        print(f"  Covers {self.zone_bottom - self.zone_top}px tall area")
+        print(f"  Position: Top {int((self.zone_top/height)*100)}% to {int((self.zone_bottom/height)*100)}% of frame")
         
         return {
             'top': self.zone_top, 'bottom': self.zone_bottom,
@@ -64,57 +78,150 @@ class RTXVehicleDetector:
         }
 
     def is_in_counting_zone(self, x, y, w, h):
+        """Enhanced detection for higher counting zone position"""
         center_x, center_y = x + w/2, y + h/2
-        return (self.zone_left <= center_x <= self.zone_right and 
-                self.zone_top <= center_y <= self.zone_bottom)
+        
+        # For higher zone, be more sensitive to vehicles entering from top
+        # Option 1: Center point in zone (standard)
+        center_in_zone = (self.zone_left <= center_x <= self.zone_right and 
+                        self.zone_top <= center_y <= self.zone_bottom)
+        
+        # Option 2: Any corner in zone
+        corners = [
+            (x, y),           # top-left
+            (x + w, y),       # top-right  
+            (x, y + h),       # bottom-left
+            (x + w, y + h)    # bottom-right
+        ]
+        
+        any_corner_in_zone = any(
+            self.zone_left <= corner_x <= self.zone_right and 
+            self.zone_top <= corner_y <= self.zone_bottom
+            for corner_x, corner_y in corners
+        )
+        
+        # Option 3: Significant overlap with zone
+        bbox_in_zone = (
+            x < self.zone_right and x + w > self.zone_left and
+            y < self.zone_bottom and y + h > self.zone_top
+        )
+        
+        # Option 4: For higher zone, also count if bottom of vehicle enters zone
+        # This helps catch vehicles as they first appear
+        bottom_center_in_zone = (
+            self.zone_left <= center_x <= self.zone_right and
+            self.zone_top <= (y + h) <= self.zone_bottom
+        )
+        
+        # Use multiple conditions for better detection in higher position
+        return center_in_zone or any_corner_in_zone or bbox_in_zone or bottom_center_in_zone
 
     def draw_detection_info(self, frame, detections, frame_number, fps, total_vehicles):
-        """Draw detection information on the frame"""
+        """Draw detection information with clear higher counting zone visualization"""
         height, width = frame.shape[:2]
         
-        # Draw counting zone
+        # Draw the higher counting zone with enhanced visibility
+        # Main counting zone rectangle
         cv2.rectangle(frame, 
-                     (self.zone_left, self.zone_top), 
-                     (self.zone_right, self.zone_bottom), 
-                     self.zone_color, self.zone_thickness)
+                    (self.zone_left, self.zone_top), 
+                    (self.zone_right, self.zone_bottom), 
+                    self.zone_color, self.zone_thickness)
         
-        # Draw zone label
-        cv2.putText(frame, "COUNTING ZONE", (self.zone_left, self.zone_top - 10),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.zone_color, 1)
+        # Add semi-transparent fill with different color for higher zone
+        overlay = frame.copy()
+        cv2.rectangle(overlay,
+                    (self.zone_left, self.zone_top),
+                    (self.zone_right, self.zone_bottom),
+                    (255, 255, 0), -1)  # Cyan fill for higher zone
+        cv2.addWeighted(overlay, 0.08, frame, 0.92, 0, frame)
         
-        # Draw detections
+        # Draw zone boundary again
+        cv2.rectangle(frame, 
+                    (self.zone_left, self.zone_top), 
+                    (self.zone_right, self.zone_bottom), 
+                    self.zone_color, self.zone_thickness)
+        
+        # Draw zone label with "HIGHER ZONE" indication
+        zone_label = "HIGHER COUNTING ZONE"
+        label_bg_size = cv2.getTextSize(zone_label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+        
+        # Label background
+        cv2.rectangle(frame,
+                    (self.zone_left, self.zone_top - label_bg_size[1] - 10),
+                    (self.zone_left + label_bg_size[0] + 10, self.zone_top),
+                    (0, 0, 0), -1)
+        
+        # Zone label text
+        cv2.putText(frame, zone_label, (self.zone_left + 5, self.zone_top - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Draw zone position indicator
+        position_text = f"Position: Top {int((self.zone_top/height)*100)}%-{int((self.zone_bottom/height)*100)}%"
+        cv2.putText(frame, position_text, (self.zone_left, self.zone_bottom + 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.zone_color, 1)
+        
+        # Draw entry direction indicator (since zone is higher)
+        direction_text = "↑ Vehicles counted as they enter frame ↑"
+        text_size = cv2.getTextSize(direction_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+        text_x = (width - text_size[0]) // 2
+        cv2.putText(frame, direction_text, (text_x, self.zone_top - 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Draw detections with enhanced visualization for higher zone
         for detection in detections:
             x1, y1, w, h = detection['bbox']
             class_name = detection['class_name']
             confidence = detection['confidence']
             track_id = detection.get('track_id', 0)
+            in_zone = detection.get('in_zone', False)
+            zone_entry = detection.get('zone_entry')
             
             color = self.colors.get(class_name, self.colors['other'])
             
-            # Draw bounding box
-            cv2.rectangle(frame, (x1, y1), (x1 + w, y1 + h), color, 2)
+            # Thicker bounding box and different color for vehicles in counting zone
+            thickness = 4 if in_zone else 2
+            bbox_color = (0, 255, 0) if in_zone else color  # Green when in zone
             
-            # Draw label with class name and confidence
+            cv2.rectangle(frame, (x1, y1), (x1 + w, y1 + h), bbox_color, thickness)
+            
+            # Draw label
             label = f"{class_name} {confidence:.2f} ID:{track_id}"
+            if in_zone:
+                label += " ✓IN ZONE"
+            
             label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
             
-            # Background for label
+            # Label background
+            label_bg_color = (0, 100, 0) if in_zone else color
             cv2.rectangle(frame, (x1, y1 - label_size[1] - 10),
-                         (x1 + label_size[0], y1), color, -1)
+                        (x1 + label_size[0], y1), label_bg_color, -1)
             
-            # Text
+            # Label text
             cv2.putText(frame, label, (x1, y1 - 5),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
             # Draw center point
             center_x, center_y = x1 + w//2, y1 + h//2
-            cv2.circle(frame, (center_x, center_y), 4, color, -1)
+            point_color = (0, 255, 0) if in_zone else color
+            cv2.circle(frame, (center_x, center_y), 5, point_color, -1)
             
-            # Draw track history
-            if track_id in self.track_history:
+            # Draw entry point if available
+            if zone_entry:
+                cv2.circle(frame, (int(zone_entry[0]), int(zone_entry[1])), 8, (0, 255, 255), -1)
+                cv2.circle(frame, (int(zone_entry[0]), int(zone_entry[1])), 8, (0, 0, 0), 2)
+            
+            # Draw track history (emphasized for vehicles that entered zone)
+            if track_id in self.track_history and in_zone:
                 points = list(self.track_history[track_id])
                 for i in range(1, len(points)):
-                    cv2.line(frame, points[i-1], points[i], color, 2)
+                    # Use gradient color - darker for older points
+                    alpha = i / len(points)
+                    line_color = (
+                        int(color[0] * alpha),
+                        int(color[1] * alpha), 
+                        int(color[2] * alpha)
+                    )
+                    cv2.line(frame, points[i-1], points[i], line_color, 2)
         
         # Draw statistics overlay
         self.draw_statistics_overlay(frame, frame_number, fps, total_vehicles, detections)
@@ -122,12 +229,12 @@ class RTXVehicleDetector:
         return frame
 
     def draw_statistics_overlay(self, frame, frame_number, fps, total_vehicles, detections):
-        """Draw statistics overlay on the frame"""
+        """Draw enhanced statistics overlay for higher counting zone"""
         height, width = frame.shape[:2]
         
         # Create semi-transparent overlay
         overlay = frame.copy()
-        cv2.rectangle(overlay, (10, 10), (300, 180), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (10, 10), (380, 240), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
         
         # Current time in video
@@ -135,49 +242,59 @@ class RTXVehicleDetector:
         minutes = int(current_time // 60)
         seconds = int(current_time % 60)
         
-        # Statistics text
+        # Count vehicles currently in zone
+        vehicles_in_zone = sum(1 for d in detections if d.get('in_zone', False))
+        
+        # Enhanced statistics with higher zone info
         stats = [
             f"Time: {minutes:02d}:{seconds:02d}",
             f"Frame: {frame_number}",
             f"FPS: {fps:.1f}",
-            f"Total Vehicles: {total_vehicles}",
-            f"Current Detections: {len(detections)}",
-            "Vehicle Counts:"
+            f"TOTAL COUNTED: {sum(self.vehicle_counts.values())}",
+            f"IN HIGHER ZONE NOW: {vehicles_in_zone}",
+            f"Zone Position: Top {int((self.zone_top/height)*100)}%-{int((self.zone_bottom/height)*100)}%",
+            f"Zone Size: {self.zone_bottom - self.zone_top}h x {self.zone_right - self.zone_left}w",
+            "CURRENT IN ZONE:"
         ]
         
-        # Add vehicle counts
+        # Add vehicle counts currently in zone
         current_counts = {}
         for detection in detections:
-            class_name = detection['class_name']
-            current_counts[class_name] = current_counts.get(class_name, 0) + 1
+            if detection.get('in_zone', False):
+                class_name = detection['class_name']
+                current_counts[class_name] = current_counts.get(class_name, 0) + 1
         
         for class_name in sorted(current_counts.keys()):
             stats.append(f"  {class_name}: {current_counts[class_name]}")
         
-        # Draw statistics
+        # Draw statistics with color coding
         y_offset = 40
         for i, text in enumerate(stats):
-            color = (255, 255, 255)  # White
-            if i == 3:  # Total vehicles line
+            color = (255, 255, 255)  # White default
+            
+            if i == 3:  # Total counted line
                 color = (0, 255, 255)  # Yellow
-            elif i >= 5:  # Vehicle counts
+            elif i == 4:  # In zone now line
+                color = (0, 255, 0)    # Green
+            elif i == 5:  # Zone position
+                color = (255, 255, 0)  # Cyan
+            elif i >= 7:  # Vehicle counts
                 class_name = text.split(':')[0].strip()
                 color = self.colors.get(class_name, (255, 255, 255))
             
             cv2.putText(frame, text, (20, y_offset + i * 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            
     def detect_and_track(self, frame, frame_number):
-        """Perform detection and tracking on a single frame"""
+        """Perform detection and tracking with enhanced logic for higher counting zone"""
         if frame_number % Config.PROCESS_EVERY_N_FRAMES != 0 and frame_number > 0:
-            # Use previous detections for skipped frames (for tracking continuity)
             return self.get_previous_counts(), []
 
         with torch.no_grad():
             results = self.model.track(
                 frame, persist=True, conf=self.conf_threshold,
                 classes=list(self.vehicle_classes.keys()), verbose=False,
-                device=Config.DEVICE, tracker="bytetrack.yaml"  # Use ByteTrack for better tracking
+                device=Config.DEVICE, tracker="bytetrack.yaml"
             )
 
         current_counts = defaultdict(int)
@@ -199,22 +316,58 @@ class RTXVehicleDetector:
                     center_x, center_y = x1 + w//2, y1 + h//2
                     self.track_history[track_id].append((center_x, center_y))
 
-                    if self.is_in_counting_zone(x1, y1, w, h):
+                    # Enhanced counting logic for higher zone
+                    in_zone = self.is_in_counting_zone(x1, y1, w, h)
+                    
+                    if in_zone:
                         current_counts[class_name] += 1
                         
+                        # Only count if this track_id hasn't been counted recently
+                        # For higher zone, we might see vehicles for longer, so track carefully
                         if track_id not in self.crossed_objects:
                             self.vehicle_counts[class_name] += 1
                             self.crossed_objects.add(track_id)
+                            print(f"✓ Counted {class_name} (ID: {track_id}) in HIGHER zone")
+                            
+                            # Optional: Add small delay before allowing re-count (for vehicles that linger)
+                            # This prevents double-counting in higher zones where vehicles stay visible longer
+                            threading.Timer(2.0, self._remove_from_crossed, [track_id]).start()
 
                         active_detections.append({
                             'track_id': int(track_id), 
                             'class_name': class_name,
                             'bbox': [x1, y1, w, h], 
                             'confidence': float(conf),
-                            'center': (center_x, center_y)
+                            'center': (center_x, center_y),
+                            'in_zone': True,
+                            'zone_entry': self._get_zone_entry_point(track_id)
+                        })
+                    else:
+                        active_detections.append({
+                            'track_id': int(track_id), 
+                            'class_name': class_name,
+                            'bbox': [x1, y1, w, h], 
+                            'confidence': float(conf),
+                            'center': (center_x, center_y),
+                            'in_zone': False
                         })
 
         return current_counts, active_detections
+
+    def _remove_from_crossed(self, track_id):
+        """Remove track_id from crossed objects after delay to prevent double-counting"""
+        if track_id in self.crossed_objects:
+            self.crossed_objects.remove(track_id)
+
+    def _get_zone_entry_point(self, track_id):
+        """Get the point where vehicle entered the counting zone"""
+        if track_id in self.track_history:
+            points = list(self.track_history[track_id])
+            for point in reversed(points):  # Check from most recent backwards
+                if (self.zone_left <= point[0] <= self.zone_right and 
+                    self.zone_top <= point[1] <= self.zone_bottom):
+                    return point
+        return None
 
     def get_previous_counts(self):
         """Get counts from previous frame for tracking continuity"""

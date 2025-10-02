@@ -7,6 +7,7 @@ import VehiclesPassing from './pages/VehiclesPassing';
 import CongestedRoads from './pages/CongestedRoads';
 import Settings from './pages/Settings';
 import AnalysisResults from './pages/AnalysisResults';
+import TrafficPredictions from './pages/TrafficPredictions';
 import './App.css';
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
           <Route path="/congested" element={<CongestedRoads />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/analysis" element={<AnalysisResults />} />
+          <Route path="/predictions" element={<TrafficPredictions />} />
         </Routes>
       </div>
     </Router>

@@ -9,6 +9,10 @@ function AnalysisResults() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("all"); // all, completed, processing, failed
+  
+  // Add date filter state
+  const [dateFilter, setDateFilter] = useState('all');
+  const [locationFilter, setLocationFilter] = useState('all');
 
   useEffect(() => {
     fetchAnalyses();
@@ -52,28 +56,65 @@ function AnalysisResults() {
     }
   };
 
+  // Add filtering function
+  const getFilteredAnalyses = () => {
+    let filtered = analyses;
+    
+    // Filter by date
+    if (dateFilter !== 'all') {
+      filtered = filtered.filter(analysis => {
+        const videoDate = analysis.video_date;
+        if (!videoDate) return false;
+        
+        const today = new Date();
+        const analysisDate = new Date(videoDate);
+        
+        switch (dateFilter) {
+          case 'today':
+            return analysisDate.toDateString() === today.toDateString();
+          case 'week':
+            const weekAgo = new Date(today.setDate(today.getDate() - 7));
+            return analysisDate >= weekAgo;
+          case 'month':
+            const monthAgo = new Date(today.setMonth(today.getMonth() - 1));
+            return analysisDate >= monthAgo;
+          default:
+            return true;
+        }
+      });
+    }
+    
+    // Filter by location
+    if (locationFilter !== 'all') {
+      filtered = filtered.filter(analysis => 
+        analysis.location && analysis.location.id === locationFilter
+      );
+    }
+    
+    return filtered;
+  };
+
   const viewProcessedVideo = (videoId) => {
     setSelectedVideoId(videoId);
   };
 
-
-const deleteAnalysis = async (videoId, videoName) => {
-  if (window.confirm(`Are you sure you want to delete the analysis for "${videoName}"?`)) {
-    try {
-      // CORRECTED ENDPOINT: Use the proper DELETE endpoint
-      await axios.delete(`http://127.0.0.1:8000/api/videos/${videoId}/`);
-      
-      // Show success message
-      alert('Analysis deleted successfully!');
-      
-      // Refresh the list
-      fetchAnalyses();
-    } catch (err) {
-      console.error("Error deleting analysis:", err);
-      alert("Error deleting analysis: " + (err.response?.data?.error || err.message));
+  const deleteAnalysis = async (videoId, videoName) => {
+    if (window.confirm(`Are you sure you want to delete the analysis for "${videoName}"?`)) {
+      try {
+        // CORRECTED ENDPOINT: Use the proper DELETE endpoint
+        await axios.delete(`http://127.0.0.1:8000/api/videos/${videoId}/`);
+        
+        // Show success message
+        alert('Analysis deleted successfully!');
+        
+        // Refresh the list
+        fetchAnalyses();
+      } catch (err) {
+        console.error("Error deleting analysis:", err);
+        alert("Error deleting analysis: " + (err.response?.data?.error || err.message));
+      }
     }
-  }
-};
+  };
 
   const getStatusBadge = (status) => {
     const statusConfig = {
@@ -160,25 +201,55 @@ const deleteAnalysis = async (videoId, videoName) => {
           <div>
             <h3 style={{ margin: '0 0 8px 0' }}>Analysis Overview</h3>
             <p style={{ color: '#666', margin: 0, fontSize: '14px' }}>
-              Total: {analyses.length} analyses • 
-              Completed: {analyses.filter(a => a.processing_status === 'completed').length} • 
-              Processing: {analyses.filter(a => a.processing_status === 'processing').length}
+              Total: {getFilteredAnalyses().length} analyses • 
+              Completed: {getFilteredAnalyses().filter(a => a.processing_status === 'completed').length} • 
+              Processing: {getFilteredAnalyses().filter(a => a.processing_status === 'processing').length}
             </p>
           </div>
           
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-            <label style={{ fontSize: '14px', fontWeight: '500' }}>Filter:</label>
-            <select 
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              className="select-input"
-              style={{ minWidth: '120px' }}
-            >
-              <option value="all">All Analyses</option>
-              <option value="completed">Completed</option>
-              <option value="processing">Processing</option>
-              <option value="failed">Failed</option>
-            </select>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <div>
+              <label style={{ fontSize: '14px', fontWeight: '500', marginRight: '8px' }}>Date:</label>
+              <select 
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                className="select-input"
+              >
+                <option value="all">All Dates</option>
+                <option value="today">Today</option>
+                <option value="week">Past Week</option>
+                <option value="month">Past Month</option>
+              </select>
+            </div>
+            
+            <div>
+              <label style={{ fontSize: '14px', fontWeight: '500', marginRight: '8px' }}>Location:</label>
+              <select 
+                value={locationFilter}
+                onChange={(e) => setLocationFilter(e.target.value)}
+                className="select-input"
+              >
+                <option value="all">All Locations</option>
+                <option value="1">Baliwasan Area</option>
+                <option value="2">San Roque</option>
+                {/* Add other locations */}
+              </select>
+            </div>
+            
+            <div>
+              <label style={{ fontSize: '14px', fontWeight: '500', marginRight: '8px' }}>Status:</label>
+              <select 
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                className="select-input"
+                style={{ minWidth: '120px' }}
+              >
+                <option value="all">All Analyses</option>
+                <option value="completed">Completed</option>
+                <option value="processing">Processing</option>
+                <option value="failed">Failed</option>
+              </select>
+            </div>
             
             <button 
               onClick={fetchAnalyses}
@@ -213,13 +284,15 @@ const deleteAnalysis = async (videoId, videoName) => {
         <div style={{ textAlign: 'center', padding: '40px' }}>
           <div style={{ fontSize: '18px', color: '#666' }}>Loading analyses...</div>
         </div>
-      ) : analyses.length === 0 ? (
+      ) : getFilteredAnalyses().length === 0 ? (
         <div className="dashboard-card" style={{ textAlign: 'center', padding: '40px' }}>
           <div style={{ fontSize: '18px', color: '#666', marginBottom: '16px' }}>
             No analyses found
           </div>
           <p style={{ color: '#999' }}>
-            {filter !== 'all' ? `No ${filter} analyses available.` : 'Upload a video to see analysis results.'}
+            {filter !== 'all' || dateFilter !== 'all' || locationFilter !== 'all' 
+              ? 'No analyses match your filters.' 
+              : 'Upload a video to see analysis results.'}
           </p>
         </div>
       ) : (
@@ -228,14 +301,14 @@ const deleteAnalysis = async (videoId, videoName) => {
             <thead>
               <tr>
                 <th>Video Information</th>
+                <th>Date & Time</th>
                 <th>Analysis Results</th>
                 <th>Status</th>
-                <th>Date</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {analyses.map((analysis) => (
+              {getFilteredAnalyses().map((analysis) => (
                 <tr key={analysis.id}>
                   <td>
                     <div>
@@ -244,6 +317,17 @@ const deleteAnalysis = async (videoId, videoName) => {
                       </div>
                       <div style={{ fontSize: '12px', color: '#666' }}>
                         Duration: {formatDuration(analysis.duration_seconds)}
+                        {analysis.location && ` • ${analysis.location.display_name}`}
+                      </div>
+                    </div>
+                  </td>
+                  <td>
+                    <div>
+                      <div style={{ fontWeight: '500' }}>
+                        {analysis.video_date_display || 'Unknown date'}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#666' }}>
+                        {analysis.time_range || 'Time unknown'}
                       </div>
                     </div>
                   </td>
@@ -270,14 +354,6 @@ const deleteAnalysis = async (videoId, videoName) => {
                   </td>
                   <td>
                     {getStatusBadge(analysis.processing_status)}
-                  </td>
-                  <td>
-                    <div style={{ fontSize: '14px' }}>
-                      {new Date(analysis.uploaded_at).toLocaleDateString()}
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#666' }}>
-                      {new Date(analysis.uploaded_at).toLocaleTimeString()}
-                    </div>
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -322,34 +398,34 @@ const deleteAnalysis = async (videoId, videoName) => {
       )}
 
       {/* Analysis Statistics */}
-      {analyses.length > 0 && (
+      {getFilteredAnalyses().length > 0 && (
         <div className="dashboard-card" style={{ marginTop: '24px' }}>
           <h3 style={{ marginBottom: '16px' }}>Analysis Statistics</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
             <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
               <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#3b82f6' }}>
-                {analyses.length}
+                {getFilteredAnalyses().length}
               </div>
               <div style={{ fontSize: '14px', color: '#666' }}>Total Analyses</div>
             </div>
             
             <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
               <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
-                {analyses.filter(a => a.processing_status === 'completed').length}
+                {getFilteredAnalyses().filter(a => a.processing_status === 'completed').length}
               </div>
               <div style={{ fontSize: '14px', color: '#666' }}>Completed</div>
             </div>
             
             <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
               <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#f59e0b' }}>
-                {analyses.filter(a => a.processing_status === 'processing').length}
+                {getFilteredAnalyses().filter(a => a.processing_status === 'processing').length}
               </div>
               <div style={{ fontSize: '14px', color: '#666' }}>Processing</div>
             </div>
             
             <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
               <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#ef4444' }}>
-                {analyses.filter(a => a.processing_status === 'failed').length}
+                {getFilteredAnalyses().filter(a => a.processing_status === 'failed').length}
               </div>
               <div style={{ fontSize: '14px', color: '#666' }}>Failed</div>
             </div>

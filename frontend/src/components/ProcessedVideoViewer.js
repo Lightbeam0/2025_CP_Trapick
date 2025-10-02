@@ -64,6 +64,109 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
     };
   }, [videoId]);
 
+  // Add this function to ProcessedVideoViewer.js
+  const renderYJunctionAnalysis = (analysisData) => {
+    if (!analysisData.path_analysis) return null;
+
+    return (
+      <div className="dashboard-card" style={{ marginBottom: '24px' }}>
+        <h3 style={{ marginBottom: '16px' }}>Y-Junction Path Analysis</h3>
+        
+        {/* Busiest Path */}
+        {analysisData.path_analysis.busiest_path && (
+          <div style={{
+            backgroundColor: '#f0f9ff',
+            padding: '16px',
+            borderRadius: '8px',
+            marginBottom: '16px',
+            border: '2px solid #3b82f6'
+          }}>
+            <h4 style={{ margin: '0 0 8px 0', color: '#1e40af' }}>🚦 Busiest Traffic Path</h4>
+            <p style={{ margin: 0, fontSize: '18px', fontWeight: 'bold' }}>
+              {analysisData.path_analysis.busiest_path.path_name}
+            </p>
+            <p style={{ margin: '4px 0 0 0', color: '#666' }}>
+              {analysisData.path_analysis.busiest_path.vehicle_count} vehicles
+            </p>
+          </div>
+        )}
+
+        {/* Path Breakdown */}
+        <div style={{ marginBottom: '16px' }}>
+          <h4 style={{ marginBottom: '12px' }}>Path-by-Path Breakdown</h4>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '12px' }}>
+            {Object.entries(analysisData.path_analysis.path_details).map(([pathId, pathData]) => (
+              <div key={pathId} style={{
+                padding: '12px',
+                backgroundColor: '#f8fafc',
+                borderRadius: '6px',
+                borderLeft: `4px solid ${
+                  pathId === 'P1' ? '#00ff00' :
+                  pathId === 'P2' ? '#ffff00' :
+                  pathId === 'P3' ? '#0000ff' :
+                  pathId === 'P4' ? '#ff00ff' :
+                  pathId === 'P5' ? '#ffa500' :
+                  '#800080'
+                }`
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: '600', fontSize: '16px' }}>{pathId}</span>
+                  <span style={{ fontWeight: 'bold', color: '#3b82f6' }}>{pathData.count}</span>
+                </div>
+                <div style={{ fontSize: '14px', color: '#666', marginTop: '4px' }}>
+                  {pathData.name}
+                </div>
+                <div style={{ fontSize: '12px', color: '#999', marginTop: '4px' }}>
+                  {pathData.percentage.toFixed(1)}% of total flow
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Traffic Flow Insights */}
+        {analysisData.traffic_metrics && (
+          <div style={{
+            padding: '16px',
+            backgroundColor: '#f0fff4',
+            borderRadius: '8px',
+            border: '1px solid #d1fae5'
+          }}>
+            <h4 style={{ margin: '0 0 8px 0', color: '#065f46' }}>📊 Traffic Flow Insights</h4>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+              <div>
+                <strong>Dominant Flow:</strong> {analysisData.traffic_metrics.dominant_flow}
+              </div>
+              <div>
+                <strong>Congestion Level:</strong> 
+                <span style={{
+                  padding: '2px 8px',
+                  borderRadius: '12px',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  marginLeft: '8px',
+                  backgroundColor: 
+                    analysisData.traffic_metrics.congestion_level.includes('Severe') ? '#fee2e2' :
+                    analysisData.traffic_metrics.congestion_level.includes('High') ? '#fef3c7' :
+                    analysisData.traffic_metrics.congestion_level.includes('Moderate') ? '#d1fae5' : '#f3f4f6',
+                  color: 
+                    analysisData.traffic_metrics.congestion_level.includes('Severe') ? '#dc2626' :
+                    analysisData.traffic_metrics.congestion_level.includes('High') ? '#d97706' :
+                    analysisData.traffic_metrics.congestion_level.includes('Moderate') ? '#065f46' : '#6b7280'
+                }}>
+                  {analysisData.traffic_metrics.congestion_level}
+                </span>
+              </div>
+              <div>
+                <strong>Efficiency Ratio:</strong> {analysisData.traffic_metrics.efficiency_ratio.toFixed(2)}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const handleVideoError = (e) => {
     console.error('Video playback error:', e);
     setVideoLoadError('Error playing video. The video file may be corrupted, still processing, or the format is not supported.');
@@ -175,64 +278,69 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
         </button>
       </div>
 
-      {/* Analysis Summary */}
-      {analysisData && (
-        <div className="dashboard-card" style={{ marginBottom: '24px' }}>
-          <h3 style={{ marginBottom: '16px' }}>Analysis Summary</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
-            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#3b82f6' }}>
-                {analysisData.total_vehicles || 0}
+      {/* Y-Junction Analysis */}
+      {analysisData && analysisData.path_analysis ? (
+        renderYJunctionAnalysis(analysisData)
+      ) : (
+        // Analysis Summary
+        analysisData && (
+          <div className="dashboard-card" style={{ marginBottom: '24px' }}>
+            <h3 style={{ marginBottom: '16px' }}>Analysis Summary</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+              <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#3b82f6' }}>
+                  {analysisData.total_vehicles || 0}
+                </div>
+                <div style={{ fontSize: '14px', color: '#666' }}>Total Vehicles</div>
               </div>
-              <div style={{ fontSize: '14px', color: '#666' }}>Total Vehicles</div>
-            </div>
-            
-            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
-                {analysisData.processing_time ? analysisData.processing_time.toFixed(1) : 0}s
+              
+              <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
+                  {analysisData.processing_time ? analysisData.processing_time.toFixed(1) : 0}s
+                </div>
+                <div style={{ fontSize: '14px', color: '#666' }}>Processing Time</div>
               </div>
-              <div style={{ fontSize: '14px', color: '#666' }}>Processing Time</div>
-            </div>
-            
-            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: analysisData.congestion_level === 'high' ? '#ef4444' : '#f59e0b' }}>
-                {analysisData.congestion_level || 'Unknown'}
+              
+              <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: analysisData.congestion_level === 'high' ? '#ef4444' : '#f59e0b' }}>
+                  {analysisData.congestion_level || 'Unknown'}
+                </div>
+                <div style={{ fontSize: '14px', color: '#666' }}>Congestion Level</div>
               </div>
-              <div style={{ fontSize: '14px', color: '#666' }}>Congestion Level</div>
-            </div>
-            
-            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#8b5cf6' }}>
-                {analysisData.traffic_pattern || 'Unknown'}
+              
+              <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#8b5cf6' }}>
+                  {analysisData.traffic_pattern || 'Unknown'}
+                </div>
+                <div style={{ fontSize: '14px', color: '#666' }}>Traffic Pattern</div>
               </div>
-              <div style={{ fontSize: '14px', color: '#666' }}>Traffic Pattern</div>
             </div>
-          </div>
 
-          {/* Vehicle Breakdown */}
-          {analysisData.vehicle_breakdown && (
-            <div>
-              <h4 style={{ marginBottom: '12px' }}>Vehicle Breakdown</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
-                {Object.entries(analysisData.vehicle_breakdown).map(([vehicleType, count]) => (
-                  <div key={vehicleType} style={{
-                    padding: '12px',
-                    backgroundColor: '#f8fafc',
-                    borderRadius: '6px',
-                    textAlign: 'center'
-                  }}>
-                    <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#2d3748' }}>
-                      {count}
+            {/* Vehicle Breakdown */}
+            {analysisData.vehicle_breakdown && (
+              <div>
+                <h4 style={{ marginBottom: '12px' }}>Vehicle Breakdown</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
+                  {Object.entries(analysisData.vehicle_breakdown).map(([vehicleType, count]) => (
+                    <div key={vehicleType} style={{
+                      padding: '12px',
+                      backgroundColor: '#f8fafc',
+                      borderRadius: '6px',
+                      textAlign: 'center'
+                    }}>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#2d3748' }}>
+                        {count}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#666', textTransform: 'capitalize' }}>
+                        {vehicleType}
+                      </div>
                     </div>
-                    <div style={{ fontSize: '12px', color: '#666', textTransform: 'capitalize' }}>
-                      {vehicleType}
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )
       )}
 
       {/* Export Buttons */}
@@ -444,7 +552,7 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
           <div>
             <h4 style={{ marginBottom: '8px', fontSize: '14px' }}>Quality Indicators:</h4>
             <ul style={{ fontSize: '14px', lineHeight: '1.5', color: '#666' }}>
-              <li><strong>High confidence scores</strong> (&gt;0.7 is good)</li>
+              <li><strong>High confidence scores</strong> ({'>'}0.7 is good)</li>
               <li><strong>Consistent tracking</strong> throughout the video</li>
               <li><strong>Accurate vehicle counts</strong> matching visual inspection</li>
               <li><strong>Proper congestion level</strong> assessment</li>
