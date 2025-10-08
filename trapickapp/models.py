@@ -17,6 +17,37 @@ class VideoFile(models.Model):
     video_end_time = models.TimeField(null=True, blank=True, help_text="End time of video recording")
     original_duration = models.FloatField(null=True, blank=True, help_text="Original video duration in seconds")
     
+    # ===== PHASE 1: SMART FILENAME PARSING FIELDS =====
+    camera_id = models.CharField(
+        max_length=20, 
+        blank=True, 
+        null=True,
+        help_text="Extracted from filename (e.g., D11, D12)"
+    )
+    actual_recording_date = models.DateField(
+        blank=True, 
+        null=True,
+        help_text="Extracted from filename"
+    )
+    actual_start_time = models.TimeField(
+        blank=True, 
+        null=True, 
+        help_text="Extracted from filename"
+    )
+    actual_datetime = models.DateTimeField(
+        blank=True, 
+        null=True,
+        help_text="Combined date and time from filename"
+    )
+    filename_parsed = models.BooleanField(
+        default=False,
+        help_text="Whether filename was successfully parsed"
+    )
+    parsing_notes = models.TextField(
+        blank=True,
+        help_text="Notes about filename parsing results"
+    )
+
     # Existing fields
     processed = models.BooleanField(default=False)
     processed_video_path = models.FileField(upload_to='processed_videos/', null=True, blank=True)
@@ -37,9 +68,42 @@ class VideoFile(models.Model):
     title = models.CharField(max_length=200, null=True, blank=True)
     resolution = models.CharField(max_length=20, null=True, blank=True)
 
+    def extract_metadata_from_filename(self):
+        """Extract and store metadata from filename"""
+        from .utils.filename_parser import extract_metadata_from_filename  # Adjust import path as needed
+        
+        metadata = extract_metadata_from_filename(self.filename)
+        
+        if metadata:
+            self.camera_id = metadata['camera_id']
+            self.actual_recording_date = metadata['date']
+            self.actual_start_time = metadata['time'] 
+            self.actual_datetime = metadata['datetime']
+            self.filename_parsed = True
+            self.parsing_notes = "Successfully parsed from filename"
+            
+            logger.info(f"✅ Extracted metadata from {self.filename}: "
+                       f"Camera {self.camera_id} at {self.actual_datetime}")
+        else:
+            self.filename_parsed = False
+            self.parsing_notes = "Could not parse filename pattern"
+            logger.warning(f"❌ Could not parse filename: {self.filename}")
+        
+        return self.filename_parsed
+
+    def save(self, *args, **kwargs):
+        """Auto-extract metadata when saving new VideoFile"""
+        is_new = self._state.adding  # Check if this is a new object
+        
+        if is_new and self.filename and not self.filename_parsed:
+            self.extract_metadata_from_filename()
+            
+        super().save(*args, **kwargs)
+
     def __str__(self):
         date_str = self.video_date.strftime("%Y-%m-%d") if self.video_date else "Unknown Date"
-        return f"{self.filename} - {date_str}"
+        camera_info = f" - {self.camera_id}" if self.camera_id else ""
+        return f"{self.filename} - {date_str}{camera_info}"
 
     def get_video_time_range(self):
         """Get formatted time range for display"""

@@ -1,4 +1,3 @@
-# ml/baliwasan_yjunction_detector.py
 import cv2
 from ultralytics import YOLO
 import os
@@ -7,8 +6,14 @@ import time
 from collections import defaultdict, deque
 import threading
 
-class BaliwasanYJunctionDetector:
+# ADD THIS IMPORT
+from .base_detector import BaseDetector
+
+class BaliwasanYJunctionDetector(BaseDetector):
     def __init__(self, model_path='yolov8x.pt'):
+        # Initialize base class
+        super().__init__()
+        
         print("🚀 Initializing YOLO model for Baliwasan Y-Junction...")
         self.model = YOLO(model_path)
         self.vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
@@ -22,10 +27,10 @@ class BaliwasanYJunctionDetector:
         }
         
         self.vehicle_names = {
-            2: "Car",
-            3: "Motorcycle", 
-            5: "Bus",
-            7: "Truck"
+            2: "car",
+            3: "motorcycle", 
+            5: "bus",
+            7: "truck"
         }
         
         # Tracking variables (will be reset for each video)
@@ -50,10 +55,13 @@ class BaliwasanYJunctionDetector:
         self.frame_count = 0
         self.total_count = 0
         
+        # ENHANCED: Initialize enhanced metrics
+        self.setup_enhanced_metrics()
+        
         if progress_tracker:
             progress_tracker.set_progress(10, "Opening video file...")
         
-        # Open the provided video path (not hardcoded)
+        # Open the provided video path
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             error_msg = f"❌ Error: Could not open video file: {video_path}"
@@ -77,7 +85,7 @@ class BaliwasanYJunctionDetector:
         self.counting_zone_top = self.line_start[1] - ZONE_BUFFER
         self.counting_zone_bottom = self.line_start[1] + ZONE_BUFFER
 
-        # Setup output video if requested - LIKE RTXVehicleDetector
+        # Setup output video if requested
         output_video_path = None
         out = None
         if save_output:
@@ -94,10 +102,10 @@ class BaliwasanYJunctionDetector:
             print(f"💾 Saving output to: {output_video_path}")
 
         if progress_tracker:
-            progress_tracker.set_progress(20, "Starting vehicle detection...")
+            progress_tracker.set_progress(20, "Starting vehicle detection with enhanced metrics...")
 
         print(f"📏 Counting line: {self.line_start} to {self.line_end}")
-        print("🎯 Starting vehicle counting...")
+        print("🎯 Starting vehicle counting with enhanced metrics...")
 
         processing_times = []
         analysis_start = time.time()
@@ -122,15 +130,24 @@ class BaliwasanYJunctionDetector:
             cv2.putText(frame_copy, "COUNTING LINE", (self.line_start[0], self.line_start[1] - 15), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-            # Process frame
-            current_counts, detections = self.process_frame(frame, self.frame_count)
+            # Process frame with enhanced metrics
+            current_counts, detections = self.process_frame(frame, self.frame_count, fps)
+            
+            # ENHANCED: UPDATE ALL METRICS
+            current_time_seconds = self.frame_count / fps if fps > 0 else 0
+            
+            # 1. Update hourly breakdown
+            self.update_hourly_data(current_counts, current_time_seconds)
+            
+            # 2. Update quality metrics
+            self.update_quality_metrics(detections, current_counts)
             
             # Draw detection information
             annotated_frame = self.draw_detection_info(
                 frame_copy, detections, self.frame_count, fps, sum(current_counts.values())
             )
             
-            # Write to output video - LIKE RTXVehicleDetector
+            # Write to output video
             if out is not None:
                 out.write(annotated_frame)
 
@@ -141,7 +158,7 @@ class BaliwasanYJunctionDetector:
             # Update progress
             if progress_tracker and self.frame_count % 10 == 0:
                 progress = min(90, 20 + int((self.frame_count / total_frames) * 70))
-                message = f"Processing frame {self.frame_count}/{total_frames} - Count: {self.total_count}"
+                message = f"Processing frame {self.frame_count}/{total_frames} - Enhanced metrics collection"
                 progress_tracker.set_progress(progress, message)
 
         # Cleanup
@@ -154,17 +171,26 @@ class BaliwasanYJunctionDetector:
         print(f"✅ Baliwasan analysis completed in {total_processing_time:.2f}s")
         
         if progress_tracker:
-            progress_tracker.set_progress(95, "Generating analysis report...")
+            progress_tracker.set_progress(95, "Generating enhanced analysis report...")
+
+        # GENERATE ENHANCED REPORT
+        enhanced_metrics = self.get_enhanced_metrics_report(
+            total_vehicles=self.total_count,
+            video_duration=total_frames / fps if fps > 0 else 0,
+            fps=fps,
+            frame_width=width,
+            total_frames=self.frame_count
+        )
 
         # Generate comprehensive report - RETURN OUTPUT PATH LIKE RTXVehicleDetector
-        report = self.generate_comprehensive_report(total_frames, total_processing_time, fps)
+        report = self.generate_comprehensive_report(total_frames, total_processing_time, fps, enhanced_metrics)
         if output_video_path:
             report['output_video_path'] = output_video_path
             
         return report
 
-    def process_frame(self, frame, frame_number):
-        """Process a single frame for vehicle detection and tracking"""
+    def process_frame(self, frame, frame_number, fps):
+        """Process a single frame for vehicle detection and tracking with enhanced metrics"""
         current_counts = defaultdict(int)
         active_detections = []
 
@@ -196,8 +222,8 @@ class BaliwasanYJunctionDetector:
                 cy = (y1 + y2) // 2
 
                 # Get vehicle color and name
+                vehicle_name = self.vehicle_names.get(class_id, "unknown")
                 vehicle_color = self.vehicle_colors.get(class_id, (255, 255, 255))
-                vehicle_name = self.vehicle_names.get(class_id, "Unknown")
 
                 # Initialize tracking for new vehicles
                 if track_id not in self.vehicle_status:
@@ -219,6 +245,9 @@ class BaliwasanYJunctionDetector:
 
                 # Check if vehicle is in counting zone
                 in_counting_zone = self.counting_zone_top <= cy <= self.counting_zone_bottom
+
+                # ENHANCED: CALCULATE SPEED
+                speed = self.calculate_speed(track_id, (cx, cy), frame_number, fps)
 
                 if in_counting_zone and not current_status['crossed']:
                     prev_y = current_status['last_y']
@@ -242,7 +271,7 @@ class BaliwasanYJunctionDetector:
 
                 # Count current vehicles in zone
                 if in_counting_zone:
-                    current_counts[class_id] += 1
+                    current_counts[vehicle_name] += 1
 
                 active_detections.append({
                     'track_id': track_id,
@@ -250,8 +279,13 @@ class BaliwasanYJunctionDetector:
                     'bbox': [x1, y1, x2-x1, y2-y1],
                     'confidence': confidence,
                     'center': (cx, cy),
-                    'in_zone': in_counting_zone
+                    'in_zone': in_counting_zone,
+                    'speed': speed  # ADD SPEED TO DETECTION
                 })
+
+                # ENHANCED: STORE SPEED DATA
+                if speed is not None:
+                    self.speed_data[vehicle_name].append(speed)
 
         return current_counts, active_detections
 
@@ -310,6 +344,7 @@ class BaliwasanYJunctionDetector:
             confidence = detection['confidence']
             track_id = detection['track_id']
             in_zone = detection['in_zone']
+            speed = detection.get('speed')
 
             color = self.vehicle_colors.get(
                 list(self.vehicle_names.keys())[list(self.vehicle_names.values()).index(class_name)], 
@@ -320,8 +355,10 @@ class BaliwasanYJunctionDetector:
             thickness = 3 if in_zone else 2
             cv2.rectangle(frame, (x1, y1), (x1 + w, y1 + h), color, thickness)
             
-            # Draw label
+            # Draw label with speed information
             label = f"{class_name} {confidence:.2f}"
+            if speed:
+                label += f" {speed:.1f}km/h"
             if in_zone:
                 label += " ✓IN ZONE"
             
@@ -333,7 +370,7 @@ class BaliwasanYJunctionDetector:
 
         return frame
 
-    def generate_comprehensive_report(self, total_frames, processing_time, fps):
+    def generate_comprehensive_report(self, total_frames, processing_time, fps, enhanced_metrics):
         """Generate detailed analysis report in Django-compatible format"""
         total_vehicles = self.total_count
         video_duration = total_frames / fps if fps > 0 else 0
@@ -341,7 +378,7 @@ class BaliwasanYJunctionDetector:
         # Calculate vehicle breakdown
         vehicle_breakdown = {}
         for class_id, count in self.vehicle_type_counts.items():
-            vehicle_name = self.vehicle_names.get(class_id, "Unknown")
+            vehicle_name = self.vehicle_names.get(class_id, "unknown")
             vehicle_breakdown[vehicle_name.lower()] = count
 
         # Ensure all vehicle types are present
@@ -386,7 +423,9 @@ class BaliwasanYJunctionDetector:
                 'counting_zone_bottom': self.counting_zone_bottom,
                 'unique_tracks_counted': len(self.vehicle_crossed),
                 'y_junction_optimized': True
-            }
+            },
+            # ENHANCED: ADD THE NEW METRICS
+            'enhanced_metrics': enhanced_metrics
         }
         
         return report

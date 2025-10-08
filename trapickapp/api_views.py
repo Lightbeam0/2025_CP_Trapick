@@ -232,20 +232,34 @@ class VideoUploadAPI(APIView):
             video_file = request.FILES['video']
             print(f"📹 Video file: {video_file.name} ({video_file.size} bytes)")
             
+            # PHASE 1: SMART FILENAME PARSING
+            from .utils.filename_parser import extract_metadata_from_filename
+            filename_metadata = extract_metadata_from_filename(video_file.name)
+            
+            if filename_metadata:
+                print(f"✅ Filename parsed successfully:")
+                print(f"   - Camera: {filename_metadata['camera_id']}")
+                print(f"   - Date: {filename_metadata['date']}")
+                print(f"   - Time: {filename_metadata['time']}")
+                print(f"   - Full: {filename_metadata['datetime']}")
+            else:
+                print(f"⚠️  Could not parse filename: {video_file.name}")
+            
+            # Use parsed data or fallback to user input
             title = request.POST.get('title', video_file.name)
             location_id = request.POST.get('location_id')
             
-            # Get video metadata
-            video_date = request.POST.get('video_date')
-            video_start_time = request.POST.get('start_time')
-            video_end_time = request.POST.get('end_time')
+            # Prefer parsed date/time over user input
+            video_date = (filename_metadata['date'] if filename_metadata 
+                         else request.POST.get('video_date'))
+            video_start_time = (filename_metadata['time'] if filename_metadata 
+                              else request.POST.get('start_time'))
             
-            print(f"📝 Upload details:")
+            print(f"📝 Final upload details:")
             print(f"   - Title: {title}")
             print(f"   - Location ID: {location_id}")
-            print(f"   - Date: {video_date}")
-            print(f"   - Start: {video_start_time}")
-            print(f"   - End: {video_end_time}")
+            print(f"   - Date: {video_date} {'(from filename)' if filename_metadata else '(user input)'}")
+            print(f"   - Start: {video_start_time} {'(from filename)' if filename_metadata else '(user input)'}")
             
             if not location_id:
                 print("❌ No location ID provided")
@@ -258,7 +272,6 @@ class VideoUploadAPI(APIView):
             try:
                 location = Location.objects.get(id=location_id)
                 print(f"✅ Location found: {location.display_name}")
-                print(f"🔧 Profile: {location.processing_profile.display_name}")
             except Location.DoesNotExist:
                 print(f"❌ Location not found for ID: {location_id}")
                 return Response(
@@ -273,29 +286,32 @@ class VideoUploadAPI(APIView):
             
             print(f"💾 Video saved to: {video_path}")
             
-            # Create VideoFile record with metadata
+            # Create VideoFile record with enhanced metadata
             video_obj = VideoFile.objects.create(
                 filename=video_file.name,
                 file_path=filename,
                 title=title,
                 video_date=video_date,
                 video_start_time=video_start_time,
-                video_end_time=video_end_time,
+                video_end_time=request.POST.get('end_time'),
                 processing_status='uploaded',
-                uploaded_at=timezone.now()
+                uploaded_at=timezone.now(),
+                # PHASE 1: Store parsed metadata
+                camera_id=filename_metadata['camera_id'] if filename_metadata else None,
+                actual_recording_date=filename_metadata['date'] if filename_metadata else None,
+                actual_start_time=filename_metadata['time'] if filename_metadata else None,
+                actual_datetime=filename_metadata['datetime'] if filename_metadata else None,
+                filename_parsed=filename_metadata is not None
             )
             
             print(f"📄 Video record created: {video_obj.id}")
+            print(f"🔍 Metadata stored: Camera={video_obj.camera_id}, DateTime={video_obj.actual_datetime}")
             
-            # ✅ CRITICAL FIX: Initialize progress tracker IMMEDIATELY
+            # Initialize progress tracker and start processing
             progress_tracker = ProgressTracker(str(video_obj.id))
             progress_tracker.set_progress(10, "Video uploaded, starting processing...")
             
             # Start background processing
-            profile_display = location.processing_profile.display_name
-            print(f"🎯 Starting {profile_display} processing...")
-            
-            # Use location-based processing
             thread = threading.Thread(
                 target=self.process_video_with_location_profile,
                 args=(video_obj.id, video_path, location_id, progress_tracker)
@@ -305,13 +321,24 @@ class VideoUploadAPI(APIView):
             
             print("✅ Background processing started successfully")
             
-            return Response({
+            # Enhanced response with parsing info
+            response_data = {
                 'status': 'success',
-                'message': f'Video uploaded and {profile_display} started',
+                'message': f'Video uploaded and processing started',
                 'upload_id': str(video_obj.id),
+                'filename_parsed': filename_metadata is not None,
                 'processing_profile': location.processing_profile.name,
-                'processing_profile_display': profile_display
-            })
+            }
+            
+            if filename_metadata:
+                response_data['parsed_metadata'] = {
+                    'camera_id': filename_metadata['camera_id'],
+                    'date': str(filename_metadata['date']),
+                    'time': str(filename_metadata['time']),
+                    'datetime': filename_metadata['datetime'].isoformat()
+                }
+            
+            return Response(response_data)
             
         except Exception as e:
             print(f"💥 UPLOAD ERROR: {str(e)}")
