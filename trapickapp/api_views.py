@@ -14,7 +14,7 @@ import os
 from django.utils import timezone
 from datetime import timedelta
 from .progress import ProgressTracker
-from .models import Detection
+from .models import VideoFile, TrafficAnalysis, Location, AnalysisSession, ProcessingProfile, VehicleType, Detection, TrafficReport, FrameAnalysis, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction, SystemConfig
 import csv
 import json
 from django.http import HttpResponse
@@ -31,94 +31,43 @@ from datetime import datetime
 
 class AnalysisOverviewAPI(APIView):
     def get(self, request):
-        """Provide overview data for the Home page - WITH FALLBACKS"""
+        """Provide overview data for the Home page with REAL data"""
+        from .services import calculate_real_weekly_data, get_system_overview_stats, get_peak_hours_analysis
+        
         try:
-            print("🎯 AnalysisOverviewAPI called")
+            # Get real data
+            weekly_data = calculate_real_weekly_data()
+            system_stats = get_system_overview_stats()
+            peak_hours = get_peak_hours_analysis()
             
-            # Try to import services, but have fallbacks
-            try:
-                from .services import calculate_real_weekly_data, get_system_overview_stats, get_peak_hours_analysis
-                
-                # Get real data
-                weekly_data = calculate_real_weekly_data()
-                system_stats = get_system_overview_stats()
-                peak_hours = get_peak_hours_analysis()
-                
-                print(f"✅ Using real data services")
-                
-            except ImportError as e:
-                print(f"⚠️ Services import failed, using fallback data: {e}")
-                # Fallback data
-                weekly_data = [45, 52, 38, 65, 72, 48, 55]
-                system_stats = {
-                    'total_videos': 5,
-                    'processed_videos': 3,
-                    'total_analyses': 3,
-                    'recent_analyses_count': 2,
-                    'processing_success_rate': 60
-                }
-                peak_hours = {
-                    'peak_hour': '08:00',
-                    'peak_hour_count': 120
-                }
-            
-            # If no real weekly data, ensure we have something
-            if not weekly_data or all(v == 0 for v in weekly_data):
-                weekly_data = [45, 52, 38, 65, 72, 48, 55]  # Sample data
-                print("⚠️ Using sample weekly data")
+            # If no real weekly data, use empty array
+            if not weekly_data:
+                weekly_data = [0, 0, 0, 0, 0, 0, 0]  # Zeros instead of fake data
             
             total_vehicles = sum(weekly_data)
             
-            response_data = {
-                'weekly_data': weekly_data,
+            return Response({
+                'weekly_data': weekly_data,  # REAL data
                 'total_vehicles': total_vehicles,
-                'congested_roads': system_stats.get('recent_analyses_count', 2),
-                'peak_hour': peak_hours.get('peak_hour', '08:00'),
-                'daily_average': total_vehicles // 7 if total_vehicles > 0 else 54,
-                'system_stats': system_stats,
-                'areas': self.get_real_areas_data() or self.get_sample_areas_data()
-            }
-            
-            print(f"✅ Sending overview data: { {k: v for k, v in response_data.items() if k != 'system_stats'} }")
-            return Response(response_data)
+                'congested_roads': system_stats['recent_analyses_count'],  # Real count
+                'peak_hour': peak_hours['peak_hour'],  # Real peak hour
+                'daily_average': total_vehicles // 7 if total_vehicles > 0 else 0,
+                'system_stats': system_stats,  # Additional real stats
+                'areas': self.get_real_areas_data()  # Real areas data
+            })
             
         except Exception as e:
-            print(f"❌ CRITICAL ERROR in AnalysisOverviewAPI: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Emergency fallback - always return something
+            print(f"Error in AnalysisOverviewAPI: {e}")
             return Response({
-                'weekly_data': [45, 52, 38, 65, 72, 48, 55],
-                'total_vehicles': 375,
-                'congested_roads': 3,
-                'peak_hour': '08:00 AM',
-                'daily_average': 54,
-                'system_stats': {
-                    'total_videos': 5,
-                    'processed_videos': 3,
-                    'total_analyses': 3,
-                    'recent_analyses_count': 2
-                },
-                'areas': [
-                    {
-                        'name': 'Baliwasan Area',
-                        'morning_peak': '7:30 - 9:00 AM',
-                        'evening_peak': '4:30 - 6:30 PM',
-                        'morning_volume': 245,
-                        'evening_volume': 320,
-                        'total_analysis_vehicles': 890
-                    },
-                    {
-                        'name': 'San Roque Highway',
-                        'morning_peak': '7:45 - 9:15 AM', 
-                        'evening_peak': '5:00 - 6:45 PM',
-                        'morning_volume': 180,
-                        'evening_volume': 210,
-                        'total_analysis_vehicles': 650
-                    }
-                ]
-            })
+                'weekly_data': [0, 0, 0, 0, 0, 0, 0],
+                'total_vehicles': 0,
+                'congested_roads': 0,
+                'peak_hour': 'N/A',
+                'daily_average': 0,
+                'system_stats': {},
+                'areas': [],
+                'error': 'Error loading data'
+            }, status=500)
 
     def get_real_areas_data(self):
         """Get real area data from recent analyses"""
@@ -142,32 +91,24 @@ class AnalysisOverviewAPI(APIView):
                     'total_analysis_vehicles': analysis.total_vehicles
                 })
             
-            return areas if areas else None
+            # If no real data, return empty
+            if not areas:
+                return [
+                    {
+                        'name': 'No data available',
+                        'morning_peak': 'N/A',
+                        'evening_peak': 'N/A', 
+                        'morning_volume': 0,
+                        'evening_volume': 0,
+                        'total_analysis_vehicles': 0
+                    }
+                ]
+            
+            return areas
             
         except Exception as e:
-            print(f"Error getting real areas data: {e}")
-            return None
-
-    def get_sample_areas_data(self):
-        """Return sample area data when no real data exists"""
-        return [
-            {
-                'name': 'Baliwasan Area',
-                'morning_peak': '7:30 - 9:00 AM',
-                'evening_peak': '4:30 - 6:30 PM',
-                'morning_volume': 245,
-                'evening_volume': 320,
-                'total_analysis_vehicles': 890
-            },
-            {
-                'name': 'San Roque Highway',
-                'morning_peak': '7:45 - 9:15 AM',
-                'evening_peak': '5:00 - 6:45 PM', 
-                'morning_volume': 180,
-                'evening_volume': 210,
-                'total_analysis_vehicles': 650
-            }
-        ]
+            print(f"Error getting areas data: {e}")
+            return []
 
 class VehicleStatsAPI(APIView):
     def get(self, request):
@@ -215,148 +156,179 @@ class DebugDataAPI(APIView):
 
 class VideoUploadAPI(APIView):
     def post(self, request):
+        print("🔍 DEBUG: VideoUploadAPI called")
+        print(f"🔍 Request method: {request.method}")
+        print(f"🔍 Request FILES: {list(request.FILES.keys())}")
+        print(f"🔍 Request data: {dict(request.POST)}")
+
         try:
-            print("=" * 50)
-            print("🎬 VIDEO UPLOAD DEBUG START")
-            print("=" * 50)
-            print("📦 Request Files:", list(request.FILES.keys()))
-            print("📦 Request Data:", dict(request.POST))
-            
+            # Check if video file exists
             if 'video' not in request.FILES:
-                print("❌ No video file in request")
+                print("❌ ERROR: No video file in request.FILES")
                 return Response(
-                    {'error': 'No video file provided'}, 
+                    {'error': 'No video file provided'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             video_file = request.FILES['video']
-            print(f"📹 Video file: {video_file.name} ({video_file.size} bytes)")
-            
-            # PHASE 1: SMART FILENAME PARSING
-            from .utils.filename_parser import extract_metadata_from_filename
-            filename_metadata = extract_metadata_from_filename(video_file.name)
-            
-            if filename_metadata:
-                print(f"✅ Filename parsed successfully:")
-                print(f"   - Camera: {filename_metadata['camera_id']}")
-                print(f"   - Date: {filename_metadata['date']}")
-                print(f"   - Time: {filename_metadata['time']}")
-                print(f"   - Full: {filename_metadata['datetime']}")
-            else:
-                print(f"⚠️  Could not parse filename: {video_file.name}")
-            
-            # Use parsed data or fallback to user input
+            print(f"✅ Video file received: {video_file.name} ({video_file.size} bytes)")
+
+            # Validate file type
+            allowed_types = ['video/mp4', 'video/avi', 'video/mov', 'video/webm']
+            if video_file.content_type not in allowed_types:
+                print(f"❌ ERROR: Invalid file type: {video_file.content_type}")
+                return Response(
+                    {'error': 'Invalid file type. Please upload MP4, AVI, MOV, or WebM.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Validate file size (max 500MB)
+            max_size = 500 * 1024 * 1024  # 500MB
+            if video_file.size > max_size:
+                print(f"❌ ERROR: File too large: {video_file.size} bytes")
+                return Response(
+                    {'error': 'File too large. Maximum size is 500MB.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Get form data
             title = request.POST.get('title', video_file.name)
             location_id = request.POST.get('location_id')
-            
-            # Prefer parsed date/time over user input
-            video_date = (filename_metadata['date'] if filename_metadata 
-                         else request.POST.get('video_date'))
-            video_start_time = (filename_metadata['time'] if filename_metadata 
-                              else request.POST.get('start_time'))
-            
-            print(f"📝 Final upload details:")
-            print(f"   - Title: {title}")
-            print(f"   - Location ID: {location_id}")
-            print(f"   - Date: {video_date} {'(from filename)' if filename_metadata else '(user input)'}")
-            print(f"   - Start: {video_start_time} {'(from filename)' if filename_metadata else '(user input)'}")
-            
-            if not location_id:
-                print("❌ No location ID provided")
+            video_date = request.POST.get('video_date')
+            # NEW: Get session_id from request data
+            session_id = request.POST.get('session_id')
+
+            print(f"📝 Form data - Title: {title}, Location: {location_id}, Date: {video_date}, Session ID: {session_id}")
+
+            # Validate required fields
+            if not video_date:
                 return Response(
-                    {'error': 'Location is required for optimized processing'}, 
+                    {'error': 'Video recording date is required'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
-            # Get location to determine processing profile
-            try:
-                location = Location.objects.get(id=location_id)
-                print(f"✅ Location found: {location.display_name}")
-            except Location.DoesNotExist:
-                print(f"❌ Location not found for ID: {location_id}")
-                return Response(
-                    {'error': 'Selected location not found'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
+
+            # NEW: Validate session_id if provided
+            associated_session = None
+            if session_id:
+                try:
+                    associated_session = AnalysisSession.objects.get(id=session_id)
+                    print(f"📍 Video will be associated with session: {associated_session.name} (ID: {session_id})")
+                    # Optionally, check session status here if needed (e.g., only allow uploads to 'pending_upload' sessions)
+                    # if associated_session.status != 'pending_upload':
+                    #     return Response({'error': f'Cannot upload to session with status: {associated_session.status}'}, status=status.HTTP_400_BAD_REQUEST)
+                except AnalysisSession.DoesNotExist:
+                    print(f"❌ ERROR: Session ID {session_id} does not exist.")
+                    return Response(
+                        {'error': f'Session with ID {session_id} not found.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
             # Save video file
             fs = FileSystemStorage()
             filename = fs.save(f'videos/{video_file.name}', video_file)
             video_path = fs.path(filename)
-            
+
             print(f"💾 Video saved to: {video_path}")
-            
-            # Create VideoFile record with enhanced metadata
+
+            # Create VideoFile record
             video_obj = VideoFile.objects.create(
                 filename=video_file.name,
                 file_path=filename,
                 title=title,
                 video_date=video_date,
-                video_start_time=video_start_time,
+                video_start_time=request.POST.get('start_time'),
                 video_end_time=request.POST.get('end_time'),
                 processing_status='uploaded',
                 uploaded_at=timezone.now(),
-                # PHASE 1: Store parsed metadata
-                camera_id=filename_metadata['camera_id'] if filename_metadata else None,
-                actual_recording_date=filename_metadata['date'] if filename_metadata else None,
-                actual_start_time=filename_metadata['time'] if filename_metadata else None,
-                actual_datetime=filename_metadata['datetime'] if filename_metadata else None,
-                filename_parsed=filename_metadata is not None
+                # NEW: Link to session if provided
+                analysis_session=associated_session
             )
-            
-            print(f"📄 Video record created: {video_obj.id}")
-            print(f"🔍 Metadata stored: Camera={video_obj.camera_id}, DateTime={video_obj.actual_datetime}")
-            
-            # Initialize progress tracker and start processing
-            progress_tracker = ProgressTracker(str(video_obj.id))
-            progress_tracker.set_progress(10, "Video uploaded, starting processing...")
-            
-            # Start background processing
-            thread = threading.Thread(
-                target=self.process_video_with_location_profile,
-                args=(video_obj.id, video_path, location_id, progress_tracker)
-            )
-            thread.daemon = True
-            thread.start()
-            
-            print("✅ Background processing started successfully")
-            
-            # Enhanced response with parsing info
-            response_data = {
-                'status': 'success',
-                'message': f'Video uploaded and processing started',
-                'upload_id': str(video_obj.id),
-                'filename_parsed': filename_metadata is not None,
-                'processing_profile': location.processing_profile.name,
-            }
-            
-            if filename_metadata:
-                response_data['parsed_metadata'] = {
-                    'camera_id': filename_metadata['camera_id'],
-                    'date': str(filename_metadata['date']),
-                    'time': str(filename_metadata['time']),
-                    'datetime': filename_metadata['datetime'].isoformat()
-                }
-            
-            return Response(response_data)
-            
+
+            print(f"📄 Video record created: {video_obj.id}, associated with session: {associated_session.id if associated_session else None}")
+
+            # Determine processing logic based on session association
+            if associated_session:
+                # If associated with a session, do NOT start individual processing yet.
+                # The session processing will handle all videos in the session later.
+                print("ℹ️  Video uploaded to session. Individual processing skipped. Session processing must be initiated separately.")
+                return Response({
+                    'status': 'success',
+                    'message': f'Video uploaded successfully to session "{associated_session.name}". Session processing will start separately.',
+                    'upload_id': str(video_obj.id),
+                    'session_id': str(associated_session.id),
+                    'video_info': {
+                        'filename': video_file.name,
+                        'size': video_file.size,
+                        'type': video_file.content_type
+                    }
+                })
+            else:
+                # If NOT associated with a session, start individual processing as before
+                print("📍 Processing without session association.")
+                try:
+                    if location_id:
+                        location = Location.objects.get(id=location_id)
+                        print(f"📍 Processing with location: {location.display_name}")
+
+                        thread = threading.Thread(
+                            target=self.process_video_with_location_profile,
+                            args=(video_obj.id, video_path, location_id)
+                        )
+                    else:
+                        print("📍 Processing with default detector")
+                        thread = threading.Thread(
+                            target=self.process_video_background,
+                            args=(video_obj.id, video_path)
+                        )
+
+                    thread.daemon = True
+                    thread.start()
+
+                    print("✅ Background processing started successfully")
+
+                    return Response({
+                        'status': 'success',
+                        'message': 'Video uploaded and processing started',
+                        'upload_id': str(video_obj.id),
+                        'video_info': {
+                            'filename': video_file.name,
+                            'size': video_file.size,
+                            'type': video_file.content_type
+                        }
+                    })
+
+                except Exception as e:
+                    print(f"❌ Error starting processing: {str(e)}")
+                    video_obj.processing_status = 'failed'
+                    video_obj.save()
+
+                    return Response(
+                        {'error': f'Failed to start processing: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+
         except Exception as e:
             print(f"💥 UPLOAD ERROR: {str(e)}")
             import traceback
             traceback.print_exc()
+
             return Response(
-                {'error': str(e)}, 
+                {'error': f'Upload failed: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
-    def process_video_with_location_profile(self, video_id, video_path, location_id, progress_tracker):
+    def process_video_with_location_profile(self, video_id, video_path, location_id):
         """Process video using location-specific detector"""
         from ml.detector_factory import DetectorFactory
+        from .progress import ProgressTracker
         
         print("🔄 STARTING BACKGROUND PROCESSING")
         print(f"   - Video ID: {video_id}")
         print(f"   - Video Path: {video_path}")
         print(f"   - Location ID: {location_id}")
+        
+        progress_tracker = ProgressTracker(video_id)
+        detector = None  # Initialize detector variable
         
         try:
             video_obj = VideoFile.objects.get(id=video_id)
@@ -365,15 +337,17 @@ class VideoUploadAPI(APIView):
             print(f"📍 LOCATION DETAILS:")
             print(f"   - Name: {location.display_name}")
             print(f"   - Profile: {location.processing_profile.display_name}")
+            print(f"   - Detector: {location.processing_profile.detector_class}")
             
             video_obj.processing_status = 'processing'
             video_obj.save()
             
-            print("🔧 TESTING DETECTOR CREATION...")
+            print("🔧 CREATING DETECTOR...")
+            # Get detector instance - FIXED: This was causing the NameError
             detector = DetectorFactory.get_detector(location.processing_profile)
             print(f"✅ DETECTOR CREATED: {type(detector).__name__}")
             
-            progress_tracker.set_progress(20, f"Starting {location.processing_profile.display_name}...")
+            progress_tracker.set_progress(5, f"Starting {location.processing_profile.display_name}...")
             
             # Analyze video with progress tracking and save_output=True
             print(f"🎯 Starting video analysis with {type(detector).__name__}...")
@@ -441,8 +415,9 @@ class VideoUploadAPI(APIView):
             traceback.print_exc()
             
             # Update progress with error
+            progress_tracker.set_progress(0, f"Processing failed: {str(e)}")
+            
             try:
-                progress_tracker.set_progress(0, f"Processing failed: {str(e)}")
                 video_obj = VideoFile.objects.get(id=video_id)
                 video_obj.processing_status = 'failed'
                 video_obj.save()
@@ -533,19 +508,20 @@ class VideoUploadAPI(APIView):
 class VideoProgressAPI(APIView):
     def get(self, request, video_id):
         """Get progress for a video processing"""
-        try:
-            progress_tracker = ProgressTracker(str(video_id))
-            progress_data = progress_tracker.get_progress()
-            
-            if progress_data:
-                print(f"📊 Progress API: {video_id} - {progress_data['progress']}% - {progress_data['message']}")
-                return Response(progress_data)
-            else:
-                print(f"📊 Progress API: {video_id} - No progress data")
-                return Response({'progress': 0, 'message': 'No progress data available'})
-        except Exception as e:
-            print(f"❌ Progress API Error: {e}")
-            return Response({'progress': 0, 'message': 'Error fetching progress'})
+        progress_tracker = ProgressTracker(video_id)
+        progress_data = progress_tracker.get_progress()
+        
+        if progress_data:
+            return Response(progress_data)
+        else:
+            return Response({'progress': 0, 'message': 'No progress data available'})
+    
+    # Add this method to handle WebSocket connections
+    def dispatch(self, request, *args, **kwargs):
+        if request.META.get('HTTP_UPGRADE', '').lower() == 'websocket':
+            # Handle WebSocket connection here or return appropriate response
+            return Response({'error': 'WebSocket not supported via HTTP'}, status=400)
+        return super().dispatch(request, *args, **kwargs)
 
 class AnalysisResultsAPI(APIView):
     def get(self, request, upload_id):
@@ -1317,3 +1293,274 @@ class PredictionInsightsAPI(APIView):
                 'status': 'error',
                 'message': f'Failed to get insights: {str(e)}'
             }, status=500)
+
+class AnalysisSessionListAPI(APIView):
+    """Handle listing and creating Analysis Sessions"""
+    def get(self, request):
+        sessions = AnalysisSession.objects.all().order_by('-created_at')
+        serializer = AnalysisSessionSerializer(sessions, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        # Validate required fields
+        required_fields = ['name', 'location', 'start_datetime', 'end_datetime']
+        for field in required_fields:
+            if field not in request.data:
+                return Response({'error': f'{field} is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = AnalysisSessionSerializer(data=request.data)
+        if serializer.is_valid():
+            session = serializer.save()
+            return Response(AnalysisSessionSerializer(session).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class AnalysisSessionDetailAPI(APIView):
+    """Handle retrieving, updating, or deleting a specific Analysis Session"""
+    def get_object(self, session_id):
+        try:
+            return AnalysisSession.objects.get(id=session_id)
+        except AnalysisSession.DoesNotExist:
+            return None
+
+    def get(self, request, session_id):
+        session = self.get_object(session_id)
+        if session is None:
+            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = AnalysisSessionSerializer(session)
+        return Response(serializer.data)
+
+    def put(self, request, session_id):
+        session = self.get_object(session_id)
+        if session is None:
+            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Allow updating status, name, etc., but be careful about times if processing has started
+        serializer = AnalysisSessionSerializer(session, data=request.data, partial=True) # Use partial=True for flexibility
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, session_id):
+        session = self.get_object(session_id)
+        if session is None:
+            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Check if session is currently processing before allowing deletion
+        if session.status == 'processing':
+            return Response({'error': 'Cannot delete a session that is currently processing.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        session.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+class AnalysisSessionVideoListAPI(APIView):
+    """Handle listing videos associated with a specific Analysis Session"""
+    def get(self, request, session_id):
+        session = AnalysisSession.objects.filter(id=session_id).first()
+        if not session:
+            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        videos = session.video_files.all().order_by('video_date', 'video_start_time') # Order by date/time
+        serializer = VideoFileSerializer(videos, many=True)
+        return Response(serializer.data)
+    
+class ProcessAnalysisSessionAPI(APIView):
+    """Initiate processing for an Analysis Session"""
+    def post(self, request, session_id):
+        session = AnalysisSession.objects.filter(id=session_id).first()
+        if not session:
+            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if session.status in ['processing', 'completed']:
+            return Response({'error': f'Session is already {session.status}.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if there are videos associated
+        video_files = session.video_files.filter(processed=True) # Only consider videos that are already individually processed or uploaded
+        if not video_files.exists():
+             return Response({'error': 'No videos found in the session to process.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update session status
+        session.status = 'processing'
+        session.save()
+
+        # Start background processing task
+        try:
+            thread = threading.Thread(
+                target=self.process_session_background,
+                args=(session.id,)
+            )
+            thread.daemon = True
+            thread.start()
+            return Response({'message': f'Processing started for session {session.name}', 'session_id': session.id})
+        except Exception as e:
+            session.status = 'failed'
+            session.save()
+            return Response({'error': f'Failed to start processing: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def process_session_background(self, session_id):
+        """Background task to concatenate videos and run analysis"""
+        from .progress import ProgressTracker
+        from ml.vehicle_detector import RTXVehicleDetector
+        import subprocess
+        import tempfile
+        import os
+
+        session = AnalysisSession.objects.get(id=session_id)
+        progress_tracker = ProgressTracker(session_id)
+
+        try:
+            progress_tracker.set_progress(0, "Starting session processing...")
+            session.status = 'processing'
+            session.save()
+
+            # Get sorted list of video files
+            video_files = session.video_files.filter(processed=True).order_by('video_date', 'video_start_time')
+            if not video_files:
+                raise ValueError("No processed video files found in the session.")
+
+            # Create a temporary file list for ffmpeg
+            temp_list_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
+            temp_output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+
+            try:
+                for vf in video_files:
+                    # Ensure the path is absolute if needed by ffmpeg
+                    abs_path = os.path.abspath(vf.file_path.path)
+                    temp_list_file.write(f"file '{abs_path}'\n")
+                temp_list_file.close()
+
+                progress_tracker.set_progress(10, "Concatenating video files...")
+
+                # Use ffmpeg to concatenate
+                cmd = [
+                    'ffmpeg', '-f', 'concat', '-safe', '0', '-i', temp_list_file.name,
+                    '-c', 'copy',
+                    temp_output_path, '-y'
+                ]
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if result.returncode != 0:
+                    raise RuntimeError(f"ffmpeg failed: {result.stderr}")
+
+                progress_tracker.set_progress(30, "Concatenated successfully, starting analysis...")
+
+                # Load detector (could be based on session.location.processing_profile)
+                detector = RTXVehicleDetector()
+
+                # Analyze the concatenated video
+                report = detector.analyze_video(temp_output_path, progress_tracker=progress_tracker, save_output=True)
+
+                progress_tracker.set_progress(90, "Saving aggregated results...")
+
+                # Create an aggregated TrafficAnalysis record linked to the session
+                aggregated_analysis = TrafficAnalysis.objects.create(
+                    analysis_session=session,
+                    location=session.location,
+                    total_vehicles=report['summary']['total_vehicles_counted'],
+                    processing_time_seconds=report['metadata']['processing_time'],
+                    analyzed_at=timezone.now(),
+                    car_count=report['summary']['vehicle_breakdown'].get('car', 0),
+                    truck_count=report['summary']['vehicle_breakdown'].get('truck', 0),
+                    motorcycle_count=report['summary']['vehicle_breakdown'].get('motorcycle', 0),
+                    bus_count=report['summary']['vehicle_breakdown'].get('bus', 0),
+                    bicycle_count=report['summary']['vehicle_breakdown'].get('bicycle', 0),
+                    peak_traffic=report['summary']['peak_traffic'],
+                    average_traffic=report['summary']['average_traffic_density'],
+                    congestion_level=report['metrics']['congestion_level'],
+                    traffic_pattern=report['metrics']['traffic_pattern'],
+                    analysis_data=report,
+                    metrics_summary={
+                        'source_session_id': session.id,
+                        'videos_processed_count': video_files.count(),
+                        'aggregated_from_individual_analyses': False,
+                    }
+                )
+
+                # UPDATE: Save processed video path to session object
+                session.status = 'completed'
+                session.processed_at = timezone.now()
+                
+                # NEW: Save the processed session video path to the session object
+                if 'output_video_path' in report and report['output_video_path']:
+                    # Convert absolute path to relative path for Django
+                    relative_path = report['output_video_path'].replace('media/', '')
+                    session.processed_session_video_path = relative_path
+                    print(f"✅ Session processed video path saved: {relative_path}")
+                else:
+                    print("⚠️  No output_video_path in report - session video not saved")
+                
+                session.save()
+
+                progress_tracker.set_progress(100, "Session processing completed!")
+                progress_tracker.complete_processing("Session analysis completed!")
+
+                print(f"✅ Session {session.name} processing completed successfully!")
+                print(f"✅ Aggregated analysis created: {aggregated_analysis.id}")
+                print(f"✅ Total vehicles counted: {aggregated_analysis.total_vehicles}")
+
+            finally:
+                # Clean up temporary files
+                try:
+                    os.unlink(temp_list_file.name)
+                    os.unlink(temp_output_path)
+                    print("✅ Temporary files cleaned up")
+                except OSError as e:
+                    print(f"⚠️  Error cleaning up temporary files: {e}")
+
+        except Exception as e:
+            print(f"❌ Error processing session {session_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            session.status = 'failed'
+            session.save()
+            progress_tracker.set_progress(0, f"Session processing failed: {str(e)}")
+
+class SessionVideoViewAPI(APIView):
+    def get(self, request, session_id):
+        """
+        Serve the processed video for an Analysis Session.
+        Frontend calls: GET /api/session-video/{session_id}/view/
+        """
+        try:
+            session_obj = AnalysisSession.objects.get(id=session_id)
+
+            # Check if processing is completed and path exists
+            if session_obj.status != 'completed':
+                return Response(
+                    {'error': 'Session processing not completed yet'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if not session_obj.processed_session_video_path:
+                return Response(
+                    {'error': 'Processed session video not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Construct the full path from the stored relative path
+            full_video_path = os.path.join(settings.MEDIA_ROOT, session_obj.processed_session_video_path.name)
+
+            if not os.path.exists(full_video_path):
+                print(f"❌ Session video file not found at: {full_video_path}")
+                return Response(
+                    {'error': 'Processed session video file is missing on the server'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            print(f"✓ Serving session video: {full_video_path}")
+
+            # Serve the file with inline content disposition for viewing
+            response = FileResponse(open(full_video_path, 'rb'), content_type='video/mp4')
+            response['Content-Disposition'] = f'inline; filename="session_{session_obj.name}.mp4"'
+            return response
+
+        except AnalysisSession.DoesNotExist:
+            return Response(
+                {'error': 'Analysis session not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            print(f"Error serving session video {session_id}: {e}")
+            return Response(
+                {'error': f'Error serving session video file: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

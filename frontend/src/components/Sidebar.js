@@ -1,7 +1,7 @@
 // src/components/Sidebar.js
 import React, { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { FaChartLine, FaCarSide, FaTrafficLight, FaCog, FaUpload, FaFileAlt, FaMagic } from "react-icons/fa";
+import { FaChartLine, FaCarSide, FaTrafficLight, FaCog, FaUpload, FaFileAlt, FaMagic, FaLayerGroup } from "react-icons/fa";
 import VideoUploadModal from "./VideoUploadModal";
 
 function Sidebar() {
@@ -14,6 +14,7 @@ const menuItems = [
     { path: "/vehicles", label: "Vehicles Passing", icon: <FaCarSide /> },
     { path: "/congested", label: "Congested Roads", icon: <FaTrafficLight /> },
     { path: "/analysis", label: "Analysis Results", icon: <FaFileAlt /> },
+    { path: "/sessions", label: "Analysis Sessions", icon: <FaLayerGroup /> },
     { path: "/predictions", label: "Traffic Predictions", icon: <FaMagic /> },
     { path: "/settings", label: "Settings", icon: <FaCog /> },
 ];  

@@ -1,4 +1,6 @@
-from django.urls import path
+from django.urls import path, re_path
+
+from .import views
 from . import api_views
 
 urlpatterns = [
@@ -41,4 +43,14 @@ urlpatterns = [
     # ==================== SYSTEM ENDPOINTS ====================
     path('api/health/', api_views.HealthCheckAPI.as_view(), name='health_check'),
     path('api/debug/data/', api_views.DebugDataAPI.as_view(), name='debug_data'),
+    re_path(r'ws/video-progress/(?P<video_id>[^/]+)/$', api_views.VideoProgressAPI.as_view()),
+    path('api/sessions/', api_views.AnalysisSessionListAPI.as_view(), name='session_list'),
+    path('api/sessions/<uuid:session_id>/', api_views.AnalysisSessionDetailAPI.as_view(), name='session_detail'),
+    path('api/sessions/<uuid:session_id>/videos/', api_views.AnalysisSessionVideoListAPI.as_view(), name='session_videos'),
+    path('api/sessions/<uuid:session_id>/process/', api_views.ProcessAnalysisSessionAPI.as_view(), name='process_session'),
+    path('api/session-video/<uuid:session_id>/view/', api_views.SessionVideoViewAPI.as_view(), name='view_session_video'),
+    path('api/video/<uuid:video_id>/view/', views.view_processed_video, name='view_processed_video'),
+    path('api/video/<uuid:video_id>/download/', views.download_processed_video, name='download_processed_video'),
+    path('api/session-video/<uuid:session_id>/view/', views.view_session_video, name='view_session_video'),
+    path('api/session-video/<uuid:session_id>/download/', views.download_session_video, name='download_session_video'),  
 ]

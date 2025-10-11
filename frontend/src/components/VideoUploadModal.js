@@ -20,10 +20,16 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
 
-  // Load locations when modal opens
+  // NEW: Session selection state
+  const [sessionOptions, setSessionOptions] = useState([]);
+  const [selectedSessionId, setSelectedSessionId] = useState('');
+  const [loadingSessions, setLoadingSessions] = useState(false);
+
+  // Load locations and sessions when modal opens
   useEffect(() => {
     if (isOpen) {
       fetchLocations();
+      fetchSessionsForUpload();
     }
   }, [isOpen]);
 
@@ -38,6 +44,24 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
       console.error('Error fetching locations:', error);
     } finally {
       setLoadingLocations(false);
+    }
+  };
+
+  // NEW: Fetch available sessions for upload
+  const fetchSessionsForUpload = async () => {
+    try {
+      setLoadingSessions(true);
+      console.log("🔄 Fetching sessions for upload dropdown...");
+      const response = await axios.get('http://127.0.0.1:8000/api/sessions/');
+      // Filter sessions based on status if needed (e.g., only 'pending_upload' or 'completed' sessions might be relevant)
+      const filteredSessions = response.data.filter(session => session.status === 'pending_upload' || session.status === 'completed');
+      console.log("✅ Sessions loaded for upload:", filteredSessions);
+      setSessionOptions(filteredSessions);
+    } catch (error) {
+      console.error('Error fetching sessions for upload:', error);
+      setSessionOptions([]); // Clear options on error
+    } finally {
+      setLoadingSessions(false);
     }
   };
 
@@ -75,7 +99,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     }
   }, [selectedFile, title]);
 
-  // ✅ FIXED: Progress polling when processing
+  // Progress polling when processing
   useEffect(() => {
     let intervalId;
     
@@ -83,7 +107,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
       console.log(`🔄 Starting progress polling for: ${uploadId}`);
       intervalId = setInterval(async () => {
         try {
-          // ✅ FIXED: Use correct API endpoint
           const response = await axios.get(`http://127.0.0.1:8000/api/progress/${uploadId}/`);
           const progressData = response.data;
           
@@ -100,7 +123,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
             setProgressMessage('Processing completed!');
             
             if (onUpload) {
-              onUpload({ upload_id: uploadId, status: 'completed' });
+              onUpload({ upload_id: uploadId, status: 'completed', session_id: selectedSessionId });
             }
             
             clearInterval(intervalId);
@@ -114,16 +137,15 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [isProcessing, uploadId, onUpload]);
+  }, [isProcessing, uploadId, onUpload, selectedSessionId]);
 
-  // ✅ FIXED: WebSocket for real-time updates
+  // WebSocket for real-time updates
   useEffect(() => {
     let ws;
     
     if (isProcessing && uploadId) {
       console.log(`🔌 Connecting WebSocket for: ${uploadId}`);
       
-      // ✅ FIXED: Correct WebSocket URL
       ws = new WebSocket(`ws://127.0.0.1:8000/ws/video-progress/${uploadId}/`);
       
       ws.onopen = () => {
@@ -146,7 +168,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
             setProgressMessage('Processing completed!');
             
             if (onUpload) {
-              onUpload({ upload_id: uploadId, status: 'completed' });
+              onUpload({ upload_id: uploadId, status: 'completed', session_id: selectedSessionId });
             }
             
             ws.close();
@@ -172,7 +194,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
         ws.close();
       }
     };
-  }, [isProcessing, uploadId, onUpload]);
+  }, [isProcessing, uploadId, onUpload, selectedSessionId]);
 
   const handleFileChange = (event) => {
     const file = event.target.files[0];
@@ -183,8 +205,12 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
         return;
       }
       
-      if (file.size > 500 * 1024 * 1024) {
-        alert('File size must be less than 500MB');
+      // UPDATED: Increased file size limit to 2GB (2 * 1024 * 1024 * 1024 bytes)
+      const maxSize = 2 * 1024 * 1024 * 1024; // 2GB in bytes
+      
+      if (file.size > maxSize) {
+        // UPDATED: Alert message to reflect the new 2GB limit
+        alert(`File size must be less than 2GB. Your file is ${(file.size / (1024 * 1024 * 1024)).toFixed(2)}GB`);
         return;
       }
       
@@ -201,6 +227,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     console.log('Selected file:', selectedFile?.name);
     console.log('Location ID:', locationId);
     console.log('Video date:', videoDate);
+    console.log('Selected session ID:', selectedSessionId);
 
     if (!selectedFile) {
       alert('Please select a video file first!');
@@ -225,9 +252,12 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     if (startTime) formData.append('start_time', startTime);
     if (endTime) formData.append('end_time', endTime);
     if (locationId) formData.append('location_id', locationId);
+    // NEW: Append session ID if selected
+    if (selectedSessionId) {
+        formData.append('session_id', selectedSessionId);
+    }
 
     try {
-      // ✅ FIXED: Use correct API endpoint
       const response = await axios.post('http://127.0.0.1:8000/api/upload/video/', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
@@ -247,8 +277,17 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
       
       setUploadId(response.data.upload_id);
       setUploadResult({ success: true, data: response.data });
-      setProgressMessage('Upload complete! Starting video analysis...');
-      setCurrentProgress(15); // Move to processing stage
+      // Determine message based on session association
+      const message = selectedSessionId
+        ? 'Upload complete! Video added to session. Session processing will start after all videos are uploaded.'
+        : 'Upload complete! Starting video analysis...';
+      setProgressMessage(message);
+      setCurrentProgress(selectedSessionId ? 15 : 15); // Adjust progress logic if needed for session uploads
+
+      // Optionally notify parent component about upload, maybe differently for session uploads
+      if (onUpload) {
+         onUpload({ upload_id: response.data.upload_id, status: 'uploaded', session_id: selectedSessionId });
+      }
       
     } catch (error) {
       console.error('🔴 UPLOAD ERROR:', error);
@@ -275,6 +314,8 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     setStartTime('');
     setEndTime('');
     setUploadId(null);
+    // NEW: Reset session selection
+    setSelectedSessionId('');
     onClose();
   };
 
@@ -348,7 +389,40 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           </div>
         )}
         
-        {/* Rest of your form remains the same */}
+        {/* NEW: Session Selection Dropdown */}
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+            Associate with Analysis Session (Optional)
+          </label>
+          <select
+            value={selectedSessionId}
+            onChange={(e) => setSelectedSessionId(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '8px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              backgroundColor: 'white'
+            }}
+            disabled={uploading || isProcessing || loadingSessions}
+          >
+            <option value="">Process Individually</option>
+            {loadingSessions ? (
+              <option disabled>Loading sessions...</option>
+            ) : (
+              sessionOptions.map(session => (
+                <option key={session.id} value={session.id}>
+                  {session.name} - {session.location_details?.display_name || session.location} ({session.status})
+                </option>
+              ))
+            )}
+          </select>
+          <p style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+            Select an existing session to group this video with others for combined analysis.
+          </p>
+        </div>
+        
+        {/* File Input */}
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
             Video File *
@@ -372,8 +446,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           )}
         </div>
         
-        {/* ... rest of your form fields ... */}
-        
+        {/* Title Input */}
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
             Video Title
@@ -393,6 +466,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           />
         </div>
         
+        {/* Date Input */}
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
             Video Recording Date *
@@ -412,6 +486,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           />
         </div>
 
+        {/* Time Inputs */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
           <div>
             <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
@@ -449,6 +524,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           </div>
         </div>
         
+        {/* Location Selection */}
         <div style={{ marginBottom: '24px' }}>
           <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
             Location *
@@ -478,6 +554,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           </select>
         </div>
         
+        {/* Result Display */}
         {uploadResult && !isProcessing && (
           <div style={{
             marginBottom: '16px',
@@ -491,7 +568,10 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
               <div>
                 <strong>✓ Upload Successful!</strong>
                 <p style={{ margin: '8px 0 0 0', fontSize: '14px' }}>
-                  Video is being processed. You can check the analysis results shortly.
+                  {selectedSessionId 
+                    ? 'Video added to session. Session processing will start after all videos are uploaded.'
+                    : 'Video is being processed. You can check the analysis results shortly.'
+                  }
                 </p>
               </div>
             ) : (
@@ -505,6 +585,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           </div>
         )}
         
+        {/* Action Buttons */}
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
           <button 
             onClick={handleClose}

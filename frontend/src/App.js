@@ -8,6 +8,7 @@ import CongestedRoads from './pages/CongestedRoads';
 import Settings from './pages/Settings';
 import AnalysisResults from './pages/AnalysisResults';
 import TrafficPredictions from './pages/TrafficPredictions';
+import AnalysisSessions from './pages/AnalysisSessions';
 import './App.css';
 
 function App() {
@@ -22,6 +23,7 @@ function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/analysis" element={<AnalysisResults />} />
           <Route path="/predictions" element={<TrafficPredictions />} />
+          <Route path="/sessions" element={<AnalysisSessions />} />
         </Routes>
       </div>
     </Router>

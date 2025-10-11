@@ -4,126 +4,6 @@ from django.utils import timezone
 import uuid
 from django.contrib.auth.models import User
 
-class VideoFile(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    filename = models.CharField(max_length=255)
-    file_path = models.FileField(upload_to='videos/')
-    uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
-    uploaded_at = models.DateTimeField(default=timezone.now)
-    
-    # NEW FIELDS FOR VIDEO METADATA
-    video_date = models.DateField(null=True, blank=True, help_text="Date when video was recorded")
-    video_start_time = models.TimeField(null=True, blank=True, help_text="Start time of video recording")
-    video_end_time = models.TimeField(null=True, blank=True, help_text="End time of video recording")
-    original_duration = models.FloatField(null=True, blank=True, help_text="Original video duration in seconds")
-    
-    # ===== PHASE 1: SMART FILENAME PARSING FIELDS =====
-    camera_id = models.CharField(
-        max_length=20, 
-        blank=True, 
-        null=True,
-        help_text="Extracted from filename (e.g., D11, D12)"
-    )
-    actual_recording_date = models.DateField(
-        blank=True, 
-        null=True,
-        help_text="Extracted from filename"
-    )
-    actual_start_time = models.TimeField(
-        blank=True, 
-        null=True, 
-        help_text="Extracted from filename"
-    )
-    actual_datetime = models.DateTimeField(
-        blank=True, 
-        null=True,
-        help_text="Combined date and time from filename"
-    )
-    filename_parsed = models.BooleanField(
-        default=False,
-        help_text="Whether filename was successfully parsed"
-    )
-    parsing_notes = models.TextField(
-        blank=True,
-        help_text="Notes about filename parsing results"
-    )
-
-    # Existing fields
-    processed = models.BooleanField(default=False)
-    processed_video_path = models.FileField(upload_to='processed_videos/', null=True, blank=True)
-    processing_status = models.CharField(
-        max_length=50,
-        choices=[
-            ('pending', 'Pending'),
-            ('processing', 'Processing'),
-            ('completed', 'Completed'),
-            ('failed', 'Failed')
-        ],
-        default='pending'
-    )
-    duration_seconds = models.FloatField(null=True, blank=True)
-    fps = models.FloatField(null=True, blank=True)
-    total_frames = models.IntegerField(null=True, blank=True)
-    processed_at = models.DateTimeField(null=True, blank=True)
-    title = models.CharField(max_length=200, null=True, blank=True)
-    resolution = models.CharField(max_length=20, null=True, blank=True)
-
-    def extract_metadata_from_filename(self):
-        """Extract and store metadata from filename"""
-        from .utils.filename_parser import extract_metadata_from_filename  # Adjust import path as needed
-        
-        metadata = extract_metadata_from_filename(self.filename)
-        
-        if metadata:
-            self.camera_id = metadata['camera_id']
-            self.actual_recording_date = metadata['date']
-            self.actual_start_time = metadata['time'] 
-            self.actual_datetime = metadata['datetime']
-            self.filename_parsed = True
-            self.parsing_notes = "Successfully parsed from filename"
-            
-            logger.info(f"✅ Extracted metadata from {self.filename}: "
-                       f"Camera {self.camera_id} at {self.actual_datetime}")
-        else:
-            self.filename_parsed = False
-            self.parsing_notes = "Could not parse filename pattern"
-            logger.warning(f"❌ Could not parse filename: {self.filename}")
-        
-        return self.filename_parsed
-
-    def save(self, *args, **kwargs):
-        """Auto-extract metadata when saving new VideoFile"""
-        is_new = self._state.adding  # Check if this is a new object
-        
-        if is_new and self.filename and not self.filename_parsed:
-            self.extract_metadata_from_filename()
-            
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        date_str = self.video_date.strftime("%Y-%m-%d") if self.video_date else "Unknown Date"
-        camera_info = f" - {self.camera_id}" if self.camera_id else ""
-        return f"{self.filename} - {date_str}{camera_info}"
-
-    def get_video_time_range(self):
-        """Get formatted time range for display"""
-        if self.video_start_time and self.video_end_time:
-            return f"{self.video_start_time.strftime('%H:%M')} - {self.video_end_time.strftime('%H:%M')}"
-        return "Time unknown"
-
-class VehicleType(models.Model):
-    name = models.CharField(max_length=50, unique=True)
-    display_name = models.CharField(max_length=50, blank=True)
-    created_at = models.DateTimeField(default=timezone.now)
-
-    def save(self, *args, **kwargs):
-        if not self.display_name:
-            self.display_name = self.name.capitalize()
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return self.display_name
-
 class ProcessingProfile(models.Model):
     """Customizable processing profiles that users can create and manage"""
     name = models.CharField(max_length=100, unique=True)
@@ -179,14 +59,32 @@ class ProcessingProfile(models.Model):
     def get_detector_instance(self):
         """Dynamically import and return the detector instance"""
         try:
+            print(f"🔄 [DETECTOR] Importing {self.detector_class} from {self.detector_module}")
+            
+            # Import the module
             module = __import__(self.detector_module, fromlist=[self.detector_class])
+            print(f"✅ [DETECTOR] Module imported: {module}")
+            
+            # Get the class
             detector_class = getattr(module, self.detector_class)
-            return detector_class(**self.config_parameters)
+            print(f"✅ [DETECTOR] Class found: {detector_class}")
+            
+            # Create instance with config parameters
+            instance = detector_class(**self.config_parameters)
+            print(f"✅ [DETECTOR] Instance created: {instance}")
+            
+            return instance
+            
         except (ImportError, AttributeError) as e:
-            print(f"Error loading detector {self.detector_class}: {e}")
+            print(f"❌ [DETECTOR] Error loading detector {self.detector_class}: {e}")
+            import traceback
+            traceback.print_exc()
+            
             # Fallback to default detector
             from ml.vehicle_detector import RTXVehicleDetector
+            print("🔄 [DETECTOR] Using fallback RTXVehicleDetector")
             return RTXVehicleDetector()
+
 
 class Location(models.Model):
     name = models.CharField(max_length=100)
@@ -216,10 +114,100 @@ class Location(models.Model):
         from ml.detector_factory import DetectorFactory
         return DetectorFactory.get_detector(self.processing_profile)
 
+class AnalysisSession(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=200, help_text="User-defined name for this session")
+    location = models.ForeignKey('Location', on_delete=models.CASCADE, help_text="Location this session covers")
+    start_datetime = models.DateTimeField(help_text="Start datetime of the session")
+    end_datetime = models.DateTimeField(help_text="End datetime of the session")
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('pending_upload', 'Pending Upload'),
+            ('processing', 'Processing'),
+            ('completed', 'Completed'),
+            ('failed', 'Failed'),
+        ],
+        default='pending_upload'
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    # NEW: Add field to store the processed video path for the entire session
+    processed_session_video_path = models.FileField(upload_to='processed_session_videos/', null=True, blank=True)
+
+    def __str__(self):
+        return f"Session: {self.name} ({self.location.display_name}) - {self.start_datetime} to {self.end_datetime}"
+
+    class Meta:
+        ordering = ['-created_at']
+
+class VideoFile(models.Model):
+    # ... existing fields ...
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    filename = models.CharField(max_length=255)
+    file_path = models.FileField(upload_to='videos/')
+    uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    uploaded_at = models.DateTimeField(default=timezone.now)
+
+    # NEW FIELDS FOR VIDEO METADATA
+    video_date = models.DateField(null=True, blank=True, help_text="Date when video was recorded")
+    video_start_time = models.TimeField(null=True, blank=True, help_text="Start time of video recording")
+    video_end_time = models.TimeField(null=True, blank=True, help_text="End time of video recording")
+    original_duration = models.FloatField(null=True, blank=True, help_text="Original video duration in seconds")
+
+    # NEW FIELD: Link to Analysis Session
+    analysis_session = models.ForeignKey(AnalysisSession, on_delete=models.CASCADE, null=True, blank=True, related_name='video_files')
+
+    # Existing fields
+    processed = models.BooleanField(default=False)
+    processed_video_path = models.FileField(upload_to='processed_videos/', null=True, blank=True)
+    processing_status = models.CharField(
+        max_length=50,
+        choices=[
+            ('pending', 'Pending'),
+            ('processing', 'Processing'),
+            ('completed', 'Completed'),
+            ('failed', 'Failed')
+        ],
+        default='pending'
+    )
+    duration_seconds = models.FloatField(null=True, blank=True)
+    fps = models.FloatField(null=True, blank=True)
+    total_frames = models.IntegerField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    title = models.CharField(max_length=200, null=True, blank=True)
+    resolution = models.CharField(max_length=20, null=True, blank=True)
+
+    def __str__(self):
+        date_str = self.video_date.strftime("%Y-%m-%d") if self.video_date else "Unknown Date"
+        return f"{self.filename} - {date_str}"
+
+    def get_video_time_range(self):
+        """Get formatted time range for display"""
+        if self.video_start_time and self.video_end_time:
+            return f"{self.video_start_time.strftime('%H:%M')} - {self.video_end_time.strftime('%H:%M')}"
+        return "Time unknown"
+
+class VehicleType(models.Model):
+    name = models.CharField(max_length=50, unique=True)
+    display_name = models.CharField(max_length=50, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def save(self, *args, **kwargs):
+        if not self.display_name:
+            self.display_name = self.name.capitalize()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.display_name
+
 class TrafficAnalysis(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    video_file = models.OneToOneField('VideoFile', on_delete=models.CASCADE, related_name='traffic_analysis')
-    location = models.ForeignKey('Location', on_delete=models.SET_NULL, null=True, blank=True)
+    # Make video_file optional
+    video_file = models.OneToOneField(VideoFile, on_delete=models.CASCADE, related_name='traffic_analysis', null=True, blank=True)
+    # Add the session link
+    analysis_session = models.ForeignKey(AnalysisSession, on_delete=models.CASCADE, null=True, blank=True, related_name='traffic_analyses')
+    location = models.ForeignKey(Location, on_delete=models.SET_NULL, null=True, blank=True)
     
     total_vehicles = models.IntegerField(default=0)
     processing_time_seconds = models.FloatField(default=0)
@@ -259,57 +247,13 @@ class TrafficAnalysis(models.Model):
     analysis_data = models.JSONField(default=dict)
     metrics_summary = models.JSONField(default=dict)
     
-    # ===== NEW FIELDS FOR ENHANCED METRICS =====
-    
-    # Hourly Breakdown
-    hourly_breakdown = models.JSONField(
-        default=dict,
-        help_text="Vehicle counts by hour: {'0': {'car': 10, 'truck': 2}, '1': {'car': 15, 'truck': 3}}"
-    )
-    
-    # Speed Analysis
-    speed_analysis = models.JSONField(
-        default=dict,
-        help_text="Average speeds by vehicle type: {'car': 45.2, 'truck': 38.7}"
-    )
-    
-    # Traffic Flow Metrics
-    traffic_flow_rate = models.FloatField(
-        null=True, blank=True,
-        help_text="Vehicles per hour"
-    )
-    density_vehicles_per_km = models.FloatField(
-        null=True, blank=True,
-        help_text="Vehicle density per kilometer"
-    )
-    average_gap_seconds = models.FloatField(
-        null=True, blank=True,
-        help_text="Average time between vehicles in seconds"
-    )
-    
-    # Quality Metrics
-    detection_accuracy = models.FloatField(
-        null=True, blank=True,
-        help_text="Overall detection confidence score (0-1)"
-    )
-    processing_quality_score = models.FloatField(
-        null=True, blank=True,
-        help_text="Overall quality score considering multiple factors"
-    )
-    frames_processed = models.IntegerField(default=0)
-    average_confidence = models.FloatField(default=0.0)
-    
-    # Enhanced detection tracking
-    detection_consistency = models.FloatField(
-        null=True, blank=True,
-        help_text="How consistent detections are across frames (0-1)"
-    )
-
     class Meta:
         verbose_name_plural = "Traffic Analyses"
         indexes = [
             models.Index(fields=['analyzed_at']),
             models.Index(fields=['location', 'analyzed_at']),
+            # Add index for session
+            models.Index(fields=['analysis_session', 'analyzed_at']),
         ]
 
     def get_vehicle_breakdown(self):
@@ -548,4 +492,3 @@ def update_traffic_analysis_counts(sender, instance, created, **kwargs):
             analysis.bicycle_count + analysis.other_count
         )
         analysis.save()
-

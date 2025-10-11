@@ -1,6 +1,7 @@
 # trapickapp/serializers.py
 from rest_framework import serializers
-from .models import VehicleType, Location, VideoFile, TrafficAnalysis, Detection, TrafficPrediction, ProcessingProfile
+from .models import VehicleType, Location, VideoFile, TrafficAnalysis, Detection, TrafficPrediction, ProcessingProfile, AnalysisSession
+
 
 class VehicleTypeSerializer(serializers.ModelSerializer):
     class Meta:
@@ -37,14 +38,16 @@ class LocationSerializer(serializers.ModelSerializer):
 class VideoFileSerializer(serializers.ModelSerializer):
     video_date_display = serializers.SerializerMethodField()
     time_range = serializers.SerializerMethodField()
-    
+    session_name = serializers.CharField(source='analysis_session.name', read_only=True, allow_null=True) # Add session name
+
     class Meta:
         model = VideoFile
         fields = [
-            'id', 'filename', 'processing_status', 'uploaded_at', 
+            'id', 'filename', 'processing_status', 'uploaded_at',
             'processed', 'duration_seconds', 'title',
             'video_date', 'video_start_time', 'video_end_time',
-            'video_date_display', 'time_range'
+            'video_date_display', 'time_range', 'session_name', # Include session name
+            'analysis_session' # Include session ID for linking
         ]
     
     def get_video_date_display(self, obj):
@@ -123,3 +126,20 @@ class TrafficPredictionSerializer(serializers.ModelSerializer):
         data['hour_display'] = f"{instance.hour_of_day:02d}:00"
         data['day_name'] = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][instance.day_of_week]
         return data
+    
+class AnalysisSessionSerializer(serializers.ModelSerializer):
+    location_details = LocationSerializer(source='location', read_only=True)
+    video_files_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AnalysisSession
+        fields = [
+            'id', 'name', 'location', 'location_details', 'start_datetime', 'end_datetime',
+            'status', 'created_at', 'processed_at', 'video_files_count',
+            # NEW: Add the field to the serializer
+            'processed_session_video_path'
+        ]
+        read_only_fields = ['id', 'created_at', 'processed_at', 'video_files_count']
+
+    def get_video_files_count(self, obj):
+        return obj.video_files.count()

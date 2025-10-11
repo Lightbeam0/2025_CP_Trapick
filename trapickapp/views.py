@@ -2,11 +2,12 @@
 import json
 import threading
 import os
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from django.core.files.storage import FileSystemStorage
 from django.utils import timezone
-from .models import VideoFile, TrafficAnalysis
+from .models import AnalysisSession, VideoFile, TrafficAnalysis
 
 # Import your ML module
 try:
@@ -157,3 +158,59 @@ def health_check(request):
         'video_count': VideoFile.objects.count(),
         'analysis_count': TrafficAnalysis.objects.count()
     })
+
+def view_processed_video(request, video_id):
+    """Serve processed videos for viewing"""
+    video = get_object_or_404(VideoFile, id=video_id)
+    
+    if video.processed_video_path:
+        video_path = video.processed_video_path.path
+        if os.path.exists(video_path):
+            with open(video_path, 'rb') as f:
+                response = HttpResponse(f.read(), content_type='video/mp4')
+                response['Content-Disposition'] = f'inline; filename="{video.filename}_processed.mp4"'
+                return response
+    
+    return HttpResponse("Video not found", status=404)
+
+def view_session_video(request, session_id):
+    """Serve processed session videos for viewing"""
+    session = get_object_or_404(AnalysisSession, id=session_id)
+    
+    if session.processed_session_video_path:
+        video_path = session.processed_session_video_path.path
+        if os.path.exists(video_path):
+            with open(video_path, 'rb') as f:
+                response = HttpResponse(f.read(), content_type='video/mp4')
+                response['Content-Disposition'] = f'inline; filename="session_{session.name}_processed.mp4"'
+                return response
+    
+    return HttpResponse("Session video not found", status=404)
+
+def download_processed_video(request, video_id):
+    """Download processed videos"""
+    video = get_object_or_404(VideoFile, id=video_id)
+    
+    if video.processed_video_path:
+        video_path = video.processed_video_path.path
+        if os.path.exists(video_path):
+            with open(video_path, 'rb') as f:
+                response = HttpResponse(f.read(), content_type='video/mp4')
+                response['Content-Disposition'] = f'attachment; filename="{video.filename}_processed.mp4"'
+                return response
+    
+    return HttpResponse("Video not found", status=404)
+
+def download_session_video(request, session_id):
+    """Download processed session videos"""
+    session = get_object_or_404(AnalysisSession, id=session_id)
+    
+    if session.processed_session_video_path:
+        video_path = session.processed_session_video_path.path
+        if os.path.exists(video_path):
+            with open(video_path, 'rb') as f:
+                response = HttpResponse(f.read(), content_type='video/mp4')
+                response['Content-Disposition'] = f'attachment; filename="session_{session.name}_processed.mp4"'
+                return response
+    
+    return HttpResponse("Session video not found", status=404)

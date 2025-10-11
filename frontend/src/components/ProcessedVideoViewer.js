@@ -1,70 +1,97 @@
-// src/components/ProcessedVideoViewer.js
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
+const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
   const [videoUrl, setVideoUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [analysisData, setAnalysisData] = useState(null);
-  const [videoInfo, setVideoInfo] = useState(null);
+  const [itemInfo, setItemInfo] = useState(null);
   const [videoLoadError, setVideoLoadError] = useState(null);
 
   useEffect(() => {
-    const fetchVideoData = async () => {
+    const fetchItemData = async () => {
       try {
         setLoading(true);
         setError(null);
         setVideoLoadError(null);
-        
-        console.log(`Fetching data for video ID: ${videoId}`);
-        
-        // Get analysis data
-        const analysisResponse = await axios.get(`http://127.0.0.1:8000/api/analysis/${videoId}/`);
-        console.log("Analysis data loaded:", analysisResponse.data);
-        
-        setAnalysisData(analysisResponse.data.analysis);
-        setVideoInfo(analysisResponse.data.video_info);
-        
-        // Use direct video URL for viewing (NOT download endpoint)
-        const directVideoUrl = `http://127.0.0.1:8000/api/video/${videoId}/view/`;
-        console.log("Setting video URL to:", directVideoUrl);
-        
+
+        console.log(`🔍 Fetching data for ${type} ID: ${videoId}`);
+
+        let analysisResponse, videoUrlEndpoint, itemInfoResponse;
+
+        if (type === 'session') {
+          // Fetch aggregated analysis for the session
+          try {
+            analysisResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/aggregated-analysis/`);
+          } catch (aggError) {
+            console.warn("Aggregated analysis endpoint not found, trying to get session analyses list...");
+            try {
+              const sessionAnalysesResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/traffic-analyses/`);
+              const sessionAnalyses = sessionAnalysesResponse.data;
+              const aggregatedAnalysis = sessionAnalyses.find(a => a.analysis_session === videoId);
+              if (aggregatedAnalysis) {
+                analysisResponse = { data: aggregatedAnalysis };
+              } else {
+                throw new Error("No aggregated analysis found for this session.");
+              }
+            } catch (listError) {
+              console.error("Error fetching session analyses list:", listError);
+              throw listError;
+            }
+          }
+
+          // Fetch session details for info display
+          itemInfoResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/`);
+          
+          // Use session video endpoint
+          videoUrlEndpoint = `http://127.0.0.1:8000/api/session-video/${videoId}/view/`;
+
+        } else { // type === 'video'
+          // Fetch analysis for the video
+          analysisResponse = await axios.get(`http://127.0.0.1:8000/api/analysis/${videoId}/`);
+          itemInfoResponse = analysisResponse;
+          videoUrlEndpoint = `http://127.0.0.1:8000/api/video/${videoId}/view/`;
+        }
+
+        console.log(`${type === 'session' ? "Session" : "Video"} analysis data loaded:`, analysisResponse.data);
+        setAnalysisData(analysisResponse.data);
+        setItemInfo(itemInfoResponse.data);
+
         // Test if the video endpoint is accessible
         try {
-          const testResponse = await axios.head(directVideoUrl, { timeout: 10000 });
+          const testResponse = await axios.head(videoUrlEndpoint, { timeout: 10000 });
           console.log("Video endpoint test successful:", testResponse.status);
         } catch (testError) {
           console.warn('Video endpoint test failed, but will try to play anyway:', testError.message);
         }
-        
-        setVideoUrl(directVideoUrl);
-        
+
+        console.log("Setting video URL to:", videoUrlEndpoint);
+        setVideoUrl(videoUrlEndpoint);
+
       } catch (err) {
-        console.error('Error loading video data:', err);
+        console.error(`Error loading ${type} data:`, err);
         if (err.response?.status === 404) {
-          setError('Analysis data not found. The video may not exist or is still processing.');
+          setError(`${type === 'session' ? 'Session analysis' : 'Analysis data'} not found. The ${type} may not exist or is still processing.`);
         } else if (err.code === 'NETWORK_ERROR' || err.message.includes('Network Error')) {
           setError('Network error. Please check if the Django server is running.');
         } else {
-          setError('Error loading analysis data: ' + (err.response?.data?.error || err.message));
+          setError(`Error loading ${type} data: ${err.response?.data?.error || err.message}`);
         }
       } finally {
         setLoading(false);
       }
     };
 
-    if (videoId) {
-      fetchVideoData();
+    if (videoId && type) {
+      fetchItemData();
     }
 
-    // Cleanup function
     return () => {
-      // Note: We're not using blob URLs anymore, so no need to revoke
+      // Cleanup if needed
     };
-  }, [videoId]);
+  }, [videoId, type]);
 
-  // Add this function to ProcessedVideoViewer.js
   const renderYJunctionAnalysis = (analysisData) => {
     if (!analysisData.path_analysis) return null;
 
@@ -170,20 +197,19 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
   const handleVideoError = (e) => {
     console.error('Video playback error:', e);
     setVideoLoadError('Error playing video. The video file may be corrupted, still processing, or the format is not supported.');
-    
-    // Provide alternative download option
-    const downloadUrl = `http://127.0.0.1:8000/api/video/${videoId}/download/`;
-    console.log('Alternative download URL:', downloadUrl);
   };
 
   const handleDownloadVideo = () => {
-    const downloadUrl = `http://127.0.0.1:8000/api/video/${videoId}/download/`;
+    const downloadUrl = type === 'session' 
+      ? `http://127.0.0.1:8000/api/session-video/${videoId}/download/`
+      : `http://127.0.0.1:8000/api/video/${videoId}/download/`;
     window.open(downloadUrl, '_blank');
   };
 
   const handleTryAlternativeView = () => {
-    // Try the direct endpoint as fallback
-    const alternativeUrl = `http://127.0.0.1:8000/api/video/${videoId}/direct/`;
+    const alternativeUrl = type === 'session'
+      ? `http://127.0.0.1:8000/api/session-video/${videoId}/direct/`
+      : `http://127.0.0.1:8000/api/video/${videoId}/direct/`;
     setVideoUrl(alternativeUrl);
     setVideoLoadError(null);
     console.log('Trying alternative video URL:', alternativeUrl);
@@ -191,18 +217,62 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
 
   // Export functions
   const handleExportCSV = () => {
-    const exportUrl = `http://127.0.0.1:8000/api/export/${videoId}/csv/`;
+    const exportUrl = type === 'session'
+      ? `http://127.0.0.1:8000/api/export/session/${videoId}/csv/`
+      : `http://127.0.0.1:8000/api/export/${videoId}/csv/`;
     window.open(exportUrl, '_blank');
   };
 
   const handleExportPDF = () => {
-    const exportUrl = `http://127.0.0.1:8000/api/export/${videoId}/pdf/`;
+    const exportUrl = type === 'session'
+      ? `http://127.0.0.1:8000/api/export/session/${videoId}/pdf/`
+      : `http://127.0.0.1:8000/api/export/${videoId}/pdf/`;
     window.open(exportUrl, '_blank');
   };
 
   const handleExportExcel = () => {
-    const exportUrl = `http://127.0.0.1:8000/api/export/${videoId}/excel/`;
+    const exportUrl = type === 'session'
+      ? `http://127.0.0.1:8000/api/export/session/${videoId}/excel/`
+      : `http://127.0.0.1:8000/api/export/${videoId}/excel/`;
     window.open(exportUrl, '_blank');
+  };
+
+  // Update the header and info display based on type
+  const renderHeaderAndInfo = () => {
+    if (type === 'session') {
+      return (
+        <>
+          <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#2d3748', margin: '0 0 4px 0' }}>
+            Session Analysis: {itemInfo?.name || "Loading..."}
+          </h1>
+          {itemInfo && (
+            <p style={{ color: '#666', margin: 0 }}>
+              Location: {itemInfo.location_details?.display_name || itemInfo.location || "Unknown"} •
+              Videos: {itemInfo.video_files_count || 0} •
+              Period: {itemInfo.start_datetime ? new Date(itemInfo.start_datetime).toLocaleDateString() : "Unknown"} to {itemInfo.end_datetime ? new Date(itemInfo.end_datetime).toLocaleDateString() : "Unknown"}
+            </p>
+          )}
+        </>
+      );
+    } else { // type === 'video'
+      return (
+        <>
+          <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#2d3748', margin: '0 0 4px 0' }}>
+            Processed Video Analysis
+          </h1>
+          {itemInfo?.video_info && (
+            <p style={{ color: '#666', margin: 0 }}>
+              {itemInfo.video_info.filename} • Uploaded: {new Date(itemInfo.video_info.uploaded_at).toLocaleDateString()}
+            </p>
+          )}
+          {!itemInfo?.video_info && itemInfo?.filename && (
+            <p style={{ color: '#666', margin: 0 }}>
+              {itemInfo.filename} • Uploaded: {new Date(itemInfo.uploaded_at).toLocaleDateString()}
+            </p>
+          )}
+        </>
+      );
+    }
   };
 
   // Simple loading component
@@ -211,15 +281,15 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
       <div className="main-content">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '400px' }}>
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '18px', color: '#666', marginBottom: '16px' }}>Loading analysis data...</div>
-            <div style={{ 
-              width: '40px', 
-              height: '40px', 
-              border: '4px solid #f3f3f3', 
-              borderTop: '4px solid #3b82f6', 
-              borderRadius: '50%', 
-              margin: '0 auto', 
-              animation: 'spin 1s linear infinite' 
+            <div style={{ fontSize: '18px', color: '#666', marginBottom: '16px' }}>Loading {type} analysis data...</div>
+            <div style={{
+              width: '40px',
+              height: '40px',
+              border: '4px solid #f3f3f3',
+              borderTop: '4px solid #3b82f6',
+              borderRadius: '50%',
+              margin: '0 auto',
+              animation: 'spin 1s linear infinite'
             }}></div>
           </div>
         </div>
@@ -232,7 +302,7 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
       <div className="main-content">
         <div style={{ padding: '40px', textAlign: 'center' }}>
           <div style={{ color: '#ef4444', fontSize: '18px', marginBottom: '16px' }}>{error}</div>
-          <button 
+          <button
             onClick={onClose}
             style={{
               padding: '10px 20px',
@@ -253,17 +323,8 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
   return (
     <div className="main-content">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-        <div>
-          <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#2d3748', margin: '0 0 4px 0' }}>
-            Processed Video Analysis
-          </h1>
-          {videoInfo && (
-            <p style={{ color: '#666', margin: 0 }}>
-              {videoInfo.filename} • Uploaded: {new Date(videoInfo.uploaded_at).toLocaleDateString()}
-            </p>
-          )}
-        </div>
-        <button 
+        {renderHeaderAndInfo()}
+        <button
           onClick={onClose}
           style={{
             padding: '10px 20px',
@@ -278,70 +339,68 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
         </button>
       </div>
 
-      {/* Y-Junction Analysis */}
-      {analysisData && analysisData.path_analysis ? (
-        renderYJunctionAnalysis(analysisData)
-      ) : (
-        // Analysis Summary
-        analysisData && (
-          <div className="dashboard-card" style={{ marginBottom: '24px' }}>
-            <h3 style={{ marginBottom: '16px' }}>Analysis Summary</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
-              <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#3b82f6' }}>
-                  {analysisData.total_vehicles || 0}
-                </div>
-                <div style={{ fontSize: '14px', color: '#666' }}>Total Vehicles</div>
+      {/* Analysis Summary */}
+      {analysisData && analysisData.summary && (
+        <div className="dashboard-card" style={{ marginBottom: '24px' }}>
+          <h3 style={{ marginBottom: '16px' }}>Analysis Summary</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
+              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#3b82f6' }}>
+                {analysisData.summary.total_vehicles || 0}
               </div>
-              
-              <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
-                  {analysisData.processing_time ? analysisData.processing_time.toFixed(1) : 0}s
-                </div>
-                <div style={{ fontSize: '14px', color: '#666' }}>Processing Time</div>
-              </div>
-              
-              <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: analysisData.congestion_level === 'high' ? '#ef4444' : '#f59e0b' }}>
-                  {analysisData.congestion_level || 'Unknown'}
-                </div>
-                <div style={{ fontSize: '14px', color: '#666' }}>Congestion Level</div>
-              </div>
-              
-              <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#8b5cf6' }}>
-                  {analysisData.traffic_pattern || 'Unknown'}
-                </div>
-                <div style={{ fontSize: '14px', color: '#666' }}>Traffic Pattern</div>
-              </div>
+              <div style={{ fontSize: '14px', color: '#666' }}>Total Vehicles</div>
             </div>
 
-            {/* Vehicle Breakdown */}
-            {analysisData.vehicle_breakdown && (
-              <div>
-                <h4 style={{ marginBottom: '12px' }}>Vehicle Breakdown</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
-                  {Object.entries(analysisData.vehicle_breakdown).map(([vehicleType, count]) => (
-                    <div key={vehicleType} style={{
-                      padding: '12px',
-                      backgroundColor: '#f8fafc',
-                      borderRadius: '6px',
-                      textAlign: 'center'
-                    }}>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#2d3748' }}>
-                        {count}
-                      </div>
-                      <div style={{ fontSize: '12px', color: '#666', textTransform: 'capitalize' }}>
-                        {vehicleType}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
+              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
+                {analysisData.metadata?.processing_time ? analysisData.metadata.processing_time.toFixed(1) : 0}s
               </div>
-            )}
+              <div style={{ fontSize: '14px', color: '#666' }}>Processing Time</div>
+            </div>
+
+            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
+              <div style={{ fontSize: '24px', fontWeight: 'bold', color: analysisData.metrics?.congestion_level === 'high' ? '#ef4444' : '#f59e0b' }}>
+                {analysisData.metrics?.congestion_level || 'Unknown'}
+              </div>
+              <div style={{ fontSize: '14px', color: '#666' }}>Congestion Level</div>
+            </div>
+
+            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f0f9ff', borderRadius: '8px' }}>
+              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#8b5cf6' }}>
+                {analysisData.metrics?.traffic_pattern || 'Unknown'}
+              </div>
+              <div style={{ fontSize: '14px', color: '#666' }}>Traffic Pattern</div>
+            </div>
           </div>
-        )
+
+          {/* Vehicle Breakdown */}
+          {analysisData.summary.vehicle_breakdown && (
+            <div>
+              <h4 style={{ marginBottom: '12px' }}>Vehicle Breakdown</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px' }}>
+                {Object.entries(analysisData.summary.vehicle_breakdown).map(([vehicleType, count]) => (
+                  <div key={vehicleType} style={{
+                    padding: '12px',
+                    backgroundColor: '#f8fafc',
+                    borderRadius: '6px',
+                    textAlign: 'center'
+                  }}>
+                    <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#2d3748' }}>
+                      {count}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#666', textTransform: 'capitalize' }}>
+                      {vehicleType}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       )}
+
+      {/* Y-Junction Analysis */}
+      {analysisData && analysisData.path_analysis && renderYJunctionAnalysis(analysisData)}
 
       {/* Export Buttons */}
       <div style={{ marginTop: '20px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
@@ -358,7 +417,7 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
 
       {/* Processed Video Section */}
       <div className="dashboard-card">
-        <h3 style={{ marginBottom: '16px' }}>Processed Video with Detection Overlay</h3>
+        <h3 style={{ marginBottom: '16px' }}>Processed {type === 'session' ? 'Session' : 'Video'} with Detection Overlay</h3>
         
         {videoLoadError && (
           <div style={{ 
@@ -410,13 +469,13 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
                 <strong>Video URL:</strong> <span style={{ fontFamily: 'monospace', fontSize: '12px' }}>{videoUrl}</span>
               </p>
             </div>
-            
-            <video 
-              controls 
-              style={{ 
-                width: '100%', 
-                maxHeight: '70vh', 
-                border: '2px solid #e5e7eb', 
+
+            <video
+              controls
+              style={{
+                width: '100%',
+                maxHeight: '70vh',
+                border: '2px solid #e5e7eb',
                 borderRadius: '8px',
                 backgroundColor: '#000'
               }}
@@ -430,7 +489,7 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
               <source src={videoUrl} type="video/mp4; codecs=avc1.42E01E,mp4a.40.2" />
               Your browser does not support the video tag.
             </video>
-            
+
             <div style={{ marginTop: '20px', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
               <h4 style={{ marginBottom: '12px' }}>Video Controls & Troubleshooting</h4>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '16px', fontSize: '14px' }}>
@@ -482,13 +541,13 @@ const ProcessedVideoViewer = ({ videoId, onClose, onBack }) => {
         ) : (
           <div style={{ textAlign: 'center', padding: '40px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
             <div style={{ fontSize: '16px', color: '#666', marginBottom: '16px' }}>
-              Processed video not available
+              Processed {type} video not available
             </div>
             <p style={{ color: '#999', fontSize: '14px', marginBottom: '20px' }}>
-              The processed video with detection overlays is not available for this analysis.
-              This could be because the video is still processing or there was an issue during processing.
+              The processed video with detection overlays is not available for this {type}.
+              This could be because the {type} is still processing or there was an issue during processing.
             </p>
-            <button 
+            <button
               onClick={handleDownloadVideo}
               style={{
                 padding: '10px 20px',
