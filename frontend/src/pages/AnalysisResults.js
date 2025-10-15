@@ -92,67 +92,25 @@ function AnalysisResults() {
       const sessionsWithDetails = await Promise.all(
         sessionData.map(async (session) => {
           try {
-            // NEW: Endpoint to get aggregated analysis for a session
-            // This could be a new endpoint like /api/sessions/{id}/analysis/
-            // OR modify /api/analysis/{id}/ to also handle session IDs if they point to a session analysis
-            // For now, let's assume the aggregated analysis is linked via analysis_session FK in TrafficAnalysis
-            // and we fetch it based on session ID if it exists.
-            // We might need to create a new endpoint in api_views.py to get the aggregated analysis for a session.
-            // Let's call it /api/sessions/{id}/aggregated-analysis/ for this example.
-            // However, for simplicity in this code, let's assume the analysis data is part of the session detail
-            // or fetched separately using the session ID in the viewer if needed.
-            // Let's fetch the session detail which might contain a link to the aggregated analysis.
-            // We'll need to check the session detail endpoint response structure.
-            // If the session detail itself contains the aggregated analysis data (e.g., if we link it directly),
-            // we can fetch it here.
-            // Let's assume session.traffic_analyses.all() would give us the aggregated one if status is completed.
-            // We might need to call the session detail endpoint to get related analyses.
             const sessionDetailResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${session.id}/`);
             const sessionDetail = sessionDetailResponse.data;
-            // Check if there's an associated aggregated analysis
-            // We might need to call /api/sessions/{id}/traffic-analyses/ or similar to find the aggregated one
-            // For now, let's just fetch the session and mark it as needing session-specific viewing
-            // The ProcessedVideoViewer will handle fetching the correct analysis based on type.
-            // We could fetch the aggregated analysis here if needed, but let's defer that to the viewer for now
-            // or create a specific endpoint for it.
-            // Let's just get the session detail and add type identifier.
-            // We assume the viewer will use the session ID to fetch the aggregated analysis.
-            // Check if there are completed analyses linked to this session
+            
             let aggregatedAnalysis = null;
             if (session.status === 'completed') {
                  // Try to get the aggregated analysis for this session
-                 // NEW: Create this endpoint in api_views.py if needed
-                 // e.g., /api/sessions/{session_id}/aggregated-analysis/
-                 // For now, let's assume the session detail has the analysis data or we fetch it separately in the viewer
-                 // based on the session ID.
-                 // Let's call a potential new endpoint or modify existing logic.
-                 // Option 1: New endpoint /api/sessions/{id}/aggregated-analysis/
-                 // Option 2: Modify /api/analysis/ to accept session_id if video_id is not found
-                 // Option 3: Fetch all analyses for session and find the one marked as aggregated
-                 // Let's go with Option 1 for clarity.
-                 // We'll create this endpoint later.
-                 // For now, just mark the session and let the viewer know it's a session.
-                 // We'll need to fetch the aggregated analysis in the viewer itself using the session ID.
-                 // Let's add a flag or fetch it here if possible.
-                 // Let's create the endpoint first.
-                 // Assume endpoint /api/sessions/{session_id}/aggregated-analysis/ exists and returns the aggregated analysis.
                  try {
                      const aggAnalysisResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${session.id}/aggregated-analysis/`);
-                     aggregatedAnalysis = aggAnalysisResponse.data; // This is the aggregated analysis data
+                     aggregatedAnalysis = aggAnalysisResponse.data;
                  } catch (aggError) {
                      console.error(`Error fetching aggregated analysis for session ${session.id}:`, aggError);
-                     // If not found, it might mean the session processing finished but the aggregated analysis wasn't saved correctly,
-                     // or the endpoint doesn't exist yet.
-                     // For now, we'll proceed and let the viewer handle fetching if needed.
-                     // Or we could fetch all analyses for the session and pick the one linked to the session.
-                     // Let's fetch all analyses for the session and see if one is linked.
-                     // NEW: Endpoint to get analyses for a session
-                     // e.g., /api/sessions/{session_id}/traffic-analyses/
-                     // This should return analyses where analysis_session_id = session.id
+                     // If not found, fetch all analyses for the session and pick the one linked to the session
                      try {
+                         // *** CORRECTED: Use the new endpoint path ***
                          const sessionAnalysesResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${session.id}/traffic-analyses/`);
                          const sessionAnalyses = sessionAnalysesResponse.data;
                          // Find the one that's marked as aggregated or the one linked directly to the session
+                         // In our case, TrafficAnalysis linked via analysis_session should be the aggregated one.
+                         // Find the analysis where analysis_session equals the session ID
                          const aggAnalysis = sessionAnalyses.find(a => a.analysis_session === session.id);
                          if (aggAnalysis) {
                              aggregatedAnalysis = aggAnalysis; // Use the found aggregated analysis
@@ -162,7 +120,6 @@ function AnalysisResults() {
                      }
                  }
             }
-
 
             return {
               type: 'session', // Add type identifier
@@ -535,15 +492,15 @@ function AnalysisResults() {
                     {item.analysis ? (
                       <div>
                         <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '4px' }}>
-                          <span style={{ fontWeight: '600' }}>{item.analysis.total_ehicles} vehicles</span>
+                          <span style={{ fontWeight: '600' }}>{item.analysis.total_vehicles} vehicles</span>
                           {item.analysis.congestion_level && (
                             getCongestionBadge(item.analysis.congestion_level)
                           )}
                         </div>
                         <div style={{ fontSize: '12px', color: '#666' }}>
-                          Cars: {item.analysis.vehicle_breakdown?.cars || 0} •
-                          Trucks: {item.analysis.vehicle_breakdown?.trucks || 0} •
-                          Motorcycles: {item.analysis.vehicle_breakdown?.motorcycles || 0}
+                          Cars: {item.analysis.car_count || 0} •
+                          Trucks: {item.analysis.truck_count || 0} •
+                          Motorcycles: {item.analysis.motorcycle_count || 0}
                         </div>
                       </div>
                     ) : item.status === 'completed' || item.processing_status === 'completed' ? ( // Check status field for session or video

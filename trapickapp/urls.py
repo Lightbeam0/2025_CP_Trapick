@@ -52,5 +52,6 @@ urlpatterns = [
     path('api/video/<uuid:video_id>/view/', views.view_processed_video, name='view_processed_video'),
     path('api/video/<uuid:video_id>/download/', views.download_processed_video, name='download_processed_video'),
     path('api/session-video/<uuid:session_id>/view/', views.view_session_video, name='view_session_video'),
-    path('api/session-video/<uuid:session_id>/download/', views.download_session_video, name='download_session_video'),  
+    path('api/session-video/<uuid:session_id>/download/', views.download_session_video, name='download_session_video'),
+    path('api/sessions/<uuid:session_id>/traffic-analyses/', api_views.SessionTrafficAnalysesListAPI.as_view(), name='session_traffic_analyses'),
 ]

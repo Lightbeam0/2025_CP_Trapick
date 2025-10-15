@@ -134,6 +134,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+# NEW: File upload size limits - ADD THESE LINES
+DATA_UPLOAD_MAX_MEMORY_SIZE = 2147483648  # 2GB in bytes
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2147483648  # 2GB in bytes
+
 # Allow React dev server to access Django
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
@@ -143,6 +147,27 @@ CORS_ALLOWED_ORIGINS = [
 # Optional: Allow all headers and methods for development
 CORS_ALLOW_ALL_ORIGINS = True
 
+# NEW: Additional CORS settings for large file uploads
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
 
 # NEW: Add Channels configuration
 ASGI_APPLICATION = 'trapick.asgi.application'
@@ -169,3 +194,7 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.FormParser',
     ],
 }
+
+# NEW: Increase request timeout for large file uploads
+FILE_UPLOAD_PERMISSIONS = 0o644
+FILE_UPLOAD_DIRECTORY_PERMISSIONS = 0o755

@@ -182,12 +182,13 @@ class VideoUploadAPI(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Validate file size (max 500MB)
-            max_size = 500 * 1024 * 1024  # 500MB
+            # *** UPDATE: Validate file size (max 2GB to match frontend) ***
+            max_size = 2 * 1024 * 1024 * 1024  # 2GB in bytes
             if video_file.size > max_size:
                 print(f"❌ ERROR: File too large: {video_file.size} bytes")
+                # *** UPDATE: Error message to reflect the new limit ***
                 return Response(
-                    {'error': 'File too large. Maximum size is 500MB.'},
+                    {'error': 'File too large. Maximum size is 2GB.'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -1374,10 +1375,23 @@ class ProcessAnalysisSessionAPI(APIView):
         if session.status in ['processing', 'completed']:
             return Response({'error': f'Session is already {session.status}.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check if there are videos associated
-        video_files = session.video_files.filter(processed=True) # Only consider videos that are already individually processed or uploaded
+        # UPDATED: Check if there are videos associated with the session
+        # Look for videos that are uploaded and ready for session processing
+        video_files = session.video_files.filter(
+            processing_status__in=['uploaded', 'completed']
+        )
+        
+        print(f"🔍 Found {video_files.count()} videos ready for session processing in session {session_id}")
+
         if not video_files.exists():
-             return Response({'error': 'No videos found in the session to process.'}, status=status.HTTP_400_BAD_REQUEST)
+            # Debug: Check if there are ANY videos linked to the session at all
+            all_session_videos = session.video_files.all()
+            print(f"🔍 Found {all_session_videos.count()} total videos linked to session {session_id}")
+            for v in all_session_videos:
+                print(f"   - Video {v.id}: {v.filename}, Status: {v.processing_status}, Processed: {v.processed}")
+            # End Debug
+
+            return Response({'error': 'No videos found in the session to process.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Update session status
         session.status = 'processing'
@@ -1413,10 +1427,15 @@ class ProcessAnalysisSessionAPI(APIView):
             session.status = 'processing'
             session.save()
 
-            # Get sorted list of video files
-            video_files = session.video_files.filter(processed=True).order_by('video_date', 'video_start_time')
-            if not video_files:
-                raise ValueError("No processed video files found in the session.")
+            # UPDATED: Get sorted list of video files - use the same filter as in post method
+            video_files = session.video_files.filter(
+                processing_status__in=['uploaded', 'completed']
+            ).order_by('video_date', 'video_start_time')
+            
+            if not video_files.exists():
+                raise ValueError("No video files found in the session for processing.")
+
+            print(f"🔄 Processing {video_files.count()} videos in session {session.name}")
 
             # Create a temporary file list for ffmpeg
             temp_list_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
@@ -1427,6 +1446,7 @@ class ProcessAnalysisSessionAPI(APIView):
                     # Ensure the path is absolute if needed by ffmpeg
                     abs_path = os.path.abspath(vf.file_path.path)
                     temp_list_file.write(f"file '{abs_path}'\n")
+                    print(f"📹 Added video to concatenation list: {vf.filename}")
                 temp_list_file.close()
 
                 progress_tracker.set_progress(10, "Concatenating video files...")
@@ -1437,8 +1457,10 @@ class ProcessAnalysisSessionAPI(APIView):
                     '-c', 'copy',
                     temp_output_path, '-y'
                 ]
+                print(f"🎬 Running ffmpeg command: {' '.join(cmd)}")
                 result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 if result.returncode != 0:
+                    print(f"❌ FFmpeg error output: {result.stderr}")
                     raise RuntimeError(f"ffmpeg failed: {result.stderr}")
 
                 progress_tracker.set_progress(30, "Concatenated successfully, starting analysis...")
@@ -1469,7 +1491,7 @@ class ProcessAnalysisSessionAPI(APIView):
                     traffic_pattern=report['metrics']['traffic_pattern'],
                     analysis_data=report,
                     metrics_summary={
-                        'source_session_id': session.id,
+                        'source_session_id': str(session.id),
                         'videos_processed_count': video_files.count(),
                         'aggregated_from_individual_analyses': False,
                     }
@@ -1562,5 +1584,28 @@ class SessionVideoViewAPI(APIView):
             print(f"Error serving session video {session_id}: {e}")
             return Response(
                 {'error': f'Error serving session video file: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class SessionTrafficAnalysesListAPI(APIView):
+    def get(self, request, session_id):
+        try:
+            session = AnalysisSession.objects.filter(id=session_id).first()
+            if not session:
+                return Response(
+                    {'error': 'Analysis session not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            session_analyses = TrafficAnalysis.objects.filter(analysis_session_id=session_id)
+            serializer = TrafficAnalysisSerializer(session_analyses, many=True)
+            return Response(serializer.data)
+
+        except Exception as e:
+            print(f"Error fetching analyses for session {session_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': 'Failed to fetch analyses for session'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

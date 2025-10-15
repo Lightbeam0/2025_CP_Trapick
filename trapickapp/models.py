@@ -453,10 +453,11 @@ from django.dispatch import receiver
 def update_video_file_status(sender, instance, created, **kwargs):
     """Update VideoFile status when analysis is created"""
     if created:
-        instance.video_file.processing_status = 'completed'
-        instance.video_file.processed = True
-        instance.video_file.processed_at = timezone.now()
-        instance.video_file.save()
+        if instance.video_file is not None: # <-- Add this check
+            instance.video_file.processing_status = 'completed'
+            instance.video_file.processed = True
+            instance.video_file.processed_at = timezone.now()
+            instance.video_file.save()
 
 @receiver(post_save, sender=Detection)
 def update_traffic_analysis_counts(sender, instance, created, **kwargs):
