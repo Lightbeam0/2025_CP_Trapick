@@ -1,3 +1,4 @@
+//src/services/websocketService.js
 class WebSocketService {
   constructor() {
     this.socket = null;

@@ -130,16 +130,33 @@ class TrafficPredictionSerializer(serializers.ModelSerializer):
 class AnalysisSessionSerializer(serializers.ModelSerializer):
     location_details = LocationSerializer(source='location', read_only=True)
     video_files_count = serializers.SerializerMethodField()
+    processed_session_video_url = serializers.SerializerMethodField()
+    processed_session_video_download_url = serializers.SerializerMethodField()  # NEW
 
     class Meta:
         model = AnalysisSession
         fields = [
             'id', 'name', 'location', 'location_details', 'start_datetime', 'end_datetime',
             'status', 'created_at', 'processed_at', 'video_files_count',
-            # NEW: Add the field to the serializer
-            'processed_session_video_path'
+            'processed_session_video_path', 'processed_session_video_url', 'processed_session_video_download_url'  # UPDATED
         ]
-        read_only_fields = ['id', 'created_at', 'processed_at', 'video_files_count']
+        read_only_fields = ['id', 'created_at', 'processed_at', 'video_files_count', 'processed_session_video_url', 'processed_session_video_download_url']
 
     def get_video_files_count(self, obj):
         return obj.video_files.count()
+
+    def get_processed_session_video_url(self, obj):
+        """Generate the URL to view the processed session video"""
+        if obj.processed_session_video_path and obj.status == 'completed':
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(f'/api/session-video/{obj.id}/view/')
+        return None
+
+    def get_processed_session_video_download_url(self, obj):
+        """Generate the URL to download the processed session video"""
+        if obj.processed_session_video_path and obj.status == 'completed':
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(f'/api/session-video/{obj.id}/download/')
+        return None

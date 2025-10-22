@@ -2,7 +2,10 @@
 from django.db import models
 from django.utils import timezone
 import uuid
+import os
 from django.contrib.auth.models import User
+from django.core.exceptions import ValidationError
+
 
 class ProcessingProfile(models.Model):
     """Customizable processing profiles that users can create and manage"""
@@ -114,6 +117,7 @@ class Location(models.Model):
         from ml.detector_factory import DetectorFactory
         return DetectorFactory.get_detector(self.processing_profile)
 
+
 class AnalysisSession(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=200, help_text="User-defined name for this session")
@@ -132,33 +136,66 @@ class AnalysisSession(models.Model):
     )
     created_at = models.DateTimeField(default=timezone.now)
     processed_at = models.DateTimeField(null=True, blank=True)
-    # NEW: Add field to store the processed video path for the entire session
-    processed_session_video_path = models.FileField(upload_to='processed_session_videos/', null=True, blank=True)
+    
+    # UPDATED: Improved FileField configuration for session videos
+    processed_session_video_path = models.FileField(
+        upload_to='processed_session_videos/', 
+        null=True, 
+        blank=True,
+        max_length=500,  # Increased max_length for longer paths
+        help_text="Processed video file for the entire analysis session"
+    )
 
     def __str__(self):
         return f"Session: {self.name} ({self.location.display_name}) - {self.start_datetime} to {self.end_datetime}"
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status']),
+            models.Index(fields=['location', 'created_at']),
+        ]
+
+    def clean(self):
+        """Validate session data"""
+        if self.start_datetime and self.end_datetime:
+            if self.end_datetime <= self.start_datetime:
+                raise ValidationError("End datetime must be after start datetime")
+    
+    def get_video_files_count(self):
+        """Get count of video files in this session"""
+        return self.video_files.count()
+    
+    def get_processed_video_url(self):
+        """Get URL for processed session video"""
+        if self.processed_session_video_path and self.status == 'completed':
+            return f"/api/session-video/{self.id}/view/"
+        return None
+
 
 class VideoFile(models.Model):
-    # ... existing fields ...
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     filename = models.CharField(max_length=255)
     file_path = models.FileField(upload_to='videos/')
     uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     uploaded_at = models.DateTimeField(default=timezone.now)
 
-    # NEW FIELDS FOR VIDEO METADATA
+    # VIDEO METADATA FIELDS
     video_date = models.DateField(null=True, blank=True, help_text="Date when video was recorded")
     video_start_time = models.TimeField(null=True, blank=True, help_text="Start time of video recording")
     video_end_time = models.TimeField(null=True, blank=True, help_text="End time of video recording")
     original_duration = models.FloatField(null=True, blank=True, help_text="Original video duration in seconds")
 
-    # NEW FIELD: Link to Analysis Session
-    analysis_session = models.ForeignKey(AnalysisSession, on_delete=models.CASCADE, null=True, blank=True, related_name='video_files')
+    # LINK TO ANALYSIS SESSION
+    analysis_session = models.ForeignKey(
+        AnalysisSession, 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True, 
+        related_name='video_files'
+    )
 
-    # Existing fields
+    # PROCESSING STATUS FIELDS
     processed = models.BooleanField(default=False)
     processed_video_path = models.FileField(upload_to='processed_videos/', null=True, blank=True)
     processing_status = models.CharField(
@@ -167,7 +204,8 @@ class VideoFile(models.Model):
             ('pending', 'Pending'),
             ('processing', 'Processing'),
             ('completed', 'Completed'),
-            ('failed', 'Failed')
+            ('failed', 'Failed'),
+            ('uploaded', 'Uploaded'),  # Added for session processing
         ],
         default='pending'
     )
@@ -180,13 +218,33 @@ class VideoFile(models.Model):
 
     def __str__(self):
         date_str = self.video_date.strftime("%Y-%m-%d") if self.video_date else "Unknown Date"
-        return f"{self.filename} - {date_str}"
+        session_info = f" - Session: {self.analysis_session.name}" if self.analysis_session else ""
+        return f"{self.filename} - {date_str}{session_info}"
+
+    class Meta:
+        ordering = ['-uploaded_at']
+        indexes = [
+            models.Index(fields=['processing_status']),
+            models.Index(fields=['analysis_session', 'video_date']),
+            models.Index(fields=['video_date', 'video_start_time']),
+        ]
 
     def get_video_time_range(self):
         """Get formatted time range for display"""
         if self.video_start_time and self.video_end_time:
             return f"{self.video_start_time.strftime('%H:%M')} - {self.video_end_time.strftime('%H:%M')}"
         return "Time unknown"
+    
+    def get_file_size(self):
+        """Get file size in MB"""
+        try:
+            if self.file_path and os.path.exists(self.file_path.path):
+                size_bytes = self.file_path.size
+                return round(size_bytes / (1024 * 1024), 2)  # Convert to MB
+        except (ValueError, OSError):
+            pass
+        return 0
+
 
 class VehicleType(models.Model):
     name = models.CharField(max_length=50, unique=True)
@@ -201,18 +259,39 @@ class VehicleType(models.Model):
     def __str__(self):
         return self.display_name
 
+    class Meta:
+        ordering = ['display_name']
+
+
 class TrafficAnalysis(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # Make video_file optional
-    video_file = models.OneToOneField(VideoFile, on_delete=models.CASCADE, related_name='traffic_analysis', null=True, blank=True)
+    
+    # Make video_file optional to support session-based analyses
+    video_file = models.OneToOneField(
+        VideoFile, 
+        on_delete=models.CASCADE, 
+        related_name='traffic_analysis', 
+        null=True, 
+        blank=True
+    )
+    
     # Add the session link
-    analysis_session = models.ForeignKey(AnalysisSession, on_delete=models.CASCADE, null=True, blank=True, related_name='traffic_analyses')
+    analysis_session = models.ForeignKey(
+        AnalysisSession, 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True, 
+        related_name='traffic_analyses'
+    )
+    
     location = models.ForeignKey(Location, on_delete=models.SET_NULL, null=True, blank=True)
     
+    # VEHICLE COUNTS
     total_vehicles = models.IntegerField(default=0)
     processing_time_seconds = models.FloatField(default=0)
     analyzed_at = models.DateTimeField(default=timezone.now)
     
+    # VEHICLE TYPE COUNTS
     car_count = models.IntegerField(default=0)
     truck_count = models.IntegerField(default=0)
     motorcycle_count = models.IntegerField(default=0)
@@ -220,6 +299,7 @@ class TrafficAnalysis(models.Model):
     bicycle_count = models.IntegerField(default=0)
     other_count = models.IntegerField(default=0)
     
+    # TRAFFIC METRICS
     peak_traffic = models.IntegerField(default=0)
     average_traffic = models.FloatField(default=0)
     congestion_level = models.CharField(
@@ -244,6 +324,7 @@ class TrafficAnalysis(models.Model):
         default='stable'
     )
     
+    # ANALYSIS DATA
     analysis_data = models.JSONField(default=dict)
     metrics_summary = models.JSONField(default=dict)
     
@@ -252,11 +333,12 @@ class TrafficAnalysis(models.Model):
         indexes = [
             models.Index(fields=['analyzed_at']),
             models.Index(fields=['location', 'analyzed_at']),
-            # Add index for session
             models.Index(fields=['analysis_session', 'analyzed_at']),
         ]
+        ordering = ['-analyzed_at']
 
     def get_vehicle_breakdown(self):
+        """Get vehicle breakdown as dictionary"""
         return {
             'cars': self.car_count,
             'trucks': self.truck_count,
@@ -268,12 +350,29 @@ class TrafficAnalysis(models.Model):
         }
 
     def __str__(self):
-        return f"Analysis for {self.video_file.filename}"
+        if self.video_file:
+            return f"Analysis for {self.video_file.filename}"
+        elif self.analysis_session:
+            return f"Session Analysis for {self.analysis_session.name}"
+        else:
+            return f"Traffic Analysis {self.id}"
+
+    def clean(self):
+        """Validate that either video_file or analysis_session is provided"""
+        if not self.video_file and not self.analysis_session:
+            raise ValidationError("Either video_file or analysis_session must be provided")
+
 
 class Detection(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     video_file = models.ForeignKey(VideoFile, on_delete=models.CASCADE, related_name='detections')
-    traffic_analysis = models.ForeignKey(TrafficAnalysis, on_delete=models.CASCADE, null=True, blank=True, related_name='detections')
+    traffic_analysis = models.ForeignKey(
+        TrafficAnalysis, 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True, 
+        related_name='detections'
+    )
     vehicle_type = models.ForeignKey(VehicleType, on_delete=models.CASCADE)
     location = models.ForeignKey(Location, on_delete=models.CASCADE, null=True, blank=True)
     timestamp = models.DateTimeField()
@@ -304,10 +403,13 @@ class Detection(models.Model):
             models.Index(fields=['vehicle_type', 'timestamp']),
             models.Index(fields=['location', 'timestamp']),
             models.Index(fields=['traffic_analysis', 'frame_number']),
+            models.Index(fields=['video_file', 'frame_number']),
         ]
+        ordering = ['timestamp', 'frame_number']
 
     def __str__(self):
-        return f"{self.vehicle_type.name} at frame {self.frame_number}"
+        return f"{self.vehicle_type.name} at frame {self.frame_number} (conf: {self.confidence:.2f})"
+
 
 class FrameAnalysis(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -330,9 +432,11 @@ class FrameAnalysis(models.Model):
         indexes = [
             models.Index(fields=['traffic_analysis', 'timestamp_seconds']),
         ]
+        ordering = ['frame_number']
 
     def __str__(self):
         return f"Frame {self.frame_number} - {self.total_vehicles} vehicles"
+
 
 class TrafficReport(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -365,9 +469,11 @@ class TrafficReport(models.Model):
             models.Index(fields=['generated_at']),
             models.Index(fields=['location', 'generated_at']),
         ]
+        ordering = ['-generated_at']
 
     def __str__(self):
         return f"{self.title} - {self.report_type}"
+
 
 class HourlyTrafficSummary(models.Model):
     date = models.DateField()
@@ -385,9 +491,11 @@ class HourlyTrafficSummary(models.Model):
             models.Index(fields=['date', 'hour']),
             models.Index(fields=['location', 'date', 'hour']),
         ]
+        ordering = ['date', 'hour']
 
     def __str__(self):
         return f"{self.date} {self.hour:02d}:00 - {self.vehicle_type}: {self.count}"
+
 
 class DailyTrafficSummary(models.Model):
     date = models.DateField()
@@ -405,9 +513,11 @@ class DailyTrafficSummary(models.Model):
             models.Index(fields=['date']),
             models.Index(fields=['location', 'date']),
         ]
+        ordering = ['-date']
 
     def __str__(self):
         return f"{self.date} - {self.vehicle_type}: {self.total_count}"
+
 
 class TrafficPrediction(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -432,9 +542,12 @@ class TrafficPrediction(models.Model):
             models.Index(fields=['prediction_date', 'hour_of_day']),
             models.Index(fields=['location', 'prediction_date']),
         ]
+        ordering = ['prediction_date', 'hour_of_day']
 
     def __str__(self):
-        return f"{self.prediction_date} {self.hour_of_day:02d}:00 → {self.predicted_congestion}"
+        location_str = self.location.display_name if self.location else "General"
+        return f"{location_str} - {self.prediction_date} {self.hour_of_day:02d}:00 → {self.predicted_congestion}"
+
 
 class SystemConfig(models.Model):
     key = models.CharField(max_length=100, unique=True)
@@ -445,27 +558,35 @@ class SystemConfig(models.Model):
     def __str__(self):
         return self.key
 
-# Signal handlers
+    class Meta:
+        ordering = ['key']
+
+
+# SIGNAL HANDLERS
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+
 
 @receiver(post_save, sender=TrafficAnalysis)
 def update_video_file_status(sender, instance, created, **kwargs):
     """Update VideoFile status when analysis is created"""
-    if created:
-        if instance.video_file is not None: # <-- Add this check
-            instance.video_file.processing_status = 'completed'
-            instance.video_file.processed = True
-            instance.video_file.processed_at = timezone.now()
-            instance.video_file.save()
+    if created and instance.video_file:
+        instance.video_file.processing_status = 'completed'
+        instance.video_file.processed = True
+        instance.video_file.processed_at = timezone.now()
+        instance.video_file.save()
+
 
 @receiver(post_save, sender=Detection)
 def update_traffic_analysis_counts(sender, instance, created, **kwargs):
     """Update TrafficAnalysis counts when new detections are added"""
     if created and instance.traffic_analysis:
         analysis = instance.traffic_analysis
+        
+        # Use the vehicle type name to update the appropriate count
         vehicle_type_name = instance.vehicle_type.name.lower()
         
+        # Update counts based on vehicle type
         if vehicle_type_name == 'car':
             analysis.car_count = Detection.objects.filter(
                 traffic_analysis=analysis, 
@@ -486,10 +607,34 @@ def update_traffic_analysis_counts(sender, instance, created, **kwargs):
                 traffic_analysis=analysis, 
                 vehicle_type__name='bus'
             ).count()
+        elif vehicle_type_name == 'bicycle':
+            analysis.bicycle_count = Detection.objects.filter(
+                traffic_analysis=analysis, 
+                vehicle_type__name='bicycle'
+            ).count()
+        elif vehicle_type_name == 'other':
+            analysis.other_count = Detection.objects.filter(
+                traffic_analysis=analysis, 
+                vehicle_type__name='other'
+            ).count()
         
+        # Update total vehicles
         analysis.total_vehicles = (
             analysis.car_count + analysis.truck_count + 
             analysis.motorcycle_count + analysis.bus_count + 
             analysis.bicycle_count + analysis.other_count
         )
         analysis.save()
+
+
+@receiver(post_save, sender=VideoFile)
+def update_analysis_session_status(sender, instance, created, **kwargs):
+    """Update analysis session status when videos are added"""
+    if created and instance.analysis_session:
+        session = instance.analysis_session
+        if session.status == 'pending_upload':
+            # Check if there are enough videos to start processing
+            video_count = session.video_files.count()
+            if video_count >= 1:  # Adjust threshold as needed
+                session.status = 'pending_upload'  # Keep as pending until explicitly processed
+                session.save()

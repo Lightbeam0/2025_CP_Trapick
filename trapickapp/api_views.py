@@ -15,6 +15,7 @@ from django.utils import timezone
 from datetime import timedelta
 from .progress import ProgressTracker
 from .models import VideoFile, TrafficAnalysis, Location, AnalysisSession, ProcessingProfile, VehicleType, Detection, TrafficReport, FrameAnalysis, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction, SystemConfig
+from django.db import models
 import csv
 import json
 from django.http import HttpResponse
@@ -387,10 +388,26 @@ class VideoUploadAPI(APIView):
                 }
             )
             
-            # ✅ CRITICAL: Save processed video path to database
+            # ✅ CRITICAL: Save processed video path to database - CORRECTED LOGIC
             if 'output_video_path' in report and report['output_video_path']:
-                # Convert absolute path to relative path for Django
-                relative_path = report['output_video_path'].replace('media/', '')
+                from django.conf import settings # Import settings
+                import os # Import os
+
+                # Get the absolute path returned by the detector
+                absolute_output_path = report['output_video_path']
+                print(f"🔍 Detector returned absolute path: {absolute_output_path}")
+
+                # Convert the absolute path to a path relative to MEDIA_ROOT
+                media_root_normalized = os.path.normpath(settings.MEDIA_ROOT)
+                absolute_output_path_normalized = os.path.normpath(absolute_output_path)
+
+                if absolute_output_path_normalized.startswith(media_root_normalized + os.sep):
+                    relative_path = absolute_output_path_normalized[len(media_root_normalized) + len(os.sep):]
+                    print(f"✅ Calculated relative path: {relative_path}")
+                else:
+                    print(f"❌ WARNING: Output path {absolute_output_path} is not within MEDIA_ROOT {settings.MEDIA_ROOT}")
+                    relative_path = absolute_output_path
+
                 video_obj.processed_video_path = relative_path
                 video_obj.save()
                 print(f"✅ Saved processed video path to database: {relative_path}")
@@ -428,6 +445,7 @@ class VideoUploadAPI(APIView):
     def process_video_background(self, video_id, video_path, location_id=None):
         """Process video in background thread with progress tracking"""
         from .progress import ProgressTracker
+        from ml.vehicle_detector import RTXVehicleDetector
         
         progress_tracker = ProgressTracker(video_id)
         output_video_path = None
@@ -471,12 +489,28 @@ class VideoUploadAPI(APIView):
                 analysis_data=report
             )
             
-            # Save processed video path if available
+            # Save processed video path if available - CORRECTED LOGIC
             if 'output_video_path' in report and report['output_video_path']:
-                # Convert absolute path to relative path for Django
-                relative_path = report['output_video_path'].replace('media/', '')
+                from django.conf import settings # Import settings
+                import os # Import os
+
+                # Get the absolute path returned by the detector
+                absolute_output_path = report['output_video_path']
+                print(f"🔍 Detector returned absolute path: {absolute_output_path}")
+
+                # Convert the absolute path to a path relative to MEDIA_ROOT
+                media_root_normalized = os.path.normpath(settings.MEDIA_ROOT)
+                absolute_output_path_normalized = os.path.normpath(absolute_output_path)
+
+                if absolute_output_path_normalized.startswith(media_root_normalized + os.sep):
+                    relative_path = absolute_output_path_normalized[len(media_root_normalized) + len(os.sep):]
+                    print(f"✅ Calculated relative path: {relative_path}")
+                else:
+                    print(f"❌ WARNING: Output path {absolute_output_path} is not within MEDIA_ROOT {settings.MEDIA_ROOT}")
+                    relative_path = absolute_output_path
+
                 video_obj.processed_video_path = relative_path
-                output_video_path = report['output_video_path']
+                output_video_path = report['output_video_path'] # Keep original for logging
                 print(f"✓ Saved processed video path: {relative_path}")
             
             # Update video status
@@ -1367,6 +1401,7 @@ class AnalysisSessionVideoListAPI(APIView):
     
 class ProcessAnalysisSessionAPI(APIView):
     """Initiate processing for an Analysis Session"""
+    
     def post(self, request, session_id):
         session = AnalysisSession.objects.filter(id=session_id).first()
         if not session:
@@ -1375,8 +1410,7 @@ class ProcessAnalysisSessionAPI(APIView):
         if session.status in ['processing', 'completed']:
             return Response({'error': f'Session is already {session.status}.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # UPDATED: Check if there are videos associated with the session
-        # Look for videos that are uploaded and ready for session processing
+        # Check if there are videos associated with the session
         video_files = session.video_files.filter(
             processing_status__in=['uploaded', 'completed']
         )
@@ -1401,7 +1435,7 @@ class ProcessAnalysisSessionAPI(APIView):
         try:
             thread = threading.Thread(
                 target=self.process_session_background,
-                args=(session.id,)
+                args=(session,)
             )
             thread.daemon = True
             thread.start()
@@ -1411,23 +1445,24 @@ class ProcessAnalysisSessionAPI(APIView):
             session.save()
             return Response({'error': f'Failed to start processing: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def process_session_background(self, session_id):
+    def process_session_background(self, session, progress_tracker=None):
         """Background task to concatenate videos and run analysis"""
-        from .progress import ProgressTracker
-        from ml.vehicle_detector import RTXVehicleDetector
         import subprocess
         import tempfile
         import os
-
-        session = AnalysisSession.objects.get(id=session_id)
-        progress_tracker = ProgressTracker(session_id)
+        import threading
+        
+        # Create progress tracker if not provided
+        if progress_tracker is None:
+            from .progress import ProgressTracker
+            progress_tracker = ProgressTracker(session.id)
 
         try:
             progress_tracker.set_progress(0, "Starting session processing...")
             session.status = 'processing'
             session.save()
 
-            # UPDATED: Get sorted list of video files - use the same filter as in post method
+            # Get sorted list of video files
             video_files = session.video_files.filter(
                 processing_status__in=['uploaded', 'completed']
             ).order_by('video_date', 'video_start_time')
@@ -1465,59 +1500,157 @@ class ProcessAnalysisSessionAPI(APIView):
 
                 progress_tracker.set_progress(30, "Concatenated successfully, starting analysis...")
 
-                # Load detector (could be based on session.location.processing_profile)
-                detector = RTXVehicleDetector()
+                # Load detector based on session.location.processing_profile
+                from ml.detector_factory import DetectorFactory
 
-                # Analyze the concatenated video
+                print(f"📍 Loading detector for session {session.name} based on location: {session.location.display_name}")
+                print(f"📍 Location's profile: {session.location.processing_profile.display_name}")
+                print(f"📍 Profile's detector class: {session.location.processing_profile.detector_class}")
+                
+                detector = DetectorFactory.get_detector(session.location.processing_profile)
+                print(f"✅ Detector loaded: {type(detector).__name__}")
+
+                # Analyze the concatenated video using the dynamically loaded detector
                 report = detector.analyze_video(temp_output_path, progress_tracker=progress_tracker, save_output=True)
 
                 progress_tracker.set_progress(90, "Saving aggregated results...")
 
-                # Create an aggregated TrafficAnalysis record linked to the session
-                aggregated_analysis = TrafficAnalysis.objects.create(
+                # Create or update TrafficAnalysis record
+                aggregated_analysis, created = TrafficAnalysis.objects.get_or_create(
                     analysis_session=session,
-                    location=session.location,
-                    total_vehicles=report['summary']['total_vehicles_counted'],
-                    processing_time_seconds=report['metadata']['processing_time'],
-                    analyzed_at=timezone.now(),
-                    car_count=report['summary']['vehicle_breakdown'].get('car', 0),
-                    truck_count=report['summary']['vehicle_breakdown'].get('truck', 0),
-                    motorcycle_count=report['summary']['vehicle_breakdown'].get('motorcycle', 0),
-                    bus_count=report['summary']['vehicle_breakdown'].get('bus', 0),
-                    bicycle_count=report['summary']['vehicle_breakdown'].get('bicycle', 0),
-                    peak_traffic=report['summary']['peak_traffic'],
-                    average_traffic=report['summary']['average_traffic_density'],
-                    congestion_level=report['metrics']['congestion_level'],
-                    traffic_pattern=report['metrics']['traffic_pattern'],
-                    analysis_data=report,
-                    metrics_summary={
+                    defaults={
+                        'location': session.location,
+                        'total_vehicles': report['summary']['total_vehicles_counted'],
+                        'processing_time_seconds': report['metadata']['processing_time'],
+                        'analyzed_at': timezone.now(),
+                        'car_count': report['summary']['vehicle_breakdown'].get('car', 0),
+                        'truck_count': report['summary']['vehicle_breakdown'].get('truck', 0),
+                        'motorcycle_count': report['summary']['vehicle_breakdown'].get('motorcycle', 0),
+                        'bus_count': report['summary']['vehicle_breakdown'].get('bus', 0),
+                        'bicycle_count': report['summary']['vehicle_breakdown'].get('bicycle', 0),
+                        'peak_traffic': report['summary']['peak_traffic'],
+                        'average_traffic': report['summary']['average_traffic_density'],
+                        'congestion_level': report['metrics']['congestion_level'],
+                        'traffic_pattern': report['metrics']['traffic_pattern'],
+                        'analysis_data': report,
+                        'metrics_summary': {
+                            'source_session_id': str(session.id),
+                            'videos_processed_count': video_files.count(),
+                            'aggregated_from_individual_analyses': False,
+                            'detector_used_for_session': type(detector).__name__
+                        }
+                    }
+                )
+                
+                # If the analysis already existed, update it
+                if not created:
+                    aggregated_analysis.total_vehicles = report['summary']['total_vehicles_counted']
+                    aggregated_analysis.processing_time_seconds = report['metadata']['processing_time']
+                    aggregated_analysis.analyzed_at = timezone.now()
+                    aggregated_analysis.car_count = report['summary']['vehicle_breakdown'].get('car', 0)
+                    aggregated_analysis.truck_count = report['summary']['vehicle_breakdown'].get('truck', 0)
+                    aggregated_analysis.motorcycle_count = report['summary']['vehicle_breakdown'].get('motorcycle', 0)
+                    aggregated_analysis.bus_count = report['summary']['vehicle_breakdown'].get('bus', 0)
+                    aggregated_analysis.bicycle_count = report['summary']['vehicle_breakdown'].get('bicycle', 0)
+                    aggregated_analysis.peak_traffic = report['summary']['peak_traffic']
+                    aggregated_analysis.average_traffic = report['summary']['average_traffic_density']
+                    aggregated_analysis.congestion_level = report['metrics']['congestion_level']
+                    aggregated_analysis.traffic_pattern = report['metrics']['traffic_pattern']
+                    aggregated_analysis.analysis_data = report
+                    aggregated_analysis.metrics_summary = {
                         'source_session_id': str(session.id),
                         'videos_processed_count': video_files.count(),
                         'aggregated_from_individual_analyses': False,
+                        'detector_used_for_session': type(detector).__name__
                     }
-                )
+                    aggregated_analysis.save()
 
-                # UPDATE: Save processed video path to session object
+                print(f"✅ Aggregated analysis {'created' if created else 'updated'}: {aggregated_analysis.id}")
+
+                # === ENHANCED PATH HANDLING LOGIC ===
+                if 'output_video_path' in report and report['output_video_path']:
+                    from django.conf import settings
+                    import os
+
+                    output_path = report['output_video_path']
+                    print(f"🔍 Detector returned path: {output_path}")
+                    print(f"🔍 MEDIA_ROOT: {settings.MEDIA_ROOT}")
+
+                    # Normalize the path (handles mixed slashes, etc.)
+                    normalized_path = os.path.normpath(output_path)
+                    
+                    # Check if it's already a valid path within MEDIA_ROOT
+                    media_root_normalized = os.path.normpath(settings.MEDIA_ROOT)
+                    
+                    # Try different approaches to find the correct relative path
+                    relative_path = None
+                    
+                    # Approach 1: Path is already absolute and within MEDIA_ROOT
+                    if os.path.isabs(normalized_path) and normalized_path.startswith(media_root_normalized):
+                        relative_path = normalized_path[len(media_root_normalized):].lstrip(os.sep)
+                        print(f"✅ Approach 1: Absolute path within MEDIA_ROOT → relative: {relative_path}")
+                    
+                    # Approach 2: Path is relative and starts with 'media/'
+                    elif normalized_path.replace('\\', '/').startswith('media/'):
+                        # Remove the 'media/' prefix since MEDIA_ROOT already points to media directory
+                        relative_path = normalized_path.replace('\\', '/')[6:]  # Remove 'media/'
+                        print(f"✅ Approach 2: Relative path with 'media/' prefix → relative: {relative_path}")
+                    
+                    # Approach 3: Path is relative but doesn't start with 'media/'
+                    elif not os.path.isabs(normalized_path):
+                        relative_path = normalized_path
+                        print(f"✅ Approach 3: Plain relative path → using as-is: {relative_path}")
+                    
+                    # Approach 4: Try to find the path by testing different combinations
+                    else:
+                        # Test if the path exists as-is
+                        if os.path.exists(normalized_path):
+                            # Try to make it relative to MEDIA_ROOT
+                            try:
+                                relative_path = os.path.relpath(normalized_path, media_root_normalized)
+                                print(f"✅ Approach 4: Made path relative to MEDIA_ROOT: {relative_path}")
+                            except ValueError:
+                                # Path is on different drive, etc.
+                                print(f"❌ Path is on different drive or cannot be made relative")
+                                relative_path = None
+                    
+                    # Validate and assign the path
+                    if relative_path:
+                        # Test that the file actually exists
+                        test_absolute_path = os.path.join(media_root_normalized, relative_path)
+                        if os.path.exists(test_absolute_path):
+                            session.processed_session_video_path.name = relative_path
+                            print(f"✅ Session processed video path saved: {session.processed_session_video_path.name}")
+                            print(f"✅ File verified at: {test_absolute_path}")
+                        else:
+                            print(f"❌ Calculated path does not exist: {test_absolute_path}")
+                            # Try to find the file by other means
+                            found_path = self._find_video_file(settings.MEDIA_ROOT, normalized_path)
+                            if found_path:
+                                session.processed_session_video_path.name = found_path
+                                print(f"✅ Found alternative path: {found_path}")
+                            else:
+                                print(f"⚠️  Could not locate video file, but saving path anyway for debugging")
+                                session.processed_session_video_path.name = relative_path
+                    else:
+                        print(f"❌ Could not determine valid relative path for: {output_path}")
+                        # Don't fail the entire session just because of path issues
+                        print(f"⚠️  Proceeding without video path due to path resolution issue")
+
+                else:
+                    print("⚠️  No 'output_video_path' key found in the detector's report. Session video path not saved.")
+
+                # Ensure session status and processed_at are set correctly before saving
                 session.status = 'completed'
                 session.processed_at = timezone.now()
-                
-                # NEW: Save the processed session video path to the session object
-                if 'output_video_path' in report and report['output_video_path']:
-                    # Convert absolute path to relative path for Django
-                    relative_path = report['output_video_path'].replace('media/', '')
-                    session.processed_session_video_path = relative_path
-                    print(f"✅ Session processed video path saved: {relative_path}")
-                else:
-                    print("⚠️  No output_video_path in report - session video not saved")
-                
                 session.save()
-
+                
                 progress_tracker.set_progress(100, "Session processing completed!")
                 progress_tracker.complete_processing("Session analysis completed!")
 
                 print(f"✅ Session {session.name} processing completed successfully!")
-                print(f"✅ Aggregated analysis created: {aggregated_analysis.id}")
                 print(f"✅ Total vehicles counted: {aggregated_analysis.total_vehicles}")
+                print(f"✅ Detector used: {type(detector).__name__}")
 
             finally:
                 # Clean up temporary files
@@ -1529,50 +1662,108 @@ class ProcessAnalysisSessionAPI(APIView):
                     print(f"⚠️  Error cleaning up temporary files: {e}")
 
         except Exception as e:
-            print(f"❌ Error processing session {session_id}: {e}")
+            print(f"❌ Error processing session {session.id}: {e}")
             import traceback
             traceback.print_exc()
             session.status = 'failed'
             session.save()
             progress_tracker.set_progress(0, f"Session processing failed: {str(e)}")
 
-class SessionVideoViewAPI(APIView):
+    def _find_video_file(self, media_root, original_path):
+        """
+        Helper method to find video file when path resolution fails
+        """
+        import os
+        import glob
+        
+        print(f"🔍 Searching for video file: {original_path}")
+        
+        # Extract filename from path
+        filename = os.path.basename(original_path)
+        print(f"🔍 Looking for filename: {filename}")
+        
+        # Search recursively in media_root
+        search_pattern = os.path.join(media_root, '**', filename)
+        matching_files = glob.glob(search_pattern, recursive=True)
+        
+        if matching_files:
+            found_path = matching_files[0]
+            # Convert to relative path
+            relative_path = os.path.relpath(found_path, media_root)
+            print(f"✅ Found video file at: {found_path}")
+            print(f"✅ Relative path: {relative_path}")
+            return relative_path
+        
+        print(f"❌ Could not find video file: {filename}")
+        return None
+    
+class SessionVideoDownloadAPI(APIView):
+    """
+    Download the processed video for an Analysis Session.
+    Frontend calls: GET /api/session-video/{session_id}/download/
+    """
+    
     def get(self, request, session_id):
-        """
-        Serve the processed video for an Analysis Session.
-        Frontend calls: GET /api/session-video/{session_id}/view/
-        """
         try:
             session_obj = AnalysisSession.objects.get(id=session_id)
 
-            # Check if processing is completed and path exists
+            # Check if processing is completed
             if session_obj.status != 'completed':
                 return Response(
                     {'error': 'Session processing not completed yet'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            # Check if the processed video path field has content
             if not session_obj.processed_session_video_path:
                 return Response(
-                    {'error': 'Processed session video not found'},
+                    {'error': 'Processed session video path not found in database. The session might not have been processed correctly or the video path was not saved.'},
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            # Construct the full path from the stored relative path
-            full_video_path = os.path.join(settings.MEDIA_ROOT, session_obj.processed_session_video_path.name)
+            # Construct the full file system path
+            try:
+                full_video_path = session_obj.processed_session_video_path.path
+                print(f"🔍 Using FileField.path: {full_video_path}")
+            except Exception as e:
+                print(f"❌ Error getting FileField.path: {e}")
+                # Fallback: manually construct path
+                relative_path = session_obj.processed_session_video_path.name
+                full_video_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+                print(f"🔍 Using manual path construction: {full_video_path}")
 
+            # Check if the file exists
             if not os.path.exists(full_video_path):
-                print(f"❌ Session video file not found at: {full_video_path}")
+                print(f"❌ Session video file NOT FOUND at: {full_video_path}")
                 return Response(
-                    {'error': 'Processed session video file is missing on the server'},
+                    {
+                        'error': f'Processed session video file is missing on the server. '
+                                 f'Expected path: {full_video_path}'
+                    },
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            print(f"✓ Serving session video: {full_video_path}")
+            print(f"✓ Downloading session video from: {full_video_path}")
 
-            # Serve the file with inline content disposition for viewing
+            # Verify file is readable and not empty
+            try:
+                file_size = os.path.getsize(full_video_path)
+                if file_size == 0:
+                    return Response(
+                        {'error': 'Processed session video file is empty (0 bytes)'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                print(f"✓ Video file size: {file_size} bytes")
+            except OSError as e:
+                return Response(
+                    {'error': f'Cannot access video file: {str(e)}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            # Serve the file with attachment content disposition for downloading
             response = FileResponse(open(full_video_path, 'rb'), content_type='video/mp4')
-            response['Content-Disposition'] = f'inline; filename="session_{session_obj.name}.mp4"'
+            response['Content-Disposition'] = f'attachment; filename="session_{session_obj.name}_{session_obj.id}.mp4"'
+            response['Content-Length'] = str(file_size)
             return response
 
         except AnalysisSession.DoesNotExist:
@@ -1580,10 +1771,105 @@ class SessionVideoViewAPI(APIView):
                 {'error': 'Analysis session not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        except Exception as e:
-            print(f"Error serving session video {session_id}: {e}")
+        except FileNotFoundError:
             return Response(
-                {'error': f'Error serving session video file: {str(e)}'},
+                {'error': 'Processed session video file could not be opened. It might have been deleted.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        except Exception as e:
+            print(f"❌ UNEXPECTED ERROR in SessionVideoDownloadAPI for session {session_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Unexpected error downloading session video file: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class SessionVideoViewAPI(APIView):
+    """
+    Serve the processed video for an Analysis Session.
+    Frontend calls: GET /api/session-video/{session_id}/view/
+    """
+    
+    def get(self, request, session_id):
+        try:
+            session_obj = AnalysisSession.objects.get(id=session_id)
+
+            # Check if processing is completed
+            if session_obj.status != 'completed':
+                return Response(
+                    {'error': 'Session processing not completed yet'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Check if the processed video path field has content
+            if not session_obj.processed_session_video_path:
+                return Response(
+                    {'error': 'Processed session video path not found in database. The session might not have been processed correctly or the video path was not saved.'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Construct the full file system path
+            try:
+                full_video_path = session_obj.processed_session_video_path.path
+                print(f"🔍 Using FileField.path: {full_video_path}")
+            except Exception as e:
+                print(f"❌ Error getting FileField.path: {e}")
+                # Fallback: manually construct path
+                relative_path = session_obj.processed_session_video_path.name
+                full_video_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+                print(f"🔍 Using manual path construction: {full_video_path}")
+
+            # Check if the file exists
+            if not os.path.exists(full_video_path):
+                print(f"❌ Session video file NOT FOUND at: {full_video_path}")
+                return Response(
+                    {
+                        'error': f'Processed session video file is missing on the server. '
+                                 f'Expected path: {full_video_path}'
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            print(f"✓ Serving session video from: {full_video_path}")
+
+            # Verify file is readable and not empty
+            try:
+                file_size = os.path.getsize(full_video_path)
+                if file_size == 0:
+                    return Response(
+                        {'error': 'Processed session video file is empty (0 bytes)'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                print(f"✓ Video file size: {file_size} bytes")
+            except OSError as e:
+                return Response(
+                    {'error': f'Cannot access video file: {str(e)}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            # Serve the file with inline content disposition for viewing
+            response = FileResponse(open(full_video_path, 'rb'), content_type='video/mp4')
+            response['Content-Disposition'] = f'inline; filename="session_{session_obj.name}.mp4"'
+            response['Content-Length'] = str(file_size)
+            return response
+
+        except AnalysisSession.DoesNotExist:
+            return Response(
+                {'error': 'Analysis session not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except FileNotFoundError:
+            return Response(
+                {'error': 'Processed session video file could not be opened. It might have been deleted.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        except Exception as e:
+            print(f"❌ UNEXPECTED ERROR in SessionVideoViewAPI for session {session_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Unexpected error serving session video file: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -1597,7 +1883,76 @@ class SessionTrafficAnalysesListAPI(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            session_analyses = TrafficAnalysis.objects.filter(analysis_session_id=session_id)
+            # FIXED: Look for analyses where analysis_session matches the session ID
+            # Also include analyses that might be linked via other methods
+            session_analyses = TrafficAnalysis.objects.filter(
+                models.Q(analysis_session_id=session_id) | 
+                models.Q(video_file__analysis_session_id=session_id)
+            ).distinct()
+            
+            print(f"🔍 Found {session_analyses.count()} analyses for session {session_id}")
+            
+            if session_analyses.exists():
+                for analysis in session_analyses:
+                    print(f"   - Analysis ID: {analysis.id}, Session ID: {analysis.analysis_session_id if analysis.analysis_session else 'None'}")
+                    print(f"   - Video Session ID: {analysis.video_file.analysis_session_id if analysis.video_file and analysis.video_file.analysis_session else 'None'}")
+            else:
+                print(f"⚠️  No analyses found for session {session_id}")
+                # Try to create an aggregated analysis if session is completed but no analysis exists
+                if session.status == 'completed':
+                    print(f"🔄 Session {session_id} is completed but has no analysis. Checking for individual video analyses...")
+                    
+                    # Get all individual analyses from session videos
+                    individual_analyses = TrafficAnalysis.objects.filter(
+                        video_file__analysis_session_id=session_id
+                    )
+                    
+                    if individual_analyses.exists():
+                        print(f"📊 Found {individual_analyses.count()} individual analyses, creating aggregated summary...")
+                        
+                        # Create aggregated analysis from individual analyses
+                        total_vehicles = sum(analysis.total_vehicles for analysis in individual_analyses if analysis.total_vehicles)
+                        car_count = sum(analysis.car_count for analysis in individual_analyses if analysis.car_count)
+                        truck_count = sum(analysis.truck_count for analysis in individual_analyses if analysis.truck_count)
+                        motorcycle_count = sum(analysis.motorcycle_count for analysis in individual_analyses if analysis.motorcycle_count)
+                        
+                        # Create aggregated analysis record
+                        aggregated_analysis = TrafficAnalysis.objects.create(
+                            analysis_session=session,
+                            location=session.location,
+                            total_vehicles=total_vehicles,
+                            processing_time_seconds=sum(analysis.processing_time_seconds for analysis in individual_analyses if analysis.processing_time_seconds),
+                            analyzed_at=timezone.now(),
+                            car_count=car_count,
+                            truck_count=truck_count,
+                            motorcycle_count=motorcycle_count,
+                            bus_count=sum(analysis.bus_count for analysis in individual_analyses if analysis.bus_count),
+                            bicycle_count=sum(analysis.bicycle_count for analysis in individual_analyses if analysis.bicycle_count),
+                            congestion_level=self.calculate_aggregated_congestion(individual_analyses),
+                            traffic_pattern='aggregated',
+                            analysis_data={
+                                'summary': {
+                                    'total_vehicles_counted': total_vehicles,
+                                    'vehicle_breakdown': {
+                                        'cars': car_count,
+                                        'trucks': truck_count,
+                                        'motorcycles': motorcycle_count
+                                    }
+                                },
+                                'metadata': {
+                                    'aggregated_from_individual': True,
+                                    'individual_analyses_count': individual_analyses.count()
+                                }
+                            },
+                            metrics_summary={
+                                'aggregated_from_individual_analyses': True,
+                                'individual_analyses_count': individual_analyses.count(),
+                                'source': 'auto_generated_from_individuals'
+                            }
+                        )
+                        session_analyses = TrafficAnalysis.objects.filter(id=aggregated_analysis.id)
+                        print(f"✅ Created aggregated analysis: {aggregated_analysis.id}")
+            
             serializer = TrafficAnalysisSerializer(session_analyses, many=True)
             return Response(serializer.data)
 
@@ -1609,3 +1964,261 @@ class SessionTrafficAnalysesListAPI(APIView):
                 {'error': 'Failed to fetch analyses for session'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+    
+    def calculate_aggregated_congestion(self, analyses):
+        """Calculate aggregated congestion level from individual analyses"""
+        if not analyses:
+            return 'low'
+        
+        congestion_levels = {
+            'very_low': 0,
+            'low': 1, 
+            'medium': 2,
+            'high': 3,
+            'severe': 4
+        }
+        
+        total_vehicles = sum(analysis.total_vehicles for analysis in analyses if analysis.total_vehicles)
+        analysis_count = analyses.count()
+        
+        if analysis_count == 0:
+            return 'low'
+            
+        avg_vehicles = total_vehicles / analysis_count
+        
+        if avg_vehicles > 100:
+            return 'severe'
+        elif avg_vehicles > 70:
+            return 'high'
+        elif avg_vehicles > 40:
+            return 'medium'
+        elif avg_vehicles > 20:
+            return 'low'
+        else:
+            return 'very_low'
+
+class ExportSessionCSVAPI(APIView):
+    def get(self, request, session_id):
+        try:
+            session = AnalysisSession.objects.get(id=session_id)
+            analysis = TrafficAnalysis.objects.filter(analysis_session=session).first()
+            
+            if not analysis:
+                return Response({'error': 'No aggregated analysis data found for this session'}, status=404)
+
+            response = HttpResponse(content_type='text/csv')
+            response['Content-Disposition'] = f'attachment; filename="session_analysis_{session.name}_{session_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv"'
+
+            writer = csv.writer(response)
+
+            writer.writerow(['Session Analysis Report', f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'])
+            writer.writerow(['Session Name:', session.name])
+            writer.writerow(['Location:', session.location.display_name])
+            writer.writerow(['Date Range:', f"{session.start_datetime} to {session.end_datetime}"])
+            writer.writerow(['Status:', session.status])
+            writer.writerow(['Videos Processed:', session.video_files.count()])
+            writer.writerow([])
+
+            writer.writerow(['SUMMARY'])
+            writer.writerow(['Total Vehicles:', analysis.total_vehicles])
+            writer.writerow(['Processing Time:', f"{analysis.processing_time_seconds} seconds"])
+            writer.writerow(['Congestion Level:', analysis.congestion_level])
+            writer.writerow(['Traffic Pattern:', analysis.traffic_pattern])
+            writer.writerow([])
+
+            writer.writerow(['VEHICLE BREAKDOWN'])
+            writer.writerow(['Vehicle Type', 'Count'])
+            writer.writerow(['Cars', analysis.car_count])
+            writer.writerow(['Trucks', analysis.truck_count])
+            writer.writerow(['Motorcycles', analysis.motorcycle_count])
+            writer.writerow(['Buses', analysis.bus_count])
+            writer.writerow(['Bicycles', analysis.bicycle_count])
+            writer.writerow(['Others', analysis.other_count])
+            writer.writerow([])
+
+            writer.writerow(['METRICS'])
+            writer.writerow(['Peak Traffic:', analysis.peak_traffic])
+            writer.writerow(['Average Traffic:', analysis.average_traffic])
+
+            return response
+
+        except AnalysisSession.DoesNotExist:
+            return Response({'error': 'Session not found'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+class ExportSessionPDFAPI(APIView):
+    def get(self, request, session_id):
+        try:
+            session = AnalysisSession.objects.get(id=session_id)
+            analysis = TrafficAnalysis.objects.filter(analysis_session=session).first()
+            
+            if not analysis:
+                return Response({'error': 'No aggregated analysis data found for this session'}, status=404)
+
+            buffer = BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=letter)
+            styles = getSampleStyleSheet()
+
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=16,
+                spaceAfter=30,
+                textColor=colors.HexColor('#1e40af')
+            )
+
+            heading_style = ParagraphStyle(
+                'CustomHeading',
+                parent=styles['Heading2'],
+                fontSize=12,
+                spaceAfter=12,
+                textColor=colors.HexColor('#374151')
+            )
+
+            content = []
+            content.append(Paragraph('Session Traffic Analysis Report', title_style))
+            content.append(Paragraph(f'Session: {session.name}', styles['Normal']))
+            content.append(Paragraph(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', styles['Normal']))
+            content.append(Spacer(1, 20))
+
+            content.append(Paragraph('Session Information', heading_style))
+            session_info_data = [
+                ['Session Name:', session.name],
+                ['Location:', session.location.display_name],
+                ['Date Range:', f"{session.start_datetime.strftime('%Y-%m-%d %H:%M:%S')} to {session.end_datetime.strftime('%Y-%m-%d %H:%M:%S')}"],
+                ['Status:', session.status],
+                ['Videos Processed:', str(session.video_files.count())]
+            ]
+            session_info_table = Table(session_info_data, colWidths=[150, 300])
+            session_info_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            content.append(session_info_table)
+            content.append(Spacer(1, 20))
+
+            content.append(Paragraph('Analysis Summary', heading_style))
+            summary_data = [
+                ['Total Vehicles:', str(analysis.total_vehicles)],
+                ['Processing Time:', f"{analysis.processing_time_seconds} seconds"],
+                ['Congestion Level:', analysis.congestion_level],
+                ['Traffic Pattern:', analysis.traffic_pattern]
+            ]
+            summary_table = Table(summary_data, colWidths=[150, 300])
+            summary_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3f4f6')),
+            ]))
+            content.append(summary_table)
+            content.append(Spacer(1, 20))
+
+            content.append(Paragraph('Vehicle Breakdown', heading_style))
+            vehicle_data = [
+                ['Vehicle Type', 'Count'],
+                ['Cars', str(analysis.car_count)],
+                ['Trucks', str(analysis.truck_count)],
+                ['Motorcycles', str(analysis.motorcycle_count)],
+                ['Buses', str(analysis.bus_count)],
+                ['Bicycles', str(analysis.bicycle_count)],
+                ['Other Vehicles', str(analysis.other_count)]
+            ]
+            vehicle_table = Table(vehicle_data, colWidths=[200, 100])
+            vehicle_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9fafb')])
+            ]))
+            content.append(vehicle_table)
+
+            doc.build(content)
+
+            pdf = buffer.getvalue()
+            buffer.close()
+
+            response = HttpResponse(content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="session_analysis_{session.name}_{session_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf"'
+            response.write(pdf)
+
+            return response
+
+        except AnalysisSession.DoesNotExist:
+            return Response({'error': 'Session not found'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+class ExportSessionExcelAPI(APIView):
+    def get(self, request, session_id):
+        try:
+            session = AnalysisSession.objects.get(id=session_id)
+            analysis = TrafficAnalysis.objects.filter(analysis_session=session).first()
+
+            if not analysis:
+                return Response({'error': 'No aggregated analysis data found for this session'}, status=404)
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+
+            sanitized_session_name = (
+                session.name.replace(":", "_")
+                .replace("\\", "_")
+                .replace("/", "_")
+                .replace("?", "_")
+                .replace("*", "_")
+                .replace("[", "_")
+                .replace("]", "_")
+            )
+            sheet_title = f"Session_{sanitized_session_name}"[:31]
+            ws.title = sheet_title
+
+            ws.append(['Session Analysis Report', f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'])
+            ws.append(['Session Name:', session.name])
+            ws.append(['Location:', session.location.display_name])
+            ws.append(['Date Range:', f"{session.start_datetime} to {session.end_datetime}"])
+            ws.append(['Status:', session.status])
+            ws.append(['Videos Processed:', session.video_files.count()])
+            ws.append([])
+
+            ws.append(['SUMMARY'])
+            ws.append(['Total Vehicles:', analysis.total_vehicles])
+            ws.append(['Processing Time:', analysis.processing_time_seconds])
+            ws.append(['Congestion Level:', analysis.congestion_level])
+            ws.append([])
+
+            ws.append(['VEHICLE BREAKDOWN'])
+            ws.append(['Vehicle Type', 'Count'])
+            ws.append(['Cars', analysis.car_count])
+            ws.append(['Trucks', analysis.truck_count])
+            ws.append(['Motorcycles', analysis.motorcycle_count])
+            ws.append(['Buses', analysis.bus_count])
+            ws.append(['Bicycles', analysis.bicycle_count])
+            ws.append(['Others', analysis.other_count])
+
+            buffer = BytesIO()
+            wb.save(buffer)
+            buffer.seek(0)
+
+            response = HttpResponse(
+                buffer.getvalue(),
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            response['Content-Disposition'] = (
+                f'attachment; filename="session_analysis_{session.name}_{session_id}_'
+                f'{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx"'
+            )
+
+            return response
+
+        except AnalysisSession.DoesNotExist:
+            return Response({'error': 'Session not found'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)

@@ -1,3 +1,4 @@
+// src/components/ProcessedVideoViewer.js
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
@@ -21,36 +22,46 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
         let analysisResponse, videoUrlEndpoint, itemInfoResponse;
 
         if (type === 'session') {
-          // Fetch aggregated analysis for the session
+          // NEW: Handle session viewing
+          // Option 1: Fetch the aggregated TrafficAnalysis directly using the session ID
+          // We can query /api/sessions/{session_id}/traffic-analyses/ and use the first result
           try {
-            analysisResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/aggregated-analysis/`);
+            const sessionAnalysesResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/traffic-analyses/`);
+            const sessionAnalyses = sessionAnalysesResponse.data;
+            
+            // Assuming there's one aggregated analysis per session
+            if (sessionAnalyses.length > 0) {
+              // Use the first analysis found (should be the aggregated one)
+              analysisResponse = { data: sessionAnalyses[0] };
+              console.log(`✅ Found ${sessionAnalyses.length} analyses for session, using first one`);
+              
+              // For item info, fetch the session details
+              itemInfoResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/`);
+              
+              // Set the video URL endpoint for the session's processed video
+              videoUrlEndpoint = `http://127.0.0.1:8000/api/session-video/${videoId}/view/`;
+            } else {
+              throw new Error("No aggregated analysis found for this session.");
+            }
           } catch (aggError) {
-            console.warn("Aggregated analysis endpoint not found, trying to get session analyses list...");
+            console.error("Error fetching aggregated analysis for session:", aggError);
+            
+            // Fallback: Try the aggregated-analysis endpoint
             try {
-              const sessionAnalysesResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/traffic-analyses/`);
-              const sessionAnalyses = sessionAnalysesResponse.data;
-              const aggregatedAnalysis = sessionAnalyses.find(a => a.analysis_session === videoId);
-              if (aggregatedAnalysis) {
-                analysisResponse = { data: aggregatedAnalysis };
-              } else {
-                throw new Error("No aggregated analysis found for this session.");
-              }
-            } catch (listError) {
-              console.error("Error fetching session analyses list:", listError);
-              throw listError;
+              console.warn("Trying aggregated-analysis endpoint as fallback...");
+              analysisResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/aggregated-analysis/`);
+              itemInfoResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/`);
+              videoUrlEndpoint = `http://127.0.0.1:8000/api/session-video/${videoId}/view/`;
+            } catch (fallbackError) {
+              console.error("Fallback also failed:", fallbackError);
+              throw new Error("No analysis data available for this session.");
             }
           }
 
-          // Fetch session details for info display
-          itemInfoResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/`);
-          
-          // Use session video endpoint
-          videoUrlEndpoint = `http://127.0.0.1:8000/api/session-video/${videoId}/view/`;
-
         } else { // type === 'video'
-          // Fetch analysis for the video
+          // Existing logic for individual video
           analysisResponse = await axios.get(`http://127.0.0.1:8000/api/analysis/${videoId}/`);
-          itemInfoResponse = analysisResponse;
+          itemInfoResponse = analysisResponse; // Video info is part of the analysis response
           videoUrlEndpoint = `http://127.0.0.1:8000/api/video/${videoId}/view/`;
         }
 

@@ -9,7 +9,9 @@ function AnalysisResults() {
   const [analyses, setAnalyses] = useState([]); // Holds individual video analyses
   const [sessions, setSessions] = useState([]); // Holds session analyses
   const [loading, setLoading] = useState(true);
+  const [sessionsLoading, setSessionsLoading] = useState(false); // Separate loading state for sessions
   const [error, setError] = useState(null);
+  const [sessionErrors, setSessionErrors] = useState({}); // Track errors per session
   const [filter, setFilter] = useState("all"); // all, completed, processing, failed
 
   // Add date filter state
@@ -52,7 +54,8 @@ function AnalysisResults() {
               id: video.id,
               ...video,
               analysis: null,
-              video_info: null
+              video_info: null,
+              error: `Failed to load analysis: ${error.message}`
             };
           }
         })
@@ -68,86 +71,107 @@ function AnalysisResults() {
     }
   };
 
-  // NEW: Fetch Analysis Sessions
-  const fetchSessions = async () => {
-    try {
-      const response = await axios.get("http://127.0.0.1:8000/api/sessions/");
-      let sessionData = response.data;
+  // Updated fetchSessions function with optimizations
+const fetchSessions = async () => {
+  try {
+    setSessionsLoading(true);
+    setSessionErrors({});
+    const response = await axios.get('http://127.0.0.1:8000/api/sessions/');
+    let sessionData = response.data;
 
-      // Filter sessions based on selection
-      if (filter !== "all") {
-        // Map session statuses to video statuses for consistency in filtering
-        // pending_upload -> uploaded, processing, completed, failed
-        sessionData = sessionData.filter(session => {
-            if (filter === 'completed') return session.status === 'completed';
-            if (filter === 'processing') return session.status === 'processing';
-            if (filter === 'failed') return session.status === 'failed';
-            // For 'uploaded', consider 'pending_upload' as related
-            if (filter === 'uploaded') return session.status === 'pending_upload';
-            return true; // 'all'
-        });
-      }
-
-      // For each session, get its aggregated analysis data if available
-      const sessionsWithDetails = await Promise.all(
-        sessionData.map(async (session) => {
-          try {
-            const sessionDetailResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${session.id}/`);
-            const sessionDetail = sessionDetailResponse.data;
-            
-            let aggregatedAnalysis = null;
-            if (session.status === 'completed') {
-                 // Try to get the aggregated analysis for this session
-                 try {
-                     const aggAnalysisResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${session.id}/aggregated-analysis/`);
-                     aggregatedAnalysis = aggAnalysisResponse.data;
-                 } catch (aggError) {
-                     console.error(`Error fetching aggregated analysis for session ${session.id}:`, aggError);
-                     // If not found, fetch all analyses for the session and pick the one linked to the session
-                     try {
-                         // *** CORRECTED: Use the new endpoint path ***
-                         const sessionAnalysesResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${session.id}/traffic-analyses/`);
-                         const sessionAnalyses = sessionAnalysesResponse.data;
-                         // Find the one that's marked as aggregated or the one linked directly to the session
-                         // In our case, TrafficAnalysis linked via analysis_session should be the aggregated one.
-                         // Find the analysis where analysis_session equals the session ID
-                         const aggAnalysis = sessionAnalyses.find(a => a.analysis_session === session.id);
-                         if (aggAnalysis) {
-                             aggregatedAnalysis = aggAnalysis; // Use the found aggregated analysis
-                         }
-                     } catch (listError) {
-                         console.error(`Error fetching analyses list for session ${session.id}:`, listError);
-                     }
-                 }
-            }
-
-            return {
-              type: 'session', // Add type identifier
-              id: session.id, // Use session ID
-              ...session,
-              analysis: aggregatedAnalysis, // Attach the aggregated analysis if found
-              video_info: null // No specific video info for a session, maybe session info?
-            };
-          } catch (error) {
-            console.error(`Error fetching session details for ${session.id}:`, error);
-            return {
-              type: 'session', // Add type identifier
-              id: session.id,
-              ...session,
-              analysis: null,
-              video_info: null
-            };
-          }
-        })
-      );
-
-      setSessions(sessionsWithDetails);
-    } catch (err) {
-      console.error("Error fetching sessions:", err);
-      // Don't set error here as individual analyses might still load
-      // setError("Failed to load session data");
+    // Filter sessions based on selection
+    if (filter !== "all") {
+      sessionData = sessionData.filter(session => {
+        if (filter === 'completed') return session.status === 'completed';
+        if (filter === 'processing') return session.status === 'processing';
+        if (filter === 'failed') return session.status === 'failed';
+        if (filter === 'uploaded') return session.status === 'pending_upload';
+        return true;
+      });
     }
-  };
+
+    // For each session, get its aggregated analysis data if available
+    const sessionsWithDetails = await Promise.all(
+      sessionData.map(async (session) => {
+        let aggregatedAnalysis = null;
+        let sessionError = null;
+
+        if (session.status === 'completed') {
+          try {
+            // Try multiple approaches to find the session analysis
+            
+            // Approach 1: Look for TrafficAnalysis with analysis_session matching session ID
+            const sessionAnalysesResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${session.id}/traffic-analyses/`);
+            const sessionAnalyses = sessionAnalysesResponse.data;
+            
+            if (sessionAnalyses && sessionAnalyses.length > 0) {
+              // Use the first analysis found (should be the aggregated one)
+              const sessionAnalysis = sessionAnalyses[0];
+              
+              // Extract analysis data from the TrafficAnalysis record
+              aggregatedAnalysis = {
+                total_vehicles: sessionAnalysis.total_vehicles || 0,
+                vehicle_breakdown: sessionAnalysis.analysis_data?.summary?.vehicle_breakdown || {
+                  cars: sessionAnalysis.car_count || 0,
+                  trucks: sessionAnalysis.truck_count || 0,
+                  motorcycles: sessionAnalysis.motorcycle_count || 0,
+                  buses: sessionAnalysis.bus_count || 0,
+                  bicycles: sessionAnalysis.bicycle_count || 0,
+                  others: sessionAnalysis.other_count || 0
+                },
+                congestion_level: sessionAnalysis.congestion_level || 'low',
+                traffic_pattern: sessionAnalysis.traffic_pattern || 'stable'
+              };
+              
+              console.log(`✅ Found session analysis for session ${session.id}:`, aggregatedAnalysis);
+            } else {
+              // Approach 2: Check if there's analysis data in the session itself
+              if (session.analysis_data) {
+                aggregatedAnalysis = {
+                  total_vehicles: session.analysis_data.summary?.total_vehicles_counted || 0,
+                  vehicle_breakdown: session.analysis_data.summary?.vehicle_breakdown || {},
+                  congestion_level: session.analysis_data.metrics?.congestion_level || 'low',
+                  traffic_pattern: session.analysis_data.metrics?.traffic_pattern || 'stable'
+                };
+                console.log(`✅ Using session-level analysis data for ${session.id}`);
+              } else {
+                sessionError = "No analysis data found for completed session";
+                console.warn(`❌ No analysis data found for completed session ${session.id}`);
+              }
+            }
+          } catch (error) {
+            console.error(`Error fetching analysis for session ${session.id}:`, error);
+            sessionError = `Failed to load analysis data: ${error.message}`;
+          }
+        }
+
+        // Track session errors
+        if (sessionError) {
+          setSessionErrors(prev => ({
+            ...prev,
+            [session.id]: sessionError
+          }));
+        }
+
+        return {
+          type: 'session',
+          id: session.id,
+          ...session,
+          analysis: aggregatedAnalysis,
+          video_info: null,
+          error: sessionError
+        };
+      })
+    );
+
+    setSessions(sessionsWithDetails);
+  } catch (err) {
+    console.error("Error fetching sessions:", err);
+    setError("Failed to load session data");
+  } finally {
+    setSessionsLoading(false);
+  }
+};
 
   // Combine and filter analyses and sessions
   const getCombinedResults = () => {
@@ -155,6 +179,7 @@ function AnalysisResults() {
 
     // Filter by date
     if (dateFilter !== 'all') {
+      const today = new Date();
       combined = combined.filter(item => {
         let dateToCheck;
         if (item.type === 'video') {
@@ -164,17 +189,18 @@ function AnalysisResults() {
         }
         if (!dateToCheck) return false;
 
-        const today = new Date();
         const itemDate = new Date(dateToCheck);
 
         switch (dateFilter) {
           case 'today':
             return itemDate.toDateString() === today.toDateString();
           case 'week':
-            const weekAgo = new Date(today.setDate(today.getDate() - 7));
+            const weekAgo = new Date(today); // Create new Date object to avoid mutation
+            weekAgo.setDate(weekAgo.getDate() - 7);
             return itemDate >= weekAgo;
           case 'month':
-            const monthAgo = new Date(today.setMonth(today.getMonth() - 1));
+            const monthAgo = new Date(today); // Create new Date object to avoid mutation
+            monthAgo.setMonth(monthAgo.getMonth() - 1);
             return itemDate >= monthAgo;
           default:
             return true;
@@ -325,6 +351,7 @@ function AnalysisResults() {
 
   // Combine and filter results for display
   const combinedResults = getCombinedResults();
+  const isLoading = loading || sessionsLoading;
 
   return (
     <div className="main-content">
@@ -345,6 +372,7 @@ function AnalysisResults() {
               Videos: {analyses.length} •
               Sessions: {sessions.length} •
               Completed: {combinedResults.filter(a => a.status === 'completed' || a.processing_status === 'completed').length}
+              {sessionsLoading && " • (Loading sessions...)"}
             </p>
           </div>
 
@@ -395,15 +423,17 @@ function AnalysisResults() {
 
             <button
               onClick={() => { fetchAnalyses(); fetchSessions(); }} // Refresh both
+              disabled={isLoading}
               style={{
                 padding: '8px 16px',
                 border: '1px solid #ddd',
                 borderRadius: '4px',
                 backgroundColor: 'white',
-                cursor: 'pointer'
+                cursor: isLoading ? 'not-allowed' : 'pointer',
+                opacity: isLoading ? 0.6 : 1
               }}
             >
-              Refresh
+              {isLoading ? 'Refreshing...' : 'Refresh'}
             </button>
           </div>
         </div>
@@ -422,9 +452,15 @@ function AnalysisResults() {
         </div>
       )}
 
-      {loading ? (
+      {isLoading ? (
         <div style={{ textAlign: 'center', padding: '40px' }}>
-          <div style={{ fontSize: '18px', color: '#666' }}>Loading analyses and sessions...</div>
+          <div style={{ fontSize: '18px', color: '#666' }}>
+            {loading && sessionsLoading 
+              ? "Loading analyses and sessions..." 
+              : loading 
+                ? "Loading video analyses..." 
+                : "Loading sessions..."}
+          </div>
         </div>
       ) : combinedResults.length === 0 ? (
         <div className="dashboard-card" style={{ textAlign: 'center', padding: '40px' }}>
@@ -451,7 +487,7 @@ function AnalysisResults() {
             </thead>
             <tbody>
               {combinedResults.map((item) => (
-                <tr key={`${item.type}-${item.id}`}> {/* Ensure unique key */}
+                <tr key={`${item.type}-${item.id}`}>
                   <td>
                     <div>
                       <div style={{ fontWeight: '600', marginBottom: '4px' }}>
@@ -489,7 +525,11 @@ function AnalysisResults() {
                     </div>
                   </td>
                   <td>
-                    {item.analysis ? (
+                    {item.error ? (
+                      <span style={{ color: '#ef4444', fontSize: '12px' }}>
+                        Error: {item.error}
+                      </span>
+                    ) : item.analysis ? (
                       <div>
                         <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '4px' }}>
                           <span style={{ fontWeight: '600' }}>{item.analysis.total_vehicles} vehicles</span>
@@ -498,25 +538,25 @@ function AnalysisResults() {
                           )}
                         </div>
                         <div style={{ fontSize: '12px', color: '#666' }}>
-                          Cars: {item.analysis.car_count || 0} •
-                          Trucks: {item.analysis.truck_count || 0} •
-                          Motorcycles: {item.analysis.motorcycle_count || 0}
+                          Cars: {item.analysis.vehicle_breakdown?.cars || 0} •
+                          Trucks: {item.analysis.vehicle_breakdown?.trucks || 0} •
+                          Motorcycles: {item.analysis.vehicle_breakdown?.motorcycles || 0}
                         </div>
                       </div>
-                    ) : item.status === 'completed' || item.processing_status === 'completed' ? ( // Check status field for session or video
+                    ) : item.status === 'completed' || item.processing_status === 'completed' ? (
                       <span style={{ color: '#999', fontSize: '14px' }}>No analysis data</span>
                     ) : (
                       <span style={{ color: '#999', fontSize: '14px' }}>Analysis in progress...</span>
                     )}
                   </td>
                   <td>
-                    {getStatusBadge(item.status || item.processing_status, item.type)} {/* Pass type if needed */}
+                    {getStatusBadge(item.status || item.processing_status, item.type)}
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                      {(item.status === 'completed' || item.processing_status === 'completed') && ( // Check status field
+                      {(item.status === 'completed' || item.processing_status === 'completed') && (
                         <button
-                          onClick={() => viewProcessedVideo(item.id, item.type)} // Pass ID and type
+                          onClick={() => viewProcessedVideo(item.id, item.type)}
                           style={{
                             padding: '6px 12px',
                             border: 'none',
@@ -532,7 +572,7 @@ function AnalysisResults() {
                       )}
 
                       <button
-                        onClick={() => deleteAnalysis(item.id, item.type, item.type === 'session' ? item.name : item.filename)} // Pass type
+                        onClick={() => deleteAnalysis(item.id, item.type, item.type === 'session' ? item.name : item.filename)}
                         style={{
                           padding: '6px 12px',
                           border: '1px solid #ef4444',
