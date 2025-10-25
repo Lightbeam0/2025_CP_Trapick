@@ -2,69 +2,47 @@
 from django.db.models import Count, Avg, Max, Min, Q, F
 from django.utils import timezone
 from datetime import timedelta, datetime
-from .models import TrafficAnalysis, Detection, VideoFile, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction
+from .models import Location, TrafficAnalysis, Detection, VideoFile, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction
 
 def calculate_real_weekly_data():
     """Calculate actual weekly vehicle counts from TrafficAnalysis"""
     try:
         one_week_ago = timezone.now() - timedelta(days=7)
         
-        # Get analyses from last 7 days
-        recent_analyses = TrafficAnalysis.objects.filter(analyzed_at__gte=one_week_ago)
-        
-        if not recent_analyses.exists():
-            print("No recent analyses found for weekly data")
-            return [0, 0, 0, 0, 0, 0, 0]  # Return zeros for frontend
-        
-        # Group by day and sum vehicles
+        # Get analyses from last 7 days and group by day
         daily_data = []
         for i in range(7):
             day = one_week_ago + timedelta(days=i)
-            day_analyses = recent_analyses.filter(analyzed_at__date=day)
+            day_analyses = TrafficAnalysis.objects.filter(
+                analyzed_at__date=day
+            )
             total_vehicles = sum(analysis.total_vehicles for analysis in day_analyses)
             daily_data.append(total_vehicles)
         
-        print(f"Weekly data calculated: {daily_data}")
         return daily_data
         
     except Exception as e:
         print(f"Error calculating weekly data: {e}")
         return [0, 0, 0, 0, 0, 0, 0]
-
+    
 def calculate_real_vehicle_stats():
-    """Calculate actual vehicle statistics from Detection model"""
+    """Calculate actual vehicle statistics from TrafficAnalysis"""
     try:
         today = timezone.now().date()
         yesterday = today - timedelta(days=1)
         
         def get_daily_counts(date):
-            """Get vehicle counts for a specific date"""
-            try:
-                # Try to get from TrafficAnalysis first (more reliable)
-                analyses = TrafficAnalysis.objects.filter(analyzed_at__date=date)
-                if analyses.exists():
-                    return {
-                        'cars': sum(a.car_count for a in analyses),
-                        'trucks': sum(a.truck_count for a in analyses),
-                        'buses': sum(a.bus_count for a in analyses),
-                        'motorcycles': sum(a.motorcycle_count for a in analyses),
-                        'bicycles': sum(a.bicycle_count for a in analyses),
-                        'others': sum(a.other_count for a in analyses)
-                    }
-                
-                # Fallback to Detection model
-                detections = Detection.objects.filter(timestamp__date=date)
-                return {
-                    'cars': detections.filter(vehicle_type__name='car').count(),
-                    'trucks': detections.filter(vehicle_type__name='truck').count(),
-                    'buses': detections.filter(vehicle_type__name='bus').count(),
-                    'motorcycles': detections.filter(vehicle_type__name='motorcycle').count(),
-                    'bicycles': detections.filter(vehicle_type__name='bicycle').count(),
-                    'others': detections.filter(vehicle_type__name='other').count()
-                }
-            except Exception as e:
-                print(f"Error getting daily counts for {date}: {e}")
-                return {'cars': 0, 'trucks': 0, 'buses': 0, 'motorcycles': 0, 'bicycles': 0, 'others': 0}
+            """Get vehicle counts for a specific date from TrafficAnalysis"""
+            analyses = TrafficAnalysis.objects.filter(analyzed_at__date=date)
+            
+            return {
+                'cars': sum(a.car_count for a in analyses),
+                'trucks': sum(a.truck_count for a in analyses),
+                'buses': sum(a.bus_count for a in analyses),
+                'motorcycles': sum(a.motorcycle_count for a in analyses),
+                'bicycles': sum(a.bicycle_count for a in analyses),
+                'others': sum(a.other_count for a in analyses)
+            }
         
         today_data = get_daily_counts(today)
         yesterday_data = get_daily_counts(yesterday)
@@ -80,51 +58,47 @@ def calculate_real_vehicle_stats():
             'today': {'cars': 0, 'trucks': 0, 'buses': 0, 'motorcycles': 0, 'bicycles': 0, 'others': 0},
             'yesterday': {'cars': 0, 'trucks': 0, 'buses': 0, 'motorcycles': 0, 'bicycles': 0, 'others': 0}
         }
-
+        
 def calculate_real_congestion_data():
-    """Calculate real congestion data from TrafficAnalysis"""
-    # Get recent analyses with locations
-    recent_analyses = TrafficAnalysis.objects.filter(
-        location__isnull=False
-    ).select_related('location').order_by('-analyzed_at')[:10]
-    
-    if not recent_analyses.exists():
-        return []  # Return empty instead of fake data
-    
-    congestion_data = []
-    
-    for analysis in recent_analyses:
-        # Calculate vehicles per hour
-        video_duration_hours = analysis.video_file.duration_seconds / 3600 if analysis.video_file.duration_seconds else 1
-        vehicles_per_hour = analysis.total_vehicles / video_duration_hours if video_duration_hours > 0 else 0
+    """Calculate real congestion data from recent TrafficAnalysis"""
+    try:
+        # Get recent analyses with locations
+        recent_analyses = TrafficAnalysis.objects.filter(
+            location__isnull=False
+        ).select_related('location').order_by('-analyzed_at')[:10]
         
-        # Determine congestion level based on vehicles per hour
-        if vehicles_per_hour > 2000:
-            congestion_level = 'High'
-        elif vehicles_per_hour > 1000:
-            congestion_level = 'Medium'
-        else:
-            congestion_level = 'Low'
+        congestion_data = []
         
-        # Determine trend
-        if analysis.traffic_pattern == 'increasing':
-            trend = 'increasing'
-        elif analysis.traffic_pattern == 'decreasing':
-            trend = 'decreasing'
-        else:
+        for analysis in recent_analyses:
+            # Calculate vehicles per hour
+            video_duration_hours = analysis.video_file.duration_seconds / 3600 if analysis.video_file and analysis.video_file.duration_seconds else 1
+            vehicles_per_hour = analysis.total_vehicles / video_duration_hours if video_duration_hours > 0 else 0
+            
+            # Use actual congestion level from analysis
+            congestion_level = analysis.congestion_level.capitalize()
+            
+            # Determine trend from traffic pattern
             trend = 'stable'
+            if analysis.traffic_pattern == 'increasing':
+                trend = 'increasing'
+            elif analysis.traffic_pattern == 'decreasing':
+                trend = 'decreasing'
+            
+            congestion_data.append({
+                'road': f"{analysis.location.display_name} Road",
+                'area': analysis.location.display_name,
+                'time': analysis.analyzed_at.strftime('%I:%M %p'),
+                'congestion_level': congestion_level,
+                'vehicles_per_hour': int(vehicles_per_hour),
+                'trend': trend
+            })
         
-        congestion_data.append({
-            'road': f"{analysis.location.display_name} Road",
-            'area': analysis.location.display_name,
-            'time': analysis.analyzed_at.strftime('%I:%M %p'),
-            'congestion_level': congestion_level,
-            'vehicles_per_hour': int(vehicles_per_hour),
-            'trend': trend
-        })
+        return congestion_data
+        
+    except Exception as e:
+        print(f"Error calculating congestion data: {e}")
+        return []
     
-    return congestion_data
-
 def calculate_hourly_traffic_summary():
     """Calculate hourly traffic patterns for today - SQLite compatible"""
     today = timezone.now().date()
@@ -150,20 +124,22 @@ def get_system_overview_stats():
     total_videos = VideoFile.objects.count()
     processed_videos = VideoFile.objects.filter(processed=True).count()
     total_analyses = TrafficAnalysis.objects.count()
-    total_detections = Detection.objects.count()
     
     # Recent activity (last 24 hours)
     one_day_ago = timezone.now() - timedelta(hours=24)
     recent_analyses = TrafficAnalysis.objects.filter(analyzed_at__gte=one_day_ago)
-    recent_detections = Detection.objects.filter(timestamp__gte=one_day_ago)
+    
+    # Calculate congested roads (analyses with high congestion)
+    congested_roads = TrafficAnalysis.objects.filter(
+        congestion_level__in=['high', 'severe']
+    ).count()
     
     return {
         'total_videos': total_videos,
         'processed_videos': processed_videos,
         'total_analyses': total_analyses,
-        'total_detections': total_detections,
+        'congested_roads': congested_roads,
         'recent_analyses_count': recent_analyses.count(),
-        'recent_detections_count': recent_detections.count(),
         'processing_success_rate': (processed_videos / total_videos * 100) if total_videos > 0 else 0
     }
 
@@ -179,48 +155,40 @@ def get_vehicle_type_distribution():
     return {item['vehicle_type__name']: item['count'] for item in distribution}
 
 def get_peak_hours_analysis():
-    """Analyze peak traffic hours across all data - SQLite compatible"""
-    # Get all detections
-    detections = Detection.objects.all()
-    
-    # Manual grouping by hour for SQLite compatibility
-    hourly_counts = {}
-    hourly_confidence = {}
-    
-    for detection in detections:
-        hour = detection.timestamp.hour
-        hourly_counts[hour] = hourly_counts.get(hour, 0) + 1
-        hourly_confidence[hour] = hourly_confidence.get(hour, []) + [detection.confidence]
-    
-    # Find peak hour
-    if hourly_counts:
-        peak_hour = max(hourly_counts.items(), key=lambda x: x[1])
-        hour = peak_hour[0]
-        count = peak_hour[1]
-        avg_confidence = sum(hourly_confidence[hour]) / len(hourly_confidence[hour]) if hour in hourly_confidence else 0
+    """Get real peak hours from Detection data"""
+    try:
+        # Get all detections and group by hour
+        detections = Detection.objects.all()
         
-        return {
-            'peak_hour': f"{hour:02d}:00",
-            'peak_hour_count': count,
-            'average_confidence': float(avg_confidence)
-        }
+        hourly_counts = {}
+        for detection in detections:
+            hour = detection.timestamp.hour
+            hourly_counts[hour] = hourly_counts.get(hour, 0) + 1
+        
+        if hourly_counts:
+            peak_hour = max(hourly_counts.items(), key=lambda x: x[1])
+            return {
+                'peak_hour': f"{peak_hour[0]:02d}:00",
+                'peak_hour_count': peak_hour[1]
+            }
+        
+        return {'peak_hour': '08:00', 'peak_hour_count': 0}
+        
+    except Exception as e:
+        print(f"Error calculating peak hours: {e}")
+        return {'peak_hour': '08:00', 'peak_hour_count': 0}
     
-    return {
-        'peak_hour': '08:00',
-        'peak_hour_count': 0,
-        'average_confidence': 0
-    }
-
 def generate_traffic_predictions(location_id=None, days_ahead=7):
-    """Generate traffic predictions based on historical data"""
-    from .models import TrafficPrediction, Detection, Location
+    """Generate traffic predictions based on actual TrafficAnalysis data"""
+    from .models import TrafficPrediction, TrafficAnalysis
+    from django.db.models import Avg
     
     # Clear old predictions
     TrafficPrediction.objects.all().delete()
     
-    # Get historical data (last 30 days)
+    # Get actual historical data from TrafficAnalysis (last 30 days)
     thirty_days_ago = timezone.now() - timedelta(days=30)
-    historical_data = Detection.objects.filter(timestamp__gte=thirty_days_ago)
+    historical_data = TrafficAnalysis.objects.filter(analyzed_at__gte=thirty_days_ago)
     
     if location_id:
         historical_data = historical_data.filter(location_id=location_id)
@@ -229,34 +197,33 @@ def generate_traffic_predictions(location_id=None, days_ahead=7):
         location = None
     
     if not historical_data.exists():
-        print("No historical data available for predictions")
+        print("No TrafficAnalysis data available for predictions")
         return []
     
     predictions = []
     
-    # Generate predictions for next 7 days
-    for day_offset in range(days_ahead):
+    # Generate predictions for next days
+    for day_offset in range(1, days_ahead + 1):
         prediction_date = timezone.now().date() + timedelta(days=day_offset)
-        day_of_week = prediction_date.weekday()  # 0=Monday, 6=Sunday
+        day_of_week = prediction_date.weekday()
         
-        for hour in range(6, 22):  # 6 AM to 10 PM
-            # Simple prediction algorithm (can be enhanced with ML later)
-            predicted_count = predict_hourly_traffic(historical_data, day_of_week, hour)
-            confidence_score = calculate_confidence(historical_data, day_of_week, hour)
+        for hour in range(24):
+            # Use actual TrafficAnalysis data for predictions
+            predicted_count = predict_from_traffic_analysis(historical_data, day_of_week, hour)
+            confidence_score = calculate_analysis_confidence(historical_data, day_of_week, hour)
             
-            # Determine congestion level
-            if predicted_count > 150:
+            # Determine congestion based on actual traffic patterns
+            if predicted_count > 200:
                 predicted_congestion = 'severe'
-            elif predicted_count > 100:
+            elif predicted_count > 150:
                 predicted_congestion = 'high'
-            elif predicted_count > 50:
+            elif predicted_count > 100:
                 predicted_congestion = 'medium'
-            elif predicted_count > 20:
+            elif predicted_count > 50:
                 predicted_congestion = 'low'
             else:
                 predicted_congestion = 'very_low'
             
-            # Create prediction record
             prediction = TrafficPrediction.objects.create(
                 location=location,
                 prediction_date=prediction_date,
@@ -265,15 +232,123 @@ def generate_traffic_predictions(location_id=None, days_ahead=7):
                 predicted_vehicle_count=predicted_count,
                 predicted_congestion=predicted_congestion,
                 confidence_score=confidence_score,
-                confidence_interval_lower=max(0, predicted_count * 0.7),
-                confidence_interval_upper=predicted_count * 1.3,
-                model_version="v1.0"
+                confidence_interval_lower=max(0, predicted_count * 0.8),
+                confidence_interval_upper=predicted_count * 1.2,
+                model_version="v2.0-traffic-analysis"
             )
             
             predictions.append(prediction)
     
-    print(f"Generated {len(predictions)} traffic predictions")
+    print(f"Generated {len(predictions)} predictions from TrafficAnalysis data")
     return predictions
+
+def predict_from_traffic_analysis(historical_data, day_of_week, hour):
+    """Predict based on TrafficAnalysis historical data"""
+    # Get analyses for same day of week
+    same_day_analyses = historical_data.filter(
+        analyzed_at__week_day=day_of_week + 1  # Django: 1=Sunday, 7=Saturday
+    )
+    
+    if same_day_analyses.exists():
+        avg_vehicles = same_day_analyses.aggregate(avg=Avg('total_vehicles'))['avg'] or 0
+        # Apply hourly pattern
+        hourly_factor = get_hourly_traffic_factor(hour)
+        return int(avg_vehicles * hourly_factor)
+    
+    # Fallback to overall average
+    overall_avg = historical_data.aggregate(avg=Avg('total_vehicles'))['avg'] or 50
+    hourly_factor = get_hourly_traffic_factor(hour)
+    return int(overall_avg * hourly_factor)
+
+def get_hourly_traffic_factor(hour):
+    """Get traffic pattern factor based on hour"""
+    # Morning peak: 7-9 AM
+    if 7 <= hour <= 9:
+        return 1.8
+    # Evening peak: 4-7 PM  
+    elif 16 <= hour <= 19:
+        return 1.6
+    # Mid-day: 10 AM - 3 PM
+    elif 10 <= hour <= 15:
+        return 1.2
+    # Late night: 12 AM - 5 AM
+    elif hour <= 5:
+        return 0.3
+    # Other hours
+    else:
+        return 0.8
+
+def calculate_analysis_confidence(historical_data, day_of_week, hour):
+    """Calculate confidence based on TrafficAnalysis data availability"""
+    same_day_count = historical_data.filter(
+        analyzed_at__week_day=day_of_week + 1
+    ).count()
+    
+    total_count = historical_data.count()
+    
+    if total_count == 0:
+        return 0.3
+    
+    data_coverage = min(1.0, same_day_count / 4)
+    base_confidence = 0.3 + (data_coverage * 0.6)
+    
+    return min(0.9, base_confidence)
+
+def predict_from_historical_data(historical_analyses, day_of_week, hour):
+    """Predict traffic based on actual historical analysis data"""
+    # Get analyses for same day of week
+    same_day_analyses = historical_analyses.filter(
+        analyzed_at__week_day=day_of_week + 1  # Django uses 1=Sunday, 7=Saturday
+    )
+    
+    if same_day_analyses.exists():
+        # Use average of same day analyses
+        avg_vehicles = same_day_analyses.aggregate(avg=Avg('total_vehicles'))['avg'] or 0
+        
+        # Apply hourly pattern (morning/evening peaks)
+        hourly_factor = get_hourly_pattern_factor(hour)
+        return int(avg_vehicles * hourly_factor)
+    
+    # Fallback: overall average
+    overall_avg = historical_analyses.aggregate(avg=Avg('total_vehicles'))['avg'] or 50
+    hourly_factor = get_hourly_pattern_factor(hour)
+    return int(overall_avg * hourly_factor)
+
+def get_hourly_pattern_factor(hour):
+    """Get traffic pattern factor based on hour of day"""
+    # Morning peak: 7-9 AM
+    if 7 <= hour <= 9:
+        return 1.8
+    # Evening peak: 4-7 PM
+    elif 16 <= hour <= 19:
+        return 1.6
+    # Mid-day: 10 AM - 3 PM
+    elif 10 <= hour <= 15:
+        return 1.2
+    # Late night: 12 AM - 5 AM
+    elif hour <= 5:
+        return 0.3
+    # Other hours
+    else:
+        return 0.8
+
+def calculate_prediction_confidence(historical_analyses, day_of_week, hour):
+    """Calculate confidence score based on data availability"""
+    # Count analyses for this day of week
+    same_day_count = historical_analyses.filter(
+        analyzed_at__week_day=day_of_week + 1
+    ).count()
+    
+    total_count = historical_analyses.count()
+    
+    if total_count == 0:
+        return 0.3
+    
+    # Base confidence on data availability and consistency
+    data_coverage = min(1.0, same_day_count / 4)  # At least 4 samples for good confidence
+    base_confidence = 0.3 + (data_coverage * 0.6)
+    
+    return min(0.9, base_confidence)
 
 def predict_hourly_traffic(historical_data, day_of_week, hour):
     """Simple prediction algorithm based on historical patterns"""

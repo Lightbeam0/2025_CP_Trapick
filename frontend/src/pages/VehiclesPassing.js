@@ -29,25 +29,6 @@ function VehiclesPassing() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const defaultVehicleData = {
-    today: {
-      cars: 1245,
-      trucks: 456,
-      buses: 123,
-      motorcycles: 934,
-      bicycles: 67,
-      others: 89
-    },
-    yesterday: {
-      cars: 1100,
-      trucks: 420,
-      buses: 115,
-      motorcycles: 880,
-      bicycles: 62,
-      others: 78
-    }
-  };
-
   useEffect(() => {
     const fetchVehicleData = async () => {
       try {
@@ -55,28 +36,25 @@ function VehiclesPassing() {
         const apiData = response.data;
         
         if (apiData && typeof apiData === 'object') {
-          const normalizedData = {
-            today: {
-              cars: apiData.today?.cars || apiData.cars || defaultVehicleData.today.cars,
-              trucks: apiData.today?.trucks || apiData.trucks || defaultVehicleData.today.trucks,
-              buses: apiData.today?.buses || apiData.buses || defaultVehicleData.today.buses,
-              motorcycles: apiData.today?.motorcycles || apiData.motorcycles || defaultVehicleData.today.motorcycles,
-              bicycles: apiData.today?.bicycles || apiData.bicycles || defaultVehicleData.today.bicycles,
-              others: apiData.today?.others || apiData.others || defaultVehicleData.today.others
-            },
-            yesterday: defaultVehicleData.yesterday
-          };
-          
-          setVehicleData(normalizedData);
+          // Use the API data directly, no fallback to dummy data
+          setVehicleData(apiData);
         } else {
-          setVehicleData(defaultVehicleData);
+          // If API returns invalid data, set empty data
+          setVehicleData({
+            today: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
+            yesterday: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 }
+          });
         }
         
         setLoading(false);
       } catch (err) {
         console.error("API error:", err);
-        setError("Failed to load vehicle data. Using sample data for demonstration.");
-        setVehicleData(defaultVehicleData);
+        setError("Failed to load vehicle data from server.");
+        // Set empty data instead of dummy data
+        setVehicleData({
+          today: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
+          yesterday: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 }
+        });
         setLoading(false);
       }
     };
@@ -103,10 +81,10 @@ function VehiclesPassing() {
     );
   }
 
-  const currentData = vehicleData?.[timePeriod] || vehicleData?.today || defaultVehicleData.today;
+  const currentData = vehicleData?.[timePeriod] || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 };
   const previousData = timePeriod === "today" 
-    ? (vehicleData?.yesterday || defaultVehicleData.yesterday)
-    : (vehicleData?.today || defaultVehicleData.today);
+    ? (vehicleData?.yesterday || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 })
+    : (vehicleData?.today || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 });
 
   const carsChange = calculateChange(currentData.cars || 0, previousData?.cars || 0);
   const trucksChange = calculateChange(currentData.trucks || 0, previousData?.trucks || 0);
@@ -194,7 +172,7 @@ function VehiclesPassing() {
           borderRadius: '4px',
           marginBottom: '24px'
         }}>
-          {error}
+          {error} Upload and process some videos to see vehicle data.
         </div>
       )}
 
@@ -395,7 +373,116 @@ function VehiclesPassing() {
                   </span>
                 </td>
               </tr>
-              {/* Add similar rows for other vehicle types */}
+              <tr>
+                <td style={{ fontWeight: '600' }}>Trucks</td>
+                <td>{(currentData.trucks || 0).toLocaleString()}</td>
+                <td className={trucksChange.isPositive ? 'positive-change' : 'negative-change'}>
+                  {trucksChange.isPositive ? '+' : ''}{Math.abs((currentData.trucks || 0) - (previousData?.trucks || 0)).toLocaleString()}
+                </td>
+                <td>{(((currentData.trucks || 0) / totalVehicles) * 100).toFixed(1)}%</td>
+                <td>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '500',
+                    backgroundColor: trucksChange.isPositive ? '#d1fae5' : '#fee2e2',
+                    color: trucksChange.isPositive ? '#065f46' : '#991b1b'
+                  }}>
+                    {trucksChange.isPositive ? '↗ Increasing' : '↘ Decreasing'}
+                  </span>
+                </td>
+              </tr>
+              <tr>
+                <td style={{ fontWeight: '600' }}>Buses</td>
+                <td>{(currentData.buses || 0).toLocaleString()}</td>
+                <td className={busesChange.isPositive ? 'positive-change' : 'negative-change'}>
+                  {busesChange.isPositive ? '+' : ''}{Math.abs((currentData.buses || 0) - (previousData?.buses || 0)).toLocaleString()}
+                </td>
+                <td>{(((currentData.buses || 0) / totalVehicles) * 100).toFixed(1)}%</td>
+                <td>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '500',
+                    backgroundColor: busesChange.isPositive ? '#d1fae5' : '#fee2e2',
+                    color: busesChange.isPositive ? '#065f46' : '#991b1b'
+                  }}>
+                    {busesChange.isPositive ? '↗ Increasing' : '↘ Decreasing'}
+                  </span>
+                </td>
+              </tr>
+              <tr>
+                <td style={{ fontWeight: '600' }}>Motorcycles</td>
+                <td>{(currentData.motorcycles || 0).toLocaleString()}</td>
+                <td className={motorcyclesChange.isPositive ? 'positive-change' : 'negative-change'}>
+                  {motorcyclesChange.isPositive ? '+' : ''}{Math.abs((currentData.motorcycles || 0) - (previousData?.motorcycles || 0)).toLocaleString()}
+                </td>
+                <td>{(((currentData.motorcycles || 0) / totalVehicles) * 100).toFixed(1)}%</td>
+                <td>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '500',
+                    backgroundColor: motorcyclesChange.isPositive ? '#d1fae5' : '#fee2e2',
+                    color: motorcyclesChange.isPositive ? '#065f46' : '#991b1b'
+                  }}>
+                    {motorcyclesChange.isPositive ? '↗ Increasing' : '↘ Decreasing'}
+                  </span>
+                </td>
+              </tr>
+              <tr>
+                <td style={{ fontWeight: '600' }}>Bicycles</td>
+                <td>{(currentData.bicycles || 0).toLocaleString()}</td>
+                <td className={bicyclesChange.isPositive ? 'positive-change' : 'negative-change'}>
+                  {bicyclesChange.isPositive ? '+' : ''}{Math.abs((currentData.bicycles || 0) - (previousData?.bicycles || 0)).toLocaleString()}
+                </td>
+                <td>{(((currentData.bicycles || 0) / totalVehicles) * 100).toFixed(1)}%</td>
+                <td>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '500',
+                    backgroundColor: bicyclesChange.isPositive ? '#d1fae5' : '#fee2e2',
+                    color: bicyclesChange.isPositive ? '#065f46' : '#991b1b'
+                  }}>
+                    {bicyclesChange.isPositive ? '↗ Increasing' : '↘ Decreasing'}
+                  </span>
+                </td>
+              </tr>
+              <tr>
+                <td style={{ fontWeight: '600' }}>Others</td>
+                <td>{(currentData.others || 0).toLocaleString()}</td>
+                <td className={othersChange.isPositive ? 'positive-change' : 'negative-change'}>
+                  {othersChange.isPositive ? '+' : ''}{Math.abs((currentData.others || 0) - (previousData?.others || 0)).toLocaleString()}
+                </td>
+                <td>{(((currentData.others || 0) / totalVehicles) * 100).toFixed(1)}%</td>
+                <td>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '500',
+                    backgroundColor: othersChange.isPositive ? '#d1fae5' : '#fee2e2',
+                    color: othersChange.isPositive ? '#065f46' : '#991b1b'
+                  }}>
+                    {othersChange.isPositive ? '↗ Increasing' : '↘ Decreasing'}
+                  </span>
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>

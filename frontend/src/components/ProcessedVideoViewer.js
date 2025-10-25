@@ -1,5 +1,5 @@
 // src/components/ProcessedVideoViewer.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
@@ -9,6 +9,9 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
   const [analysisData, setAnalysisData] = useState(null);
   const [itemInfo, setItemInfo] = useState(null);
   const [videoLoadError, setVideoLoadError] = useState(null);
+  
+  // Video element ref for direct DOM management
+  const videoRef = useRef(null);
 
   useEffect(() => {
     const fetchItemData = async () => {
@@ -22,23 +25,16 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
         let analysisResponse, videoUrlEndpoint, itemInfoResponse;
 
         if (type === 'session') {
-          // NEW: Handle session viewing
-          // Option 1: Fetch the aggregated TrafficAnalysis directly using the session ID
-          // We can query /api/sessions/{session_id}/traffic-analyses/ and use the first result
+          // Handle session viewing
           try {
             const sessionAnalysesResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/traffic-analyses/`);
             const sessionAnalyses = sessionAnalysesResponse.data;
             
-            // Assuming there's one aggregated analysis per session
             if (sessionAnalyses.length > 0) {
-              // Use the first analysis found (should be the aggregated one)
               analysisResponse = { data: sessionAnalyses[0] };
               console.log(`✅ Found ${sessionAnalyses.length} analyses for session, using first one`);
               
-              // For item info, fetch the session details
               itemInfoResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${videoId}/`);
-              
-              // Set the video URL endpoint for the session's processed video
               videoUrlEndpoint = `http://127.0.0.1:8000/api/session-video/${videoId}/view/`;
             } else {
               throw new Error("No aggregated analysis found for this session.");
@@ -61,7 +57,7 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
         } else { // type === 'video'
           // Existing logic for individual video
           analysisResponse = await axios.get(`http://127.0.0.1:8000/api/analysis/${videoId}/`);
-          itemInfoResponse = analysisResponse; // Video info is part of the analysis response
+          itemInfoResponse = analysisResponse;
           videoUrlEndpoint = `http://127.0.0.1:8000/api/video/${videoId}/view/`;
         }
 
@@ -102,6 +98,18 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
       // Cleanup if needed
     };
   }, [videoId, type]);
+
+  // Use effect to manage video source with ref
+  useEffect(() => {
+    if (videoRef.current && videoUrl) {
+      // Only set the source if it's different
+      if (videoRef.current.src !== videoUrl) {
+        console.log("🔄 Setting video source via ref:", videoUrl);
+        videoRef.current.src = videoUrl;
+        // Don't call load() here as it can cause unnecessary reloads
+      }
+    }
+  }, [videoUrl]);
 
   const renderYJunctionAnalysis = (analysisData) => {
     if (!analysisData.path_analysis) return null;
@@ -207,6 +215,11 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
 
   const handleVideoError = (e) => {
     console.error('Video playback error:', e);
+    console.error('Video element error details:', {
+      error: videoRef.current?.error,
+      networkState: videoRef.current?.networkState,
+      readyState: videoRef.current?.readyState
+    });
     setVideoLoadError('Error playing video. The video file may be corrupted, still processing, or the format is not supported.');
   };
 
@@ -221,9 +234,9 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
     const alternativeUrl = type === 'session'
       ? `http://127.0.0.1:8000/api/session-video/${videoId}/direct/`
       : `http://127.0.0.1:8000/api/video/${videoId}/direct/`;
+    console.log('🔄 Trying alternative video URL:', alternativeUrl);
     setVideoUrl(alternativeUrl);
     setVideoLoadError(null);
-    console.log('Trying alternative video URL:', alternativeUrl);
   };
 
   // Export functions
@@ -479,9 +492,14 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
               <p style={{ margin: 0, fontSize: '14px', color: '#3b82f6' }}>
                 <strong>Video URL:</strong> <span style={{ fontFamily: 'monospace', fontSize: '12px' }}>{videoUrl}</span>
               </p>
+              <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#666' }}>
+                Component rendering with URL. Video element managed via React ref.
+              </p>
             </div>
 
+            {/* Video element with ref management */}
             <video
+              ref={videoRef}
               controls
               style={{
                 width: '100%',
@@ -491,13 +509,16 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
                 backgroundColor: '#000'
               }}
               onError={handleVideoError}
-              onLoadStart={() => console.log('Video loading started')}
-              onCanPlay={() => console.log('Video can play')}
-              onWaiting={() => console.log('Video waiting')}
-              onPlaying={() => console.log('Video playing')}
+              onLoadStart={() => console.log('🎬 Video loading started')}
+              onCanPlay={() => console.log('✅ Video can play')}
+              onWaiting={() => console.log('⏳ Video waiting')}
+              onPlaying={() => console.log('▶️ Video playing')}
+              onPause={() => console.log('⏸️ Video paused')}
+              onEnded={() => console.log('🏁 Video ended')}
+              preload="metadata"
             >
+              {/* Fallback source for browsers that don't work well with ref management */}
               <source src={videoUrl} type="video/mp4" />
-              <source src={videoUrl} type="video/mp4; codecs=avc1.42E01E,mp4a.40.2" />
               Your browser does not support the video tag.
             </video>
 
@@ -543,6 +564,20 @@ const ProcessedVideoViewer = ({ videoId, type, onClose, onBack }) => {
                       }}
                     >
                       Open in New Tab
+                    </button>
+                    <button 
+                      onClick={() => videoRef.current?.load()}
+                      style={{
+                        padding: '8px 16px',
+                        border: '1px solid #f59e0b',
+                        borderRadius: '4px',
+                        backgroundColor: 'white',
+                        color: '#f59e0b',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
+                    >
+                      Reload Video
                     </button>
                   </div>
                 </div>

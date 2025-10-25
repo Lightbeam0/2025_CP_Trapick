@@ -180,7 +180,20 @@ const AnalysisSessions = () => {
                   <tr key={session.id}>
                     <td style={{ fontWeight: '600' }}>{session.name}</td>
                     <td>{session.location_details?.display_name || session.location}</td>
-                    <td>{new Date(session.start_datetime).toLocaleString()} - {new Date(session.end_datetime).toLocaleString()}</td>
+                    <td>
+                      {new Date(session.start_datetime).toLocaleDateString('en-US', { 
+                        timeZone: 'UTC',
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit'
+                      })} - 
+                      {new Date(session.end_datetime).toLocaleDateString('en-US', { 
+                        timeZone: 'UTC',
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit'
+                      })}
+                    </td>
                     <td>
                       <span style={{
                         display: 'inline-flex',

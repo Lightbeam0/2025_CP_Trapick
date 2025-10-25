@@ -42,6 +42,27 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     }
   }, [isOpen]);
 
+  // Add this useEffect to handle session selection and auto-fill date and location
+  useEffect(() => {
+    if (formData.sessionId) {
+      const selectedSession = sessionOptions.find(session => session.id === formData.sessionId);
+      if (selectedSession) {
+        // Auto-fill date from session start date
+        if (selectedSession.start_datetime) {
+          const sessionDate = selectedSession.start_datetime.split('T')[0];
+          updateFormField('videoDate', sessionDate);
+          console.log(`✅ Auto-filled date from session: ${sessionDate}`);
+        }
+        
+        // Auto-fill location from session
+        if (selectedSession.location) {
+          updateFormField('locationId', selectedSession.location);
+          console.log(`✅ Auto-filled location from session: ${selectedSession.location}`);
+        }
+      }
+    }
+  }, [formData.sessionId, sessionOptions]);
+
   const fetchLocations = async () => {
     try {
       setLoadingLocations(true);
@@ -62,9 +83,13 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
       setLoadingSessions(true);
       console.log("🔄 Fetching sessions for upload dropdown...");
       const response = await axios.get('http://127.0.0.1:8000/api/sessions/');
-      // Filter sessions based on status if needed
-      const filteredSessions = response.data.filter(session => session.status === 'pending_upload' || session.status === 'completed');
-      console.log("✅ Sessions loaded for upload:", filteredSessions);
+      
+      // Filter sessions - only show pending_upload and processing sessions
+      const filteredSessions = response.data.filter(session => 
+        session.status === 'pending_upload' || session.status === 'processing'
+      );
+      
+      console.log("✅ Sessions loaded for upload (excluding completed):", filteredSessions);
       setSessionOptions(filteredSessions);
     } catch (error) {
       console.error('Error fetching sessions for upload:', error);
@@ -202,6 +227,21 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
       if (intervalId) clearInterval(intervalId);
     };
   }, [isProcessing, uploadId, onUpload, formData.sessionId]);
+
+  const handleSessionChange = (e) => {
+    const sessionId = e.target.value;
+    updateFormField('sessionId', sessionId);
+    
+    // If no session selected, clear auto-filled fields
+    if (!sessionId) {
+      if (formData.videoDate) {
+        updateFormField('videoDate', '');
+      }
+      if (formData.locationId) {
+        updateFormField('locationId', '');
+      }
+    }
+  };
 
   const handleFileChange = (event) => {
     const file = event.target.files[0];
@@ -407,7 +447,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           </label>
           <select
             value={formData.sessionId}
-            onChange={(e) => updateFormField('sessionId', e.target.value)}
+            onChange={handleSessionChange}  // Changed from direct updateFormField
             style={{
               width: '100%',
               padding: '8px',
@@ -423,7 +463,8 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
             ) : (
               sessionOptions.map(session => (
                 <option key={session.id} value={session.id}>
-                  {session.name} - {session.location_details?.display_name || session.location} ({session.status})
+                  {session.name} - {session.location_details?.display_name || session.location} 
+                  ({session.status === 'processing' ? 'Processing...' : 'Ready for Upload'})
                 </option>
               ))
             )}
@@ -481,6 +522,11 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
             Video Recording Date *
+            {formData.sessionId && (
+              <span style={{ fontSize: '12px', color: '#10b981', marginLeft: '8px', fontWeight: 'normal' }}>
+                (Auto-filled from session)
+              </span>
+            )}
           </label>
           <input 
             type="date" 
@@ -491,7 +537,8 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
               width: '100%',
               padding: '8px',
               border: '1px solid #ddd',
-              borderRadius: '4px'
+              borderRadius: '4px',
+              backgroundColor: formData.sessionId ? '#f0f9ff' : 'white' // Light blue background when auto-filled
             }}
             disabled={uploading || isProcessing}
           />
@@ -539,6 +586,11 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
         <div style={{ marginBottom: '24px' }}>
           <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
             Location *
+            {formData.sessionId && (
+              <span style={{ fontSize: '12px', color: '#10b981', marginLeft: '8px', fontWeight: 'normal' }}>
+                (Auto-filled from session)
+              </span>
+            )}
           </label>
           <select 
             value={formData.locationId}
@@ -548,9 +600,9 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
               padding: '8px',
               border: '1px solid #ddd',
               borderRadius: '4px',
-              backgroundColor: 'white'
+              backgroundColor: formData.sessionId ? '#f0f9ff' : 'white'
             }}
-            disabled={uploading || isProcessing || loadingLocations}
+            disabled={uploading || isProcessing || loadingLocations || formData.sessionId} // Disable when auto-filled
           >
             <option value="">Select a location</option>
             {loadingLocations ? (

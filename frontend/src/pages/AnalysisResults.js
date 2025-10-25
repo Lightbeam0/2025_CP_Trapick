@@ -515,7 +515,7 @@ const fetchSessions = async () => {
                     <div>
                       <div style={{ fontWeight: '500' }}>
                         {item.type === 'session' ?
-                          `${new Date(item.start_datetime).toLocaleDateString()} to ${new Date(item.end_datetime).toLocaleDateString()}` :
+                          `${new Date(item.start_datetime).toLocaleDateString('en-US', { timeZone: 'UTC' })} to ${new Date(item.end_datetime).toLocaleDateString('en-US', { timeZone: 'UTC' })}` :
                           (item.video_date_display || 'Unknown date')
                         }
                       </div>

@@ -215,6 +215,18 @@ class VideoUploadAPI(APIView):
                 try:
                     associated_session = AnalysisSession.objects.get(id=session_id)
                     print(f"📍 Video will be associated with session: {associated_session.name} (ID: {session_id})")
+                    
+                    # Validate video date is within session date range
+                    from datetime import datetime
+                    session_start = associated_session.start_datetime.date()
+                    session_end = associated_session.end_datetime.date()
+                    video_date_obj = datetime.strptime(video_date, '%Y-%m-%d').date()
+                    
+                    if not (session_start <= video_date_obj <= session_end):
+                        return Response({
+                            'error': f'Video date {video_date_obj} is outside session range {session_start} to {session_end}'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    
                     # Optionally, check session status here if needed (e.g., only allow uploads to 'pending_upload' sessions)
                     # if associated_session.status != 'pending_upload':
                     #     return Response({'error': f'Cannot upload to session with status: {associated_session.status}'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1329,6 +1341,30 @@ class PredictionInsightsAPI(APIView):
                 'message': f'Failed to get insights: {str(e)}'
             }, status=500)
 
+class GeneratePredictionsAPI(APIView):
+    def post(self, request):
+        try:
+            from .services import generate_traffic_predictions  # Use the new function
+            
+            location_id = request.data.get('location_id')
+            days_ahead = int(request.data.get('days_ahead', 7))
+            
+            predictions = generate_traffic_predictions(location_id, days_ahead)
+            
+            return Response({
+                'status': 'success',
+                'message': f'Generated {len(predictions)} traffic predictions from historical analysis data',
+                'predictions_count': len(predictions),
+                'days_ahead': days_ahead,
+                'data_source': 'TrafficAnalysis'
+            })
+            
+        except Exception as e:
+            return Response({
+                'status': 'error',
+                'message': f'Failed to generate predictions: {str(e)}'
+            }, status=500)
+
 class AnalysisSessionListAPI(APIView):
     """Handle listing and creating Analysis Sessions"""
     def get(self, request):
@@ -1413,7 +1449,7 @@ class ProcessAnalysisSessionAPI(APIView):
         # Check if there are videos associated with the session
         video_files = session.video_files.filter(
             processing_status__in=['uploaded', 'completed']
-        )
+        ).order_by('video_date', 'video_start_time')
         
         print(f"🔍 Found {video_files.count()} videos ready for session processing in session {session_id}")
 

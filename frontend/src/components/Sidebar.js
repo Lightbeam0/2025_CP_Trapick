@@ -77,8 +77,8 @@ const menuItems = [
         </nav>
 
         <div className="sidebar-footer">
-          <p>Developed by WMSU Students</p>
-          <p style={{ marginTop: '4px' }}>v1.0.0</p>
+          <p></p>
+          <p style={{ marginTop: '4px' }}></p>
         </div>
       </div>
 
