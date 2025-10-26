@@ -170,12 +170,12 @@ function Home() {
             <option value="previous">Previous Week</option>
           </select>
         </div>
-        <p style={{ color: '#666', marginBottom: '16px' }}>Weekly traffic data from camera captures</p>
+        <p style={{ color: '#666', marginBottom: '16px' }}>Weekly traffic patterns based on processed video dates</p>
         
         <div style={{ height: '320px', marginBottom: '24px' }}>
           <Line
             data={{
-              labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+              labels: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
               datasets: [
                 {
                   label: "Vehicles",

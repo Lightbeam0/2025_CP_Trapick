@@ -5,21 +5,30 @@ from datetime import timedelta, datetime
 from .models import Location, TrafficAnalysis, Detection, VideoFile, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction
 
 def calculate_real_weekly_data():
-    """Calculate actual weekly vehicle counts from TrafficAnalysis"""
+    """Calculate weekly vehicle counts based on actual video dates, not system date"""
     try:
-        one_week_ago = timezone.now() - timedelta(days=7)
+        # Get all traffic analyses and group by day of week from video dates
+        analyses = TrafficAnalysis.objects.all()
         
-        # Get analyses from last 7 days and group by day
-        daily_data = []
-        for i in range(7):
-            day = one_week_ago + timedelta(days=i)
-            day_analyses = TrafficAnalysis.objects.filter(
-                analyzed_at__date=day
-            )
-            total_vehicles = sum(analysis.total_vehicles for analysis in day_analyses)
-            daily_data.append(total_vehicles)
+        if not analyses.exists():
+            return [0, 0, 0, 0, 0, 0, 0]
         
-        return daily_data
+        # Initialize daily counts
+        daily_counts = [0, 0, 0, 0, 0, 0, 0]  # Monday to Sunday
+        
+        for analysis in analyses:
+            # Use the video date if available, otherwise use analysis date
+            if analysis.video_file and analysis.video_file.video_date:
+                video_date = analysis.video_file.video_date
+                day_of_week = video_date.weekday()  # Monday=0, Sunday=6
+            else:
+                # Fallback to analyzed_at date
+                day_of_week = analysis.analyzed_at.weekday()
+            
+            # Add vehicles to the correct day of week
+            daily_counts[day_of_week] += analysis.total_vehicles
+        
+        return daily_counts
         
     except Exception as e:
         print(f"Error calculating weekly data: {e}")

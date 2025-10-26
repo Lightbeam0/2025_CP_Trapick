@@ -109,12 +109,12 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     }
   }, [formData.locationId, locations]);
 
-  // Auto-fill date/time from filename if possible
+  // Auto-fill date and title from filename if possible (but NOT time)
   useEffect(() => {
     if (formData.file) {
       const filename = formData.file.name.toLowerCase();
       
-      // Only auto-fill if fields are empty
+      // Only auto-fill date if fields are empty
       if (!formData.videoDate) {
         const dateMatch = filename.match(/(\d{4}[-_]\d{2}[-_]\d{2})|(\d{2}[-_]\d{2}[-_]\d{4})/);
         if (dateMatch) {
@@ -123,18 +123,13 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
         }
       }
       
-      if (!formData.startTime || !formData.endTime) {
-        const timeMatch = filename.match(/(\d{1,2}[-_:]\d{2})[-_:]?(\d{1,2}[-_:]\d{2})?/);
-        if (timeMatch) {
-          if (timeMatch[1] && !formData.startTime) updateFormField('startTime', timeMatch[1].replace(/_/g, ':'));
-          if (timeMatch[2] && !formData.endTime) updateFormField('endTime', timeMatch[2].replace(/_/g, ':'));
-        }
-      }
-      
+      // Only auto-fill title if empty
       if (!formData.title) {
         const cleanName = formData.file.name.replace(/\.[^/.]+$/, "");
         updateFormField('title', cleanName);
       }
+      
+      // DO NOT auto-fill startTime and endTime - let users enter manually
     }
   }, [formData.file]);
 
