@@ -39,22 +39,18 @@ class AnalysisOverviewAPI(APIView):
             # Get real data
             weekly_data = calculate_real_weekly_data()
             system_stats = get_system_overview_stats()
-            peak_hours = get_peak_hours_analysis()
-            
-            # If no real weekly data, use empty array
-            if not weekly_data:
-                weekly_data = [0, 0, 0, 0, 0, 0, 0]  # Zeros instead of fake data
+            areas_data = get_peak_hours_analysis()  # Use your existing function
             
             total_vehicles = sum(weekly_data)
             
             return Response({
-                'weekly_data': weekly_data,  # REAL data
+                'weekly_data': weekly_data,
                 'total_vehicles': total_vehicles,
-                'congested_roads': system_stats['recent_analyses_count'],  # Real count
-                'peak_hour': peak_hours['peak_hour'],  # Real peak hour
+                'congested_roads': system_stats['congested_roads'],
+                'peak_hour': system_stats.get('peak_hour', '8:00 AM'),
                 'daily_average': total_vehicles // 7 if total_vehicles > 0 else 0,
-                'system_stats': system_stats,  # Additional real stats
-                'areas': self.get_real_areas_data()  # Real areas data
+                'system_stats': system_stats,
+                'areas': areas_data  # Use the data from your existing function
             })
             
         except Exception as e:

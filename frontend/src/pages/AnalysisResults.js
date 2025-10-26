@@ -173,33 +173,68 @@ const fetchSessions = async () => {
   }
 };
 
+  // Get unique location options from both analyses and sessions
+  const getLocationOptions = () => {
+    const locations = new Set();
+    
+    // Add locations from video analyses
+    analyses.forEach(analysis => {
+      if (analysis.location) {
+        locations.add(`${analysis.location.id}-${analysis.location.display_name}`);
+      }
+    });
+    
+    // Add locations from sessions
+    sessions.forEach(session => {
+      if (session.location) {
+        locations.add(`${session.location}-${session.location_details?.display_name || 'Unknown'}`);
+      }
+    });
+    
+    return Array.from(locations).map(loc => {
+      const [id, name] = loc.split('-');
+      return { id, name };
+    });
+  };
+
   // Combine and filter analyses and sessions
   const getCombinedResults = () => {
     let combined = [...analyses, ...sessions];
+
+    // Filter by status
+    if (filter !== "all") {
+      combined = combined.filter(item => {
+        if (item.type === 'video') {
+          return item.processing_status === filter;
+        } else { // item.type === 'session'
+          return item.status === filter;
+        }
+      });
+    }
 
     // Filter by date
     if (dateFilter !== 'all') {
       const today = new Date();
       combined = combined.filter(item => {
-        let dateToCheck;
+        let itemDate;
+        
         if (item.type === 'video') {
-            dateToCheck = item.video_date;
+          // For videos, use video_date if available, otherwise uploaded_at
+          itemDate = item.video_date ? new Date(item.video_date) : new Date(item.uploaded_at);
         } else { // item.type === 'session'
-            dateToCheck = item.start_datetime; // Use session start date
+          // For sessions, use start_datetime
+          itemDate = new Date(item.start_datetime);
         }
-        if (!dateToCheck) return false;
-
-        const itemDate = new Date(dateToCheck);
 
         switch (dateFilter) {
           case 'today':
             return itemDate.toDateString() === today.toDateString();
           case 'week':
-            const weekAgo = new Date(today); // Create new Date object to avoid mutation
+            const weekAgo = new Date();
             weekAgo.setDate(weekAgo.getDate() - 7);
             return itemDate >= weekAgo;
           case 'month':
-            const monthAgo = new Date(today); // Create new Date object to avoid mutation
+            const monthAgo = new Date();
             monthAgo.setMonth(monthAgo.getMonth() - 1);
             return itemDate >= monthAgo;
           default:
@@ -210,17 +245,26 @@ const fetchSessions = async () => {
 
     // Filter by location
     if (locationFilter !== 'all') {
-      combined = combined.filter(item =>
-        (item.type === 'video' && item.location && item.location.id === locationFilter) ||
-        (item.type === 'session' && item.location && item.location === locationFilter) // Assuming location is ID in session
-      );
+      combined = combined.filter(item => {
+        if (item.type === 'video') {
+          return item.location && item.location.id.toString() === locationFilter;
+        } else { // item.type === 'session'
+          return item.location && item.location.toString() === locationFilter;
+        }
+      });
     }
 
     // Sort by date/time (descending)
     combined.sort((a, b) => {
-        const dateA = a.type === 'video' ? new Date(a.video_date || a.uploaded_at) : new Date(a.start_datetime);
-        const dateB = b.type === 'video' ? new Date(b.video_date || b.uploaded_at) : new Date(b.start_datetime);
-        return dateB - dateA; // Descending order
+      const getDate = (item) => {
+        if (item.type === 'video') {
+          return item.video_date ? new Date(item.video_date) : new Date(item.uploaded_at);
+        } else {
+          return new Date(item.start_datetime);
+        }
+      };
+      
+      return getDate(b) - getDate(a);
     });
 
     return combined;
@@ -399,9 +443,9 @@ const fetchSessions = async () => {
                 className="select-input"
               >
                 <option value="all">All Locations</option>
-                <option value="1">Baliwasan Area</option>
-                <option value="2">San Roque</option>
-                {/* Add other locations dynamically if needed */}
+                {getLocationOptions().map(loc => (
+                  <option key={loc.id} value={loc.id}>{loc.name}</option>
+                ))}
               </select>
             </div>
 

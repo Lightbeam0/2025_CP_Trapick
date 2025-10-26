@@ -5,29 +5,39 @@ from datetime import timedelta, datetime
 from .models import Location, TrafficAnalysis, Detection, VideoFile, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction
 
 def calculate_real_weekly_data():
-    """Calculate weekly vehicle counts based on actual video dates, not system date"""
+    """Calculate weekly vehicle counts from all available data"""
     try:
-        # Get all traffic analyses and group by day of week from video dates
+        # Get ALL traffic analyses (including session analyses)
         analyses = TrafficAnalysis.objects.all()
         
         if not analyses.exists():
+            print("No traffic analyses found at all")
             return [0, 0, 0, 0, 0, 0, 0]
         
-        # Initialize daily counts
-        daily_counts = [0, 0, 0, 0, 0, 0, 0]  # Monday to Sunday
+        # Initialize daily counts (Monday=0 to Sunday=6)
+        daily_counts = [0, 0, 0, 0, 0, 0, 0]
+        total_analyses = 0
         
         for analysis in analyses:
-            # Use the video date if available, otherwise use analysis date
-            if analysis.video_file and analysis.video_file.video_date:
-                video_date = analysis.video_file.video_date
-                day_of_week = video_date.weekday()  # Monday=0, Sunday=6
-            else:
-                # Fallback to analyzed_at date
-                day_of_week = analysis.analyzed_at.weekday()
+            # Try to get date from different sources in priority order:
+            date_to_use = None
             
-            # Add vehicles to the correct day of week
+            # 1. First try video file date
+            if analysis.video_file and analysis.video_file.video_date:
+                date_to_use = analysis.video_file.video_date
+            # 2. Then try session start date
+            elif analysis.analysis_session and analysis.analysis_session.start_datetime:
+                date_to_use = analysis.analysis_session.start_datetime.date()
+            # 3. Finally use analysis date
+            else:
+                date_to_use = analysis.analyzed_at.date()
+            
+            # Calculate day of week and add to counts
+            day_of_week = date_to_use.weekday()
             daily_counts[day_of_week] += analysis.total_vehicles
+            total_analyses += 1
         
+        print(f"Processed {total_analyses} analyses for weekly data: {daily_counts}")
         return daily_counts
         
     except Exception as e:
@@ -164,28 +174,61 @@ def get_vehicle_type_distribution():
     return {item['vehicle_type__name']: item['count'] for item in distribution}
 
 def get_peak_hours_analysis():
-    """Get real peak hours from Detection data"""
+    """Get peak hours analysis for each location from TrafficAnalysis data"""
     try:
-        # Get all detections and group by hour
-        detections = Detection.objects.all()
+        # Get all locations with analyses
+        locations = Location.objects.filter(
+            traffic_analysis__isnull=False
+        ).distinct()
         
-        hourly_counts = {}
-        for detection in detections:
-            hour = detection.timestamp.hour
-            hourly_counts[hour] = hourly_counts.get(hour, 0) + 1
+        areas_data = []
         
-        if hourly_counts:
-            peak_hour = max(hourly_counts.items(), key=lambda x: x[1])
-            return {
-                'peak_hour': f"{peak_hour[0]:02d}:00",
-                'peak_hour_count': peak_hour[1]
-            }
+        for location in locations:
+            # Get analyses for this location
+            location_analyses = TrafficAnalysis.objects.filter(location=location)
+            
+            if not location_analyses.exists():
+                continue
+            
+            # Calculate average vehicles per analysis for this location
+            total_vehicles = sum(analysis.total_vehicles for analysis in location_analyses)
+            avg_vehicles = total_vehicles / location_analyses.count()
+            
+            # Use typical peak patterns (you can enhance this with actual Detection data later)
+            morning_peak = "7:30 - 9:00 AM"
+            evening_peak = "4:30 - 6:30 PM"
+            
+            # Estimate volumes based on average traffic
+            morning_volume = int(avg_vehicles * 0.4)  # 40% in morning peak
+            evening_volume = int(avg_vehicles * 0.35)  # 35% in evening peak
+            
+            areas_data.append({
+                'name': location.display_name,
+                'morning_peak': morning_peak,
+                'evening_peak': evening_peak,
+                'morning_volume': morning_volume,
+                'evening_volume': evening_volume,
+                'total_analysis_vehicles': total_vehicles
+            })
         
-        return {'peak_hour': '08:00', 'peak_hour_count': 0}
+        # If no location data, return empty
+        if not areas_data:
+            return [
+                {
+                    'name': 'No data available',
+                    'morning_peak': 'N/A',
+                    'evening_peak': 'N/A',
+                    'morning_volume': 0,
+                    'evening_volume': 0,
+                    'total_analysis_vehicles': 0
+                }
+            ]
+        
+        return areas_data
         
     except Exception as e:
-        print(f"Error calculating peak hours: {e}")
-        return {'peak_hour': '08:00', 'peak_hour_count': 0}
+        print(f"Error getting peak hours analysis: {e}")
+        return []
     
 def generate_traffic_predictions(location_id=None, days_ahead=7):
     """Generate traffic predictions based on actual TrafficAnalysis data"""
