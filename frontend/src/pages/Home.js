@@ -216,27 +216,180 @@ function Home() {
       <div className="dashboard-card" style={{ marginTop: '24px' }}>
         <div className="card-header">
           <h2 className="card-title">Peak Hour Traffic</h2>
-          <p style={{ fontSize: '14px', color: '#666' }}>Busiest times in monitored areas</p>
+          <p style={{ fontSize: '14px', color: '#666' }}>Busiest times based on analyzed traffic patterns</p>
         </div>
         
-        <div className="grid grid-cols-2 gap-4">
-          {overviewData.areas && overviewData.areas.map((area, index) => (
-            <div key={index} className="area-card">
-              <h3 className="area-name">{area.name}</h3>
-              <div className="peak-time">
-                <span className="peak-label">Morning Peak</span>
-                <span className="peak-value">{area.morning_peak}</span>
+        {overviewData.areas && overviewData.areas.length > 0 ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
+            {overviewData.areas.map((area, index) => (
+              <div key={index} className="area-card" style={{
+                backgroundColor: '#f8fafc',
+                padding: '20px',
+                borderRadius: '8px',
+                border: '1px solid #e2e8f0',
+                position: 'relative'
+              }}>
+                {/* Status indicator */}
+                <div style={{
+                  position: 'absolute',
+                  top: '12px',
+                  right: '12px',
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  backgroundColor: area.total_analysis_vehicles > 0 ? '#10b981' : '#f59e0b'
+                }}></div>
+                
+                <h3 style={{ 
+                  fontSize: '18px', 
+                  fontWeight: '600', 
+                  marginBottom: '16px',
+                  color: area.name.includes('No data') || area.name.includes('Error') ? '#9ca3af' : '#1f2937'
+                }}>
+                  {area.name}
+                  {area.total_analysis_vehicles > 0 && (
+                    <span style={{ 
+                      fontSize: '12px', 
+                      color: '#6b7280', 
+                      fontWeight: 'normal',
+                      marginLeft: '8px'
+                    }}>
+                      ({area.total_analysis_vehicles.toLocaleString()} vehicles)
+                    </span>
+                  )}
+                </h3>
+                
+                {/* Morning Peak */}
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    marginBottom: '8px' 
+                  }}>
+                    <span style={{ fontSize: '14px', color: '#4b5563', fontWeight: '500' }}>
+                      🌅 Morning Peak
+                    </span>
+                    <span style={{ 
+                      fontSize: '14px', 
+                      fontWeight: '600', 
+                      color: area.morning_volume > 0 ? '#dc2626' : '#9ca3af',
+                      backgroundColor: area.morning_volume > 0 ? '#fef2f2' : '#f3f4f6',
+                      padding: '4px 8px',
+                      borderRadius: '4px'
+                    }}>
+                      {area.morning_peak}
+                    </span>
+                  </div>
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center' 
+                  }}>
+                    <span style={{ fontSize: '14px', color: '#6b7280' }}>
+                      Average vehicles:
+                    </span>
+                    <span style={{ 
+                      fontSize: '14px', 
+                      fontWeight: '600', 
+                      color: area.morning_volume > 0 ? '#1f2937' : '#9ca3af'
+                    }}>
+                      {area.morning_volume > 0 ? area.morning_volume.toLocaleString() + '/hr' : 'No data'}
+                    </span>
+                  </div>
+                </div>
+                
+                {/* Evening Peak */}
+                <div>
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    marginBottom: '8px' 
+                  }}>
+                    <span style={{ fontSize: '14px', color: '#4b5563', fontWeight: '500' }}>
+                      🌇 Evening Peak
+                    </span>
+                    <span style={{ 
+                      fontSize: '14px', 
+                      fontWeight: '600', 
+                      color: area.evening_volume > 0 ? '#dc2626' : '#9ca3af',
+                      backgroundColor: area.evening_volume > 0 ? '#fef2f2' : '#f3f4f6',
+                      padding: '4px 8px',
+                      borderRadius: '4px'
+                    }}>
+                      {area.evening_peak}
+                    </span>
+                  </div>
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center' 
+                  }}>
+                    <span style={{ fontSize: '14px', color: '#6b7280' }}>
+                      Average vehicles:
+                    </span>
+                    <span style={{ 
+                      fontSize: '14px', 
+                      fontWeight: '600', 
+                      color: area.evening_volume > 0 ? '#1f2937' : '#9ca3af'
+                    }}>
+                      {area.evening_volume > 0 ? area.evening_volume.toLocaleString() + '/hr' : 'No data'}
+                    </span>
+                  </div>
+                </div>
+                
+                {/* Data quality indicator */}
+                {area.total_analysis_vehicles === 0 && (
+                  <div style={{ 
+                    marginTop: '16px', 
+                    padding: '8px', 
+                    backgroundColor: '#fffbeb',
+                    border: '1px solid #fef3c7',
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                    color: '#92400e',
+                    textAlign: 'center'
+                  }}>
+                    ⚡ Process traffic videos to see real peak hours
+                  </div>
+                )}
               </div>
-              <p style={{ fontSize: '14px', color: '#666' }}>Average vehicles: {area.morning_volume?.toLocaleString()}/hr</p>
-              
-              <div className="peak-time" style={{ marginTop: '12px' }}>
-                <span className="peak-label">Evening Peak</span>
-                <span className="peak-value">{area.evening_peak}</span>
-              </div>
-              <p style={{ fontSize: '14px', color: '#666' }}>Average vehicles: {area.evening_volume?.toLocaleString()}/hr</p>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ 
+            textAlign: 'center', 
+            padding: '40px', 
+            color: '#6b7280',
+            backgroundColor: '#f9fafb',
+            borderRadius: '8px'
+          }}>
+            <div style={{ fontSize: '48px', marginBottom: '16px' }}>📊</div>
+            <h3 style={{ fontSize: '18px', marginBottom: '8px' }}>No Traffic Data Available</h3>
+            <p style={{ fontSize: '14px', margin: 0 }}>
+              Upload and process traffic videos to see peak hour analysis.
+            </p>
+          </div>
+        )}
+        
+        {/* Helpful tip */}
+        {(overviewData.areas && overviewData.areas.some(area => area.total_analysis_vehicles > 0)) && (
+          <div style={{ 
+            marginTop: '20px', 
+            padding: '12px', 
+            backgroundColor: '#f0f9ff',
+            border: '1px solid #bae6fd',
+            borderRadius: '6px',
+            fontSize: '14px',
+            color: '#0369a1'
+          }}>
+            💡 <strong>Tip:</strong> Peak hours are calculated from actual traffic patterns in your processed videos.
+            {overviewData.areas.find(area => area.total_analysis_vehicles > 0) && 
+              ` Based on ${overviewData.areas.find(area => area.total_analysis_vehicles > 0).total_analysis_vehicles.toLocaleString()} analyzed vehicles.`
+            }
+          </div>
+        )}
       </div>
     </div>
   );

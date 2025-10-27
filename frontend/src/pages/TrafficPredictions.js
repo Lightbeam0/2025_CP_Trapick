@@ -144,6 +144,46 @@ const TrafficPredictions = () => {
         </div>
       )}
 
+      {/* Peak Hours by Day */}
+      {insights && insights.peak_hours_by_day && (
+        <div className="dashboard-card" style={{ marginBottom: '24px' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '16px' }}>Peak Traffic Hours</h2>
+          
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '16px' }}>
+            {Object.entries(insights.peak_hours_by_day).map(([dayName, peakHours]) => (
+              <div key={dayName} style={{ 
+                padding: '16px', 
+                backgroundColor: '#f8fafc',
+                borderRadius: '8px',
+                border: '1px solid #e5e7eb'
+              }}>
+                <h3 style={{ fontWeight: '600', marginBottom: '12px', color: '#374151' }}>{dayName}</h3>
+                {peakHours.map((peak, index) => (
+                  <div key={index} style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center',
+                    marginBottom: '8px',
+                    padding: '8px',
+                    backgroundColor: 'white',
+                    borderRadius: '4px'
+                  }}>
+                    <span style={{ fontWeight: '500' }}>{peak.hour}</span>
+                    <span style={{ 
+                      fontWeight: '600', 
+                      color: '#dc2626',
+                      fontSize: '14px'
+                    }}>
+                      {peak.vehicles} vehicles
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Predictions Table */}
       <div className="dashboard-card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>

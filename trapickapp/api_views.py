@@ -39,22 +39,51 @@ class AnalysisOverviewAPI(APIView):
             # Get real data
             weekly_data = calculate_real_weekly_data()
             system_stats = get_system_overview_stats()
-            areas_data = get_peak_hours_analysis()  # Use your existing function
+            areas_data = get_peak_hours_analysis()
+            
+            # Ensure weekly_data is always a 7-element array
+            if not weekly_data or len(weekly_data) != 7:
+                weekly_data = [0, 0, 0, 0, 0, 0, 0]
             
             total_vehicles = sum(weekly_data)
             
-            return Response({
+            # Ensure we have valid peak hour data
+            peak_hour = '8:00 AM'
+            if system_stats.get('peak_hour'):
+                peak_hour = system_stats['peak_hour']
+            
+            # Ensure we have valid areas data
+            if not areas_data:
+                areas_data = [
+                    {
+                        'name': 'No data available',
+                        'morning_peak': 'N/A',
+                        'evening_peak': 'N/A', 
+                        'morning_volume': 0,
+                        'evening_volume': 0,
+                        'total_analysis_vehicles': 0
+                    }
+                ]
+            
+            response_data = {
                 'weekly_data': weekly_data,
                 'total_vehicles': total_vehicles,
-                'congested_roads': system_stats['congested_roads'],
-                'peak_hour': system_stats.get('peak_hour', '8:00 AM'),
+                'congested_roads': system_stats.get('congested_roads', 0),
+                'peak_hour': peak_hour,
                 'daily_average': total_vehicles // 7 if total_vehicles > 0 else 0,
                 'system_stats': system_stats,
-                'areas': areas_data  # Use the data from your existing function
-            })
+                'areas': areas_data
+            }
+            
+            print("📊 Sending overview data:", response_data)
+            return Response(response_data)
             
         except Exception as e:
-            print(f"Error in AnalysisOverviewAPI: {e}")
+            print(f"❌ Error in AnalysisOverviewAPI: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Return safe fallback data
             return Response({
                 'weekly_data': [0, 0, 0, 0, 0, 0, 0],
                 'total_vehicles': 0,
@@ -64,7 +93,7 @@ class AnalysisOverviewAPI(APIView):
                 'system_stats': {},
                 'areas': [],
                 'error': 'Error loading data'
-            }, status=500)
+            }, status=200)  # Still return 200 to prevent frontend error
 
     def get_real_areas_data(self):
         """Get real area data from recent analyses"""
@@ -109,18 +138,23 @@ class AnalysisOverviewAPI(APIView):
 
 class VehicleStatsAPI(APIView):
     def get(self, request):
-        """Provide vehicle statistics with REAL data"""
+        """Provide vehicle statistics with REAL data and filtering"""
         from .services import calculate_real_vehicle_stats
         
         try:
-            vehicle_data = calculate_real_vehicle_stats()
+            # Get filter parameters
+            period = request.GET.get('period', 'today')
+            location_id = request.GET.get('location_id')
+            date_range = request.GET.get('date_range', 'last_7_days')
+            
+            vehicle_data = calculate_real_vehicle_stats(period, location_id, date_range)
             return Response(vehicle_data)
         except Exception as e:
             print(f"Error calculating vehicle stats: {e}")
-            # Return empty data instead of fake data
             return Response({
                 'today': {'cars': 0, 'trucks': 0, 'buses': 0, 'motorcycles': 0, 'bicycles': 0, 'others': 0},
-                'yesterday': {'cars': 0, 'trucks': 0, 'buses': 0, 'motorcycles': 0, 'bicycles': 0, 'others': 0}
+                'yesterday': {'cars': 0, 'trucks': 0, 'buses': 0, 'motorcycles': 0, 'bicycles': 0, 'others': 0},
+                'summary': {'total_analyses': 0, 'average_daily': 0, 'data_source': 'Error loading data'}
             })
 
 class CongestionDataAPI(APIView):
@@ -1276,7 +1310,7 @@ class PeakHoursPredictionAPI(APIView):
             }, status=500)
 
 class PredictionInsightsAPI(APIView):
-    """Get overall prediction insights and trends"""
+    """Get overall prediction insights and trends based on actual patterns"""
     
     def get(self, request):
         try:
@@ -1288,18 +1322,26 @@ class PredictionInsightsAPI(APIView):
             
             insights = {
                 'next_3_days': [],
+                'peak_hours_by_day': {},
                 'overall_peak': None,
                 'average_confidence': 0,
                 'total_predictions': 0
             }
             
-            total_confidence = 0
             all_predictions = []
             
             for date in next_3_days:
                 day_predictions = TrafficPrediction.objects.filter(prediction_date=date)
                 
                 if day_predictions.exists():
+                    # Find peak hours for this day
+                    hourly_data = {}
+                    for pred in day_predictions:
+                        hourly_data[pred.hour_of_day] = hourly_data.get(pred.hour_of_day, 0) + pred.predicted_vehicle_count
+                    
+                    # Get top 3 peak hours
+                    peak_hours = sorted(hourly_data.items(), key=lambda x: x[1], reverse=True)[:3]
+                    
                     day_peak = day_predictions.order_by('-predicted_vehicle_count').first()
                     day_avg_vehicles = day_predictions.aggregate(avg=Avg('predicted_vehicle_count'))['avg'] or 0
                     day_avg_confidence = day_predictions.aggregate(avg=Avg('confidence_score'))['avg'] or 0
@@ -1307,25 +1349,32 @@ class PredictionInsightsAPI(APIView):
                     insights['next_3_days'].append({
                         'date': date.isoformat(),
                         'day_name': date.strftime('%A'),
-                        'peak_hour': f"{day_peak.hour_of_day:02d}:00" if day_peak else 'N/A',
+                        'peak_hours': [{'hour': f"{h:02d}:00", 'vehicles': v} for h, v in peak_hours],
                         'peak_vehicles': day_peak.predicted_vehicle_count if day_peak else 0,
                         'average_vehicles': round(day_avg_vehicles),
                         'average_confidence': round(day_avg_confidence, 2),
                         'total_hours': day_predictions.count()
                     })
                     
+                    insights['peak_hours_by_day'][date.strftime('%A')] = [
+                        {'hour': f"{h:02d}:00", 'vehicles': v, 'congestion': 'high'} 
+                        for h, v in peak_hours
+                    ]
+                    
                     all_predictions.extend(list(day_predictions))
-                    total_confidence += day_avg_confidence
             
             if all_predictions:
                 overall_peak = max(all_predictions, key=lambda x: x.predicted_vehicle_count)
                 insights['overall_peak'] = {
                     'date': overall_peak.prediction_date.isoformat(),
+                    'day_name': overall_peak.prediction_date.strftime('%A'),
                     'hour': f"{overall_peak.hour_of_day:02d}:00",
                     'vehicles': overall_peak.predicted_vehicle_count,
                     'congestion': overall_peak.predicted_congestion
                 }
-                insights['average_confidence'] = round(total_confidence / len(next_3_days), 2)
+                
+                total_confidence = sum(p.confidence_score for p in all_predictions)
+                insights['average_confidence'] = round(total_confidence / len(all_predictions), 2)
                 insights['total_predictions'] = len(all_predictions)
             
             return Response(insights)
