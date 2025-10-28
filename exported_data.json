@@ -1,0 +1,84 @@
+{
+  "timestamp": "2025-10-27T22:06:35.053724",
+  "traffic_analyses": [
+    {
+      "id": "4f89880d-3aed-47f3-952f-9a1a2d6b1eff",
+      "total_vehicles": 19,
+      "processing_time_seconds": 153.39735078811646,
+      "analyzed_at": "2025-10-26T03:23:53.556110+00:00",
+      "car_count": 5,
+      "truck_count": 1,
+      "motorcycle_count": 13,
+      "bus_count": 0,
+      "bicycle_count": 0,
+      "other_count": 0,
+      "peak_traffic": 13,
+      "average_traffic": 0.2026810795434342,
+      "congestion_level": "low",
+      "traffic_pattern": "stable",
+      "location_id": 1,
+      "analysis_session_id": "ccd7aac2-ecd2-4420-babc-db09d4d953eb"
+    },
+    {
+      "id": "63583bdc-dd3f-4857-888e-594f229af2fc",
+      "total_vehicles": 57,
+      "processing_time_seconds": 453.8704586029053,
+      "analyzed_at": "2025-10-25T14:51:19.382097+00:00",
+      "car_count": 15,
+      "truck_count": 3,
+      "motorcycle_count": 39,
+      "bus_count": 0,
+      "bicycle_count": 0,
+      "other_count": 0,
+      "peak_traffic": 39,
+      "average_traffic": 0.2026030343062623,
+      "congestion_level": "low",
+      "traffic_pattern": "stable",
+      "location_id": 1,
+      "analysis_session_id": "beb936ab-6187-4c66-ac66-e286cf61c2b2"
+    },
+    {
+      "id": "41ac1808-e3c6-496b-9240-a2192b50fe95",
+      "total_vehicles": 38,
+      "processing_time_seconds": 303.46086525917053,
+      "analyzed_at": "2025-10-25T08:23:44.464408+00:00",
+      "car_count": 10,
+      "truck_count": 2,
+      "motorcycle_count": 26,
+      "bus_count": 0,
+      "bicycle_count": 0,
+      "other_count": 0,
+      "peak_traffic": 26,
+      "average_traffic": 0.2026225399801821,
+      "congestion_level": "low",
+      "traffic_pattern": "stable",
+      "location_id": 1,
+      "analysis_session_id": "b92388dd-312d-4af8-974f-b6e1bd2e24ea"
+    }
+  ],
+  "locations": [
+    {
+      "id": 1,
+      "name": "baliwasan seaside y-junction",
+      "display_name": "baliwasan seaside y-junction",
+      "description": "baliwasan yjunction connecting to chico, seaside, and panphil hwy",
+      "latitude": 6.91214,
+      "longitude": 122.05786,
+      "processing_profile_id": 1
+    }
+  ],
+  "processing_profiles": [
+    {
+      "id": 1,
+      "name": "baliwasan chico y-junction",
+      "display_name": "baliwasan y-junction",
+      "description": "baliwasan chico y-junction",
+      "detector_class": "BaliwasanYJunctionDetector",
+      "road_type": "y_junction",
+      "active": true
+    }
+  ],
+  "predictions": [],
+  "hourly_summaries": [],
+  "daily_summaries": []
+}

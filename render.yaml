@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: trapick
+    env: python
+    buildCommand: |
+      pip install -r requirements.txt
+      python manage.py collectstatic --noinput
+    startCommand: gunicorn trapick.wsgi:application
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: trapick.settings
+      - key: PYTHON_VERSION
+        value: 3.10
