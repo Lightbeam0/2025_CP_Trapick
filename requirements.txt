@@ -42,7 +42,6 @@ Jinja2==3.1.6
 joblib==1.5.2
 kiwisolver==1.4.7
 kombu==5.5.4
--e git+https://github.com/HumanSignal/labelImg.git@b33f965b6d14c14f1e46b247f1bf346e03f2e950#egg=labelImg
 lap==0.5.12
 lxml==6.0.2
 MarkupSafe==3.0.2
