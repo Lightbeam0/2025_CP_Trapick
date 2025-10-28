@@ -1,3 +1,6 @@
+pip==25.3
+setuptools>=68.0.0
+wheel>=0.41.0
 amqp==5.3.1
 asgiref==3.9.1
 async-timeout==5.0.1
@@ -68,7 +71,6 @@ pyasn1_modules==0.4.2
 pycparser==2.23
 pyOpenSSL==25.3.0
 pyparsing==3.2.3
-PyQt5==5.15.9
 pyqt5-plugins==5.15.9.2.3
 PyQt5-Qt5==5.15.2
 pyqt5-tools==5.15.9.3.3
