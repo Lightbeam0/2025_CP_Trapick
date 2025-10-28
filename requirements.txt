@@ -50,7 +50,7 @@ msgpack==1.1.1
 networkx==3.2.1
 numpy==2.0.2
 onnx==1.19.0
-onnxruntime-gpu==1.16.3
+onnxruntime==1.16.3
 onnxslim==0.1.69
 opencv-python==4.12.0.88
 openpyxl==3.1.5
