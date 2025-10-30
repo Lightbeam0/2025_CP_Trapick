@@ -1481,7 +1481,7 @@ class AnalysisSessionVideoListAPI(APIView):
         return Response(serializer.data)
     
 class ProcessAnalysisSessionAPI(APIView):
-    """Initiate processing for an Analysis Session"""
+    """Initiate processing for an Analysis Session - FIXED VERSION"""
     
     def post(self, request, session_id):
         session = AnalysisSession.objects.filter(id=session_id).first()
@@ -1490,6 +1490,12 @@ class ProcessAnalysisSessionAPI(APIView):
 
         if session.status in ['processing', 'completed']:
             return Response({'error': f'Session is already {session.status}.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check ffmpeg availability
+        if not self.check_ffmpeg_available():
+            return Response({
+                'error': 'FFmpeg not found. Please install FFmpeg to process video sessions.'
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         # Check if there are videos associated with the session
         video_files = session.video_files.filter(
@@ -1526,8 +1532,19 @@ class ProcessAnalysisSessionAPI(APIView):
             session.save()
             return Response({'error': f'Failed to start processing: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    def check_ffmpeg_available(self):
+        """Check if ffmpeg is available in system PATH"""
+        import subprocess
+        try:
+            result = subprocess.run(['ffmpeg', '-version'], 
+                                  capture_output=True, text=True, timeout=5)
+            return result.returncode == 0
+        except (subprocess.SubprocessError, FileNotFoundError):
+            print("❌ FFmpeg not found in system PATH")
+            return False
+
     def process_session_background(self, session, progress_tracker=None):
-        """Background task to concatenate videos and run analysis"""
+        """Background task to concatenate videos and run analysis - FIXED VERSION"""
         import subprocess
         import tempfile
         import os
@@ -1553,194 +1570,215 @@ class ProcessAnalysisSessionAPI(APIView):
 
             print(f"🔄 Processing {video_files.count()} videos in session {session.name}")
 
-            # Create a temporary file list for ffmpeg
-            temp_list_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
-            temp_output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-
-            try:
-                for vf in video_files:
-                    # Ensure the path is absolute if needed by ffmpeg
-                    abs_path = os.path.abspath(vf.file_path.path)
-                    temp_list_file.write(f"file '{abs_path}'\n")
-                    print(f"📹 Added video to concatenation list: {vf.filename}")
-                temp_list_file.close()
-
+            # Check if we have multiple videos to concatenate
+            if video_files.count() == 1:
+                # Single video - no need for concatenation
+                progress_tracker.set_progress(20, "Processing single video...")
+                single_video = video_files.first()
+                video_path = single_video.file_path.path
+                print(f"📹 Processing single video: {single_video.filename}")
+                
+            else:
+                # Multiple videos - concatenate them
                 progress_tracker.set_progress(10, "Concatenating video files...")
-
-                # Use ffmpeg to concatenate
-                cmd = [
-                    'ffmpeg', '-f', 'concat', '-safe', '0', '-i', temp_list_file.name,
-                    '-c', 'copy',
-                    temp_output_path, '-y'
-                ]
-                print(f"🎬 Running ffmpeg command: {' '.join(cmd)}")
-                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                if result.returncode != 0:
-                    print(f"❌ FFmpeg error output: {result.stderr}")
-                    raise RuntimeError(f"ffmpeg failed: {result.stderr}")
-
-                progress_tracker.set_progress(30, "Concatenated successfully, starting analysis...")
-
-                # Load detector based on session.location.processing_profile
-                from ml.detector_factory import DetectorFactory
-
-                print(f"📍 Loading detector for session {session.name} based on location: {session.location.display_name}")
-                print(f"📍 Location's profile: {session.location.processing_profile.display_name}")
-                print(f"📍 Profile's detector class: {session.location.processing_profile.detector_class}")
                 
-                detector = DetectorFactory.get_detector(session.location.processing_profile)
-                print(f"✅ Detector loaded: {type(detector).__name__}")
+                # Create a temporary file list for ffmpeg
+                temp_list_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
+                temp_output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
 
-                # Analyze the concatenated video using the dynamically loaded detector
-                report = detector.analyze_video(temp_output_path, progress_tracker=progress_tracker, save_output=True)
+                try:
+                    for vf in video_files:
+                        # Ensure the path is absolute if needed by ffmpeg
+                        abs_path = os.path.abspath(vf.file_path.path)
+                        temp_list_file.write(f"file '{abs_path}'\n")
+                        print(f"📹 Added video to concatenation list: {vf.filename}")
+                    temp_list_file.close()
 
-                progress_tracker.set_progress(90, "Saving aggregated results...")
+                    # Use ffmpeg to concatenate with better error handling
+                    cmd = [
+                        'ffmpeg', '-f', 'concat', '-safe', '0', '-i', temp_list_file.name,
+                        '-c', 'copy',
+                        temp_output_path, '-y'
+                    ]
+                    print(f"🎬 Running ffmpeg command: {' '.join(cmd)}")
+                    
+                    # Run with timeout and capture output
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
+                                          text=True, timeout=300)  # 5 minute timeout
+                    
+                    if result.returncode != 0:
+                        print(f"❌ FFmpeg error output: {result.stderr}")
+                        raise RuntimeError(f"ffmpeg failed: {result.stderr}")
 
-                # Create or update TrafficAnalysis record
-                aggregated_analysis, created = TrafficAnalysis.objects.get_or_create(
-                    analysis_session=session,
-                    defaults={
-                        'location': session.location,
-                        'total_vehicles': report['summary']['total_vehicles_counted'],
-                        'processing_time_seconds': report['metadata']['processing_time'],
-                        'analyzed_at': timezone.now(),
-                        'car_count': report['summary']['vehicle_breakdown'].get('car', 0),
-                        'truck_count': report['summary']['vehicle_breakdown'].get('truck', 0),
-                        'motorcycle_count': report['summary']['vehicle_breakdown'].get('motorcycle', 0),
-                        'bus_count': report['summary']['vehicle_breakdown'].get('bus', 0),
-                        'bicycle_count': report['summary']['vehicle_breakdown'].get('bicycle', 0),
-                        'peak_traffic': report['summary']['peak_traffic'],
-                        'average_traffic': report['summary']['average_traffic_density'],
-                        'congestion_level': report['metrics']['congestion_level'],
-                        'traffic_pattern': report['metrics']['traffic_pattern'],
-                        'analysis_data': report,
-                        'metrics_summary': {
-                            'source_session_id': str(session.id),
-                            'videos_processed_count': video_files.count(),
-                            'aggregated_from_individual_analyses': False,
-                            'detector_used_for_session': type(detector).__name__
-                        }
-                    }
-                )
-                
-                # If the analysis already existed, update it
-                if not created:
-                    aggregated_analysis.total_vehicles = report['summary']['total_vehicles_counted']
-                    aggregated_analysis.processing_time_seconds = report['metadata']['processing_time']
-                    aggregated_analysis.analyzed_at = timezone.now()
-                    aggregated_analysis.car_count = report['summary']['vehicle_breakdown'].get('car', 0)
-                    aggregated_analysis.truck_count = report['summary']['vehicle_breakdown'].get('truck', 0)
-                    aggregated_analysis.motorcycle_count = report['summary']['vehicle_breakdown'].get('motorcycle', 0)
-                    aggregated_analysis.bus_count = report['summary']['vehicle_breakdown'].get('bus', 0)
-                    aggregated_analysis.bicycle_count = report['summary']['vehicle_breakdown'].get('bicycle', 0)
-                    aggregated_analysis.peak_traffic = report['summary']['peak_traffic']
-                    aggregated_analysis.average_traffic = report['summary']['average_traffic_density']
-                    aggregated_analysis.congestion_level = report['metrics']['congestion_level']
-                    aggregated_analysis.traffic_pattern = report['metrics']['traffic_pattern']
-                    aggregated_analysis.analysis_data = report
-                    aggregated_analysis.metrics_summary = {
+                    video_path = temp_output_path
+                    progress_tracker.set_progress(30, "Concatenated successfully, starting analysis...")
+
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError("FFmpeg concatenation timed out after 5 minutes")
+                except Exception as e:
+                    raise RuntimeError(f"Video concatenation failed: {str(e)}")
+
+            # Load detector based on session.location.processing_profile
+            from ml.detector_factory import DetectorFactory
+
+            print(f"📍 Loading detector for session {session.name} based on location: {session.location.display_name}")
+            print(f"📍 Location's profile: {session.location.processing_profile.display_name}")
+            print(f"📍 Profile's detector class: {session.location.processing_profile.detector_class}")
+            
+            detector = DetectorFactory.get_detector(session.location.processing_profile)
+            print(f"✅ Detector loaded: {type(detector).__name__}")
+
+            # Analyze the video using the dynamically loaded detector
+            report = detector.analyze_video(video_path, progress_tracker=progress_tracker, save_output=True)
+
+            progress_tracker.set_progress(90, "Saving aggregated results...")
+
+            # Create or update TrafficAnalysis record
+            aggregated_analysis, created = TrafficAnalysis.objects.get_or_create(
+                analysis_session=session,
+                defaults={
+                    'location': session.location,
+                    'total_vehicles': report['summary']['total_vehicles_counted'],
+                    'processing_time_seconds': report['metadata']['processing_time'],
+                    'analyzed_at': timezone.now(),
+                    'car_count': report['summary']['vehicle_breakdown'].get('car', 0),
+                    'truck_count': report['summary']['vehicle_breakdown'].get('truck', 0),
+                    'motorcycle_count': report['summary']['vehicle_breakdown'].get('motorcycle', 0),
+                    'bus_count': report['summary']['vehicle_breakdown'].get('bus', 0),
+                    'bicycle_count': report['summary']['vehicle_breakdown'].get('bicycle', 0),
+                    'peak_traffic': report['summary']['peak_traffic'],
+                    'average_traffic': report['summary']['average_traffic_density'],
+                    'congestion_level': report['metrics']['congestion_level'],
+                    'traffic_pattern': report['metrics']['traffic_pattern'],
+                    'analysis_data': report,
+                    'metrics_summary': {
                         'source_session_id': str(session.id),
                         'videos_processed_count': video_files.count(),
                         'aggregated_from_individual_analyses': False,
                         'detector_used_for_session': type(detector).__name__
                     }
-                    aggregated_analysis.save()
+                }
+            )
+            
+            # If the analysis already existed, update it
+            if not created:
+                aggregated_analysis.total_vehicles = report['summary']['total_vehicles_counted']
+                aggregated_analysis.processing_time_seconds = report['metadata']['processing_time']
+                aggregated_analysis.analyzed_at = timezone.now()
+                aggregated_analysis.car_count = report['summary']['vehicle_breakdown'].get('car', 0)
+                aggregated_analysis.truck_count = report['summary']['vehicle_breakdown'].get('truck', 0)
+                aggregated_analysis.motorcycle_count = report['summary']['vehicle_breakdown'].get('motorcycle', 0)
+                aggregated_analysis.bus_count = report['summary']['vehicle_breakdown'].get('bus', 0)
+                aggregated_analysis.bicycle_count = report['summary']['vehicle_breakdown'].get('bicycle', 0)
+                aggregated_analysis.peak_traffic = report['summary']['peak_traffic']
+                aggregated_analysis.average_traffic = report['summary']['average_traffic_density']
+                aggregated_analysis.congestion_level = report['metrics']['congestion_level']
+                aggregated_analysis.traffic_pattern = report['metrics']['traffic_pattern']
+                aggregated_analysis.analysis_data = report
+                aggregated_analysis.metrics_summary = {
+                    'source_session_id': str(session.id),
+                    'videos_processed_count': video_files.count(),
+                    'aggregated_from_individual_analyses': False,
+                    'detector_used_for_session': type(detector).__name__
+                }
+                aggregated_analysis.save()
 
-                print(f"✅ Aggregated analysis {'created' if created else 'updated'}: {aggregated_analysis.id}")
+            print(f"✅ Aggregated analysis {'created' if created else 'updated'}: {aggregated_analysis.id}")
 
-                # === ENHANCED PATH HANDLING LOGIC ===
-                if 'output_video_path' in report and report['output_video_path']:
-                    from django.conf import settings
-                    import os
+            # === ENHANCED PATH HANDLING LOGIC ===
+            if 'output_video_path' in report and report['output_video_path']:
+                from django.conf import settings
+                import os
 
-                    output_path = report['output_video_path']
-                    print(f"🔍 Detector returned path: {output_path}")
-                    print(f"🔍 MEDIA_ROOT: {settings.MEDIA_ROOT}")
+                output_path = report['output_video_path']
+                print(f"🔍 Detector returned path: {output_path}")
+                print(f"🔍 MEDIA_ROOT: {settings.MEDIA_ROOT}")
 
-                    # Normalize the path (handles mixed slashes, etc.)
-                    normalized_path = os.path.normpath(output_path)
-                    
-                    # Check if it's already a valid path within MEDIA_ROOT
-                    media_root_normalized = os.path.normpath(settings.MEDIA_ROOT)
-                    
-                    # Try different approaches to find the correct relative path
-                    relative_path = None
-                    
-                    # Approach 1: Path is already absolute and within MEDIA_ROOT
-                    if os.path.isabs(normalized_path) and normalized_path.startswith(media_root_normalized):
-                        relative_path = normalized_path[len(media_root_normalized):].lstrip(os.sep)
-                        print(f"✅ Approach 1: Absolute path within MEDIA_ROOT → relative: {relative_path}")
-                    
-                    # Approach 2: Path is relative and starts with 'media/'
-                    elif normalized_path.replace('\\', '/').startswith('media/'):
-                        # Remove the 'media/' prefix since MEDIA_ROOT already points to media directory
-                        relative_path = normalized_path.replace('\\', '/')[6:]  # Remove 'media/'
-                        print(f"✅ Approach 2: Relative path with 'media/' prefix → relative: {relative_path}")
-                    
-                    # Approach 3: Path is relative but doesn't start with 'media/'
-                    elif not os.path.isabs(normalized_path):
-                        relative_path = normalized_path
-                        print(f"✅ Approach 3: Plain relative path → using as-is: {relative_path}")
-                    
-                    # Approach 4: Try to find the path by testing different combinations
-                    else:
-                        # Test if the path exists as-is
-                        if os.path.exists(normalized_path):
-                            # Try to make it relative to MEDIA_ROOT
-                            try:
-                                relative_path = os.path.relpath(normalized_path, media_root_normalized)
-                                print(f"✅ Approach 4: Made path relative to MEDIA_ROOT: {relative_path}")
-                            except ValueError:
-                                # Path is on different drive, etc.
-                                print(f"❌ Path is on different drive or cannot be made relative")
-                                relative_path = None
-                    
-                    # Validate and assign the path
-                    if relative_path:
-                        # Test that the file actually exists
-                        test_absolute_path = os.path.join(media_root_normalized, relative_path)
-                        if os.path.exists(test_absolute_path):
-                            session.processed_session_video_path.name = relative_path
-                            print(f"✅ Session processed video path saved: {session.processed_session_video_path.name}")
-                            print(f"✅ File verified at: {test_absolute_path}")
-                        else:
-                            print(f"❌ Calculated path does not exist: {test_absolute_path}")
-                            # Try to find the file by other means
-                            found_path = self._find_video_file(settings.MEDIA_ROOT, normalized_path)
-                            if found_path:
-                                session.processed_session_video_path.name = found_path
-                                print(f"✅ Found alternative path: {found_path}")
-                            else:
-                                print(f"⚠️  Could not locate video file, but saving path anyway for debugging")
-                                session.processed_session_video_path.name = relative_path
-                    else:
-                        print(f"❌ Could not determine valid relative path for: {output_path}")
-                        # Don't fail the entire session just because of path issues
-                        print(f"⚠️  Proceeding without video path due to path resolution issue")
-
-                else:
-                    print("⚠️  No 'output_video_path' key found in the detector's report. Session video path not saved.")
-
-                # Ensure session status and processed_at are set correctly before saving
-                session.status = 'completed'
-                session.processed_at = timezone.now()
-                session.save()
+                # Normalize the path (handles mixed slashes, etc.)
+                normalized_path = os.path.normpath(output_path)
                 
-                progress_tracker.set_progress(100, "Session processing completed!")
-                progress_tracker.complete_processing("Session analysis completed!")
+                # Check if it's already a valid path within MEDIA_ROOT
+                media_root_normalized = os.path.normpath(settings.MEDIA_ROOT)
+                
+                # Try different approaches to find the correct relative path
+                relative_path = None
+                
+                # Approach 1: Path is already absolute and within MEDIA_ROOT
+                if os.path.isabs(normalized_path) and normalized_path.startswith(media_root_normalized):
+                    relative_path = normalized_path[len(media_root_normalized):].lstrip(os.sep)
+                    print(f"✅ Approach 1: Absolute path within MEDIA_ROOT → relative: {relative_path}")
+                
+                # Approach 2: Path is relative and starts with 'media/'
+                elif normalized_path.replace('\\', '/').startswith('media/'):
+                    # Remove the 'media/' prefix since MEDIA_ROOT already points to media directory
+                    relative_path = normalized_path.replace('\\', '/')[6:]  # Remove 'media/'
+                    print(f"✅ Approach 2: Relative path with 'media/' prefix → relative: {relative_path}")
+                
+                # Approach 3: Path is relative but doesn't start with 'media/'
+                elif not os.path.isabs(normalized_path):
+                    relative_path = normalized_path
+                    print(f"✅ Approach 3: Plain relative path → using as-is: {relative_path}")
+                
+                # Approach 4: Try to find the path by other means
+                else:
+                    # Test if the path exists as-is
+                    if os.path.exists(normalized_path):
+                        # Try to make it relative to MEDIA_ROOT
+                        try:
+                            relative_path = os.path.relpath(normalized_path, media_root_normalized)
+                            print(f"✅ Approach 4: Made path relative to MEDIA_ROOT: {relative_path}")
+                        except ValueError:
+                            # Path is on different drive, etc.
+                            print(f"❌ Path is on different drive or cannot be made relative")
+                            relative_path = None
+                
+                # Validate and assign the path
+                if relative_path:
+                    # Test that the file actually exists
+                    test_absolute_path = os.path.join(media_root_normalized, relative_path)
+                    if os.path.exists(test_absolute_path):
+                        session.processed_session_video_path.name = relative_path
+                        print(f"✅ Session processed video path saved: {session.processed_session_video_path.name}")
+                        print(f"✅ File verified at: {test_absolute_path}")
+                    else:
+                        print(f"❌ Calculated path does not exist: {test_absolute_path}")
+                        # Try to find the file by other means
+                        found_path = self._find_video_file(settings.MEDIA_ROOT, normalized_path)
+                        if found_path:
+                            session.processed_session_video_path.name = found_path
+                            print(f"✅ Found alternative path: {found_path}")
+                        else:
+                            print(f"⚠️  Could not locate video file, but saving path anyway for debugging")
+                            session.processed_session_video_path.name = relative_path
+                else:
+                    print(f"❌ Could not determine valid relative path for: {output_path}")
+                    # Don't fail the entire session just because of path issues
+                    print(f"⚠️  Proceeding without video path due to path resolution issue")
 
-                print(f"✅ Session {session.name} processing completed successfully!")
-                print(f"✅ Total vehicles counted: {aggregated_analysis.total_vehicles}")
-                print(f"✅ Detector used: {type(detector).__name__}")
+            else:
+                print("⚠️  No 'output_video_path' key found in the detector's report. Session video path not saved.")
 
-            finally:
-                # Clean up temporary files
-                try:
+            # Ensure session status and processed_at are set correctly before saving
+            session.status = 'completed'
+            session.processed_at = timezone.now()
+            session.save()
+            
+            progress_tracker.set_progress(100, "Session processing completed!")
+            progress_tracker.complete_processing("Session analysis completed!")
+
+            print(f"✅ Session {session.name} processing completed successfully!")
+            print(f"✅ Total vehicles counted: {aggregated_analysis.total_vehicles}")
+            print(f"✅ Detector used: {type(detector).__name__}")
+
+            # Clean up temporary files
+            try:
+                if 'temp_list_file' in locals():
                     os.unlink(temp_list_file.name)
+                if 'temp_output_path' in locals() and video_files.count() > 1:
                     os.unlink(temp_output_path)
-                    print("✅ Temporary files cleaned up")
-                except OSError as e:
-                    print(f"⚠️  Error cleaning up temporary files: {e}")
+                print("✅ Temporary files cleaned up")
+            except OSError as e:
+                print(f"⚠️  Error cleaning up temporary files: {e}")
 
         except Exception as e:
             print(f"❌ Error processing session {session.id}: {e}")
