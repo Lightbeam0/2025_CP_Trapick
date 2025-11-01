@@ -20,7 +20,7 @@ class Config:
         1: 'bicycle'
     }
     CONFIDENCE_THRESHOLD = 0.3  # Lower threshold for better detection
-    PROCESS_EVERY_N_FRAMES = 1  # Process every frame for better counting accuracy
+    PROCESS_EVERY_N_FRAMES = 3  # Process every frame for better counting accuracy
     
     # Counting zone settings (will be set dynamically)
     ZONE_HEIGHT_RATIO = (0.60, 0.85)  # 60% to 85% of frame height

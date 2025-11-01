@@ -141,7 +141,7 @@ const fetchSessions = async () => {
             }
           } catch (error) {
             console.error(`Error fetching analysis for session ${session.id}:`, error);
-            sessionError = `Failed to load analysis data: ${error.message}`;
+            sessionError = `Failed to load analysis  ${error.message}`;
           }
         }
 
@@ -281,35 +281,111 @@ const fetchSessions = async () => {
     }
   };
 
-  const deleteAnalysis = async (itemId, itemType, itemName) => { // Accept type
-    let endpoint, successMessage, errorMessage;
-    if (itemType === 'session') {
-        endpoint = `http://127.0.0.1:8000/api/sessions/${itemId}/`;
-        successMessage = 'Analysis session deleted successfully!';
-        errorMessage = 'Error deleting analysis session';
-    } else { // itemType === 'video'
-        endpoint = `http://127.0.0.1:8000/api/videos/${itemId}/`;
-        successMessage = 'Analysis deleted successfully!';
-        errorMessage = 'Error deleting analysis';
-    }
-
-    if (window.confirm(`Are you sure you want to delete the ${itemType} "${itemName}"?`)) {
-      try {
-        await axios.delete(endpoint);
-        alert(successMessage);
-        // Refresh the list
-        if (itemType === 'session') {
-            fetchSessions(); // Refresh sessions
-        } else {
-            fetchAnalyses(); // Refresh videos
-        }
-      } catch (err) {
-        console.error(`${errorMessage}:`, err);
-        alert(`${errorMessage}: ${err.response?.data?.error || err.message}`);
+  // 🔥 NEW: Stop processing function
+  const stopProcessing = async (itemId, itemType, itemName) => {
+    try {
+      const confirmStop = window.confirm(
+        `Are you sure you want to stop processing for "${itemName}"?`
+      );
+      
+      if (!confirmStop) return;
+      
+      await axios.post(`http://127.0.0.1:8000/api/stop-processing/${itemId}/${itemType}/`);
+      alert(`Processing stopped for ${itemType}`);
+      
+      // Refresh the list
+      if (itemType === 'session') {
+        fetchSessions();
+      } else {
+        fetchAnalyses();
       }
+      
+    } catch (error) {
+      console.error('Error stopping processing:', error);
+      alert(`Error stopping processing: ${error.response?.data?.error || error.message}`);
     }
   };
 
+  // In AnalysisResults.js - Improved delete function
+  const deleteAnalysis = async (itemId, itemType, itemName) => {
+    console.log(`🗑️ Attempting to delete ${itemType} ${itemId}`);
+    
+    let endpoint, successMessage, errorMessage;
+    
+    if (itemType === 'session') {
+      endpoint = `http://127.0.0.1:8000/api/sessions/${itemId}/`;
+      successMessage = 'Analysis session deleted successfully!';
+      errorMessage = 'Error deleting analysis session';
+    } else { // itemType === 'video'
+      endpoint = `http://127.0.0.1:8000/api/videos/${itemId}/`;
+      successMessage = 'Video analysis deleted successfully!';
+      errorMessage = 'Error deleting video analysis';
+    }
+
+    console.log(`🔍 DELETE endpoint: ${endpoint}`);
+
+    try {
+      // First, get current status to check if we can delete
+      const statusResponse = await axios.get(endpoint.replace(/\/$/, '') + '/');
+      const itemData = statusResponse.data;
+      
+      const status = itemType === 'session' ? itemData.status : itemData.processing_status;
+      console.log(`📊 ${itemType} status: ${status}`);
+
+      // Check if item is processing
+      if (status === 'processing') {
+        const forceDelete = window.confirm(
+          `⚠️ This ${itemType} is currently processing!\n\n` +
+          `Force deletion may cause issues.\n\n` +
+          `Do you want to force delete "${itemName}"?`
+        );
+        
+        if (!forceDelete) {
+          console.log('❌ User cancelled deletion');
+          return;
+        }
+      } else {
+        // Normal confirmation for non-processing items
+        if (!window.confirm(`Are you sure you want to delete the ${itemType} "${itemName}"?`)) {
+          console.log('❌ User cancelled deletion');
+          return;
+        }
+      }
+
+      console.log(`🚀 Sending DELETE request to: ${endpoint}`);
+      
+      // Proceed with deletion
+      const response = await axios.delete(endpoint);
+      console.log('✅ Delete response:', response.data);
+      
+      alert(successMessage);
+      
+      // Refresh the list
+      if (itemType === 'session') {
+        fetchSessions();
+      } else {
+        fetchAnalyses();
+      }
+      
+    } catch (err) {
+      console.error(`❌ ${errorMessage}:`, err);
+      console.error('Error details:', err.response);
+      
+      if (err.response?.status === 405) {
+        alert(`❌ DELETE method not allowed. The server doesn't support deleting ${itemType}s.`);
+      } else if (err.response?.status === 423) {
+        alert(`❌ Cannot delete ${itemType} while processing. Please wait for processing to complete or stop processing first.`);
+      } else if (err.response?.status === 404) {
+        alert(`❌ ${itemType} not found. It may have been already deleted.`);
+      } else if (err.response?.data?.error) {
+        alert(`❌ ${errorMessage}: ${err.response.data.error}`);
+      } else if (err.response?.status === 500) {
+        alert(`❌ Server error while deleting ${itemType}. Check server logs.`);
+      } else {
+        alert(`❌ ${errorMessage}: ${err.message}`);
+      }
+    }
+  };
   const getStatusBadge = (status, type) => { // Accept type to maybe customize session statuses
     const statusConfig = {
       'completed': { color: '#10b981', text: 'Completed' },
@@ -597,6 +673,7 @@ const fetchSessions = async () => {
                     {getStatusBadge(item.status || item.processing_status, item.type)}
                   </td>
                   <td>
+                    {/* ✅ UPDATED ACTIONS COLUMN */}
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                       {(item.status === 'completed' || item.processing_status === 'completed') && (
                         <button
@@ -615,19 +692,40 @@ const fetchSessions = async () => {
                         </button>
                       )}
 
+                      {/* Show stop button for processing items */}
+                      {(item.status === 'processing' || item.processing_status === 'processing') && (
+                        <button
+                          onClick={() => stopProcessing(item.id, item.type, item.type === 'session' ? item.name : item.filename)}
+                          style={{
+                            padding: '6px 12px',
+                            border: '1px solid #f59e0b',
+                            borderRadius: '4px',
+                            backgroundColor: '#fff7ed',
+                            color: '#d97706',
+                            fontSize: '12px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          ⏹️ Stop
+                        </button>
+                      )}
+
+                      {/* Delete button - disabled for processing items */}
                       <button
                         onClick={() => deleteAnalysis(item.id, item.type, item.type === 'session' ? item.name : item.filename)}
+                        disabled={item.status === 'processing' || item.processing_status === 'processing'}
                         style={{
                           padding: '6px 12px',
                           border: '1px solid #ef4444',
                           borderRadius: '4px',
-                          backgroundColor: 'white',
-                          color: '#ef4444',
+                          backgroundColor: item.status === 'processing' || item.processing_status === 'processing' ? '#f3f4f6' : 'white',
+                          color: item.status === 'processing' || item.processing_status === 'processing' ? '#9ca3af' : '#ef4444',
                           fontSize: '12px',
-                          cursor: 'pointer'
+                          cursor: item.status === 'processing' || item.processing_status === 'processing' ? 'not-allowed' : 'pointer'
                         }}
+                        title={item.status === 'processing' || item.processing_status === 'processing' ? 'Stop processing first' : `Delete ${item.type}`}
                       >
-                        Delete
+                        {item.status === 'processing' || item.processing_status === 'processing' ? '⏳ Processing...' : 'Delete'}
                       </button>
                     </div>
                   </td>

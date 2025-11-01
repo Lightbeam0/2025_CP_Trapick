@@ -1,7 +1,7 @@
 // src/pages/AnalysisSessions.js
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { useNavigate } from 'react-router-dom'; // Import navigate hook if using routing for details
+import { useNavigate } from 'react-router-dom';
 
 const AnalysisSessions = () => {
   const [sessions, setSessions] = useState([]);
@@ -9,17 +9,17 @@ const AnalysisSessions = () => {
   const [error, setError] = useState(null);
   const [newSession, setNewSession] = useState({
     name: '',
-    location: '', // You'll need to populate location options, similar to upload modal
+    location: '',
     start_datetime: '',
     end_datetime: ''
   });
-  const [locations, setLocations] = useState([]); // State for locations
+  const [locations, setLocations] = useState([]);
 
-  const navigate = useNavigate(); // Hook for navigation
+  const navigate = useNavigate();
 
   useEffect(() => {
     fetchSessions();
-    fetchLocationsForSessions(); // Fetch locations for the new session form
+    fetchLocationsForSessions();
   }, []);
 
   const fetchSessions = async () => {
@@ -36,24 +36,24 @@ const AnalysisSessions = () => {
   };
 
   const fetchLocationsForSessions = async () => {
-     try {
-        const response = await axios.get('http://127.0.0.1:8000/api/locations/');
-        setLocations(response.data);
-     } catch (error) {
-        console.error('Error fetching locations for sessions:', error);
-     }
+    try {
+      const response = await axios.get('http://127.0.0.1:8000/api/locations/');
+      setLocations(response.data);
+    } catch (error) {
+      console.error('Error fetching locations for sessions:', error);
+    }
   };
 
   const handleCreateSession = async (e) => {
     e.preventDefault();
     if (!newSession.name || !newSession.location || !newSession.start_datetime || !newSession.end_datetime) {
-        alert('Please fill in all fields.');
-        return;
+      alert('Please fill in all fields.');
+      return;
     }
     try {
       await axios.post('http://127.0.0.1:8000/api/sessions/', newSession);
-      setNewSession({ name: '', location: '', start_datetime: '', end_datetime: '' }); // Reset form
-      fetchSessions(); // Refresh list
+      setNewSession({ name: '', location: '', start_datetime: '', end_datetime: '' });
+      fetchSessions();
     } catch (error) {
       console.error('Error creating session:', error);
       alert('Failed to create session: ' + (error.response?.data?.error || error.message));
@@ -66,21 +66,32 @@ const AnalysisSessions = () => {
   };
 
   const handleProcessSession = async (sessionId) => {
-      if (window.confirm("Are you sure you want to start processing this session? This will concatenate videos and run analysis.")) {
-        try {
-            await axios.post(`http://127.0.0.1:8000/api/sessions/${sessionId}/process/`);
-            alert('Session processing started!');
-            fetchSessions(); // Refresh status
-        } catch (error) {
-            console.error('Error starting session processing:', error);
-            alert('Failed to start processing: ' + (error.response?.data?.error || error.message));
-        }
+    if (window.confirm("Are you sure you want to start processing this session? This will concatenate videos and run analysis.")) {
+      try {
+        await axios.post(`http://127.0.0.1:8000/api/sessions/${sessionId}/process/`);
+        alert('Session processing started!');
+        fetchSessions();
+      } catch (error) {
+        console.error('Error starting session processing:', error);
+        alert('Failed to start processing: ' + (error.response?.data?.error || error.message));
       }
+    }
   };
 
-  // const viewSessionDetails = (sessionId) => {
-  //    navigate(`/sessions/${sessionId}`); // Navigate to detail page if implemented
-  // };
+  // 🔥 UPDATED: Enhanced quick process handler with response message
+  const handleQuickProcess = async (sessionId) => {
+    try {
+      const response = await axios.post(`http://127.0.0.1:8000/api/sessions/${sessionId}/quick-process/`);
+      
+      alert(`✅ ${response.data.message || 'Session processing started! Videos processing in parallel.'}`);
+      console.log('Quick process started:', response.data);
+      
+      fetchSessions(); // Refresh the list
+    } catch (error) {
+      console.error('Quick process error:', error);
+      alert(`❌ Error: ${error.response?.data?.error || error.message}`);
+    }
+  };
 
   if (loading) return <div className="main-content">Loading sessions...</div>;
   if (error) return <div className="main-content">Error: {error}</div>;
@@ -216,39 +227,55 @@ const AnalysisSessions = () => {
                     </td>
                     <td>{session.video_files_count}</td>
                     <td>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                          {/* Button to initiate processing - only for pending sessions */}
-                          {session.status === 'pending_upload' && (
-                              <button
-                                onClick={() => handleProcessSession(session.id)}
-                                style={{
-                                  padding: '6px 12px',
-                                  border: '1px solid #10b981',
-                                  borderRadius: '4px',
-                                  backgroundColor: '#10b981',
-                                  color: 'white',
-                                  cursor: 'pointer',
-                                  fontSize: '12px'
-                                }}
-                              >
-                                Process Session
-                              </button>
-                          )}
-                          {/* Button to view details - link to a new detail page if created */}
-                          {/* <button
-                            onClick={() => viewSessionDetails(session.id)}
-                            style={{
-                              padding: '6px 12px',
-                              border: '1px solid #3b82f6',
-                              borderRadius: '4px',
-                              backgroundColor: 'white',
-                              color: '#3b82f6',
-                              cursor: 'pointer',
-                              fontSize: '12px'
-                            }}
-                          >
-                            View Details
-                          </button> */}
+                      {/* ✅ UPDATED ACTION BUTTONS */}
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        {session.status === 'pending_upload' && (
+                          <>
+                            <button
+                              onClick={() => handleQuickProcess(session.id)}
+                              style={{
+                                padding: '6px 12px',
+                                border: 'none',
+                                borderRadius: '4px',
+                                backgroundColor: '#10b981',
+                                color: 'white',
+                                cursor: 'pointer',
+                                fontSize: '12px',
+                                fontWeight: 'bold'
+                              }}
+                            >
+                              🚀 Quick Process
+                            </button>
+                            
+                            <button
+                              onClick={() => handleProcessSession(session.id)}
+                              style={{
+                                padding: '6px 12px',
+                                border: '1px solid #3b82f6',
+                                borderRadius: '4px',
+                                backgroundColor: 'white',
+                                color: '#3b82f6',
+                                cursor: 'pointer',
+                                fontSize: '12px'
+                              }}
+                            >
+                              Process Session
+                            </button>
+                          </>
+                        )}
+
+                        {session.status === 'processing' && (
+                          <span style={{
+                            padding: '4px 8px',
+                            backgroundColor: '#fef3c7',
+                            color: '#d97706',
+                            borderRadius: '4px',
+                            fontSize: '12px',
+                            fontWeight: '500'
+                          }}>
+                            ⏳ Processing...
+                          </span>
+                        )}
                       </div>
                     </td>
                   </tr>

@@ -27,6 +27,7 @@ from reportlab.lib import colors
 from io import BytesIO
 import openpyxl
 from datetime import datetime
+from .tasks import process_video_task, process_session_task
 
 # Update these API views to use real data:
 
@@ -193,7 +194,6 @@ class VideoUploadAPI(APIView):
         print(f"🔍 Request data: {dict(request.POST)}")
 
         try:
-            # Check if video file exists
             if 'video' not in request.FILES:
                 print("❌ ERROR: No video file in request.FILES")
                 return Response(
@@ -204,7 +204,6 @@ class VideoUploadAPI(APIView):
             video_file = request.FILES['video']
             print(f"✅ Video file received: {video_file.name} ({video_file.size} bytes)")
 
-            # Validate file type
             allowed_types = ['video/mp4', 'video/avi', 'video/mov', 'video/webm']
             if video_file.content_type not in allowed_types:
                 print(f"❌ ERROR: Invalid file type: {video_file.content_type}")
@@ -213,53 +212,43 @@ class VideoUploadAPI(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # *** UPDATE: Validate file size (max 2GB to match frontend) ***
-            max_size = 2 * 1024 * 1024 * 1024  # 2GB in bytes
+            max_size = 2 * 1024 * 1024 * 1024  # 2GB
             if video_file.size > max_size:
                 print(f"❌ ERROR: File too large: {video_file.size} bytes")
-                # *** UPDATE: Error message to reflect the new limit ***
                 return Response(
                     {'error': 'File too large. Maximum size is 2GB.'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Get form data
             title = request.POST.get('title', video_file.name)
             location_id = request.POST.get('location_id')
             video_date = request.POST.get('video_date')
-            # NEW: Get session_id from request data
             session_id = request.POST.get('session_id')
 
             print(f"📝 Form data - Title: {title}, Location: {location_id}, Date: {video_date}, Session ID: {session_id}")
 
-            # Validate required fields
             if not video_date:
                 return Response(
                     {'error': 'Video recording date is required'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # NEW: Validate session_id if provided
+            # Validate session_id if provided
             associated_session = None
             if session_id:
                 try:
                     associated_session = AnalysisSession.objects.get(id=session_id)
                     print(f"📍 Video will be associated with session: {associated_session.name} (ID: {session_id})")
-                    
-                    # Validate video date is within session date range
-                    from datetime import datetime
+
                     session_start = associated_session.start_datetime.date()
                     session_end = associated_session.end_datetime.date()
                     video_date_obj = datetime.strptime(video_date, '%Y-%m-%d').date()
-                    
+
                     if not (session_start <= video_date_obj <= session_end):
                         return Response({
                             'error': f'Video date {video_date_obj} is outside session range {session_start} to {session_end}'
                         }, status=status.HTTP_400_BAD_REQUEST)
-                    
-                    # Optionally, check session status here if needed (e.g., only allow uploads to 'pending_upload' sessions)
-                    # if associated_session.status != 'pending_upload':
-                    #     return Response({'error': f'Cannot upload to session with status: {associated_session.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
                 except AnalysisSession.DoesNotExist:
                     print(f"❌ ERROR: Session ID {session_id} does not exist.")
                     return Response(
@@ -271,10 +260,9 @@ class VideoUploadAPI(APIView):
             fs = FileSystemStorage()
             filename = fs.save(f'videos/{video_file.name}', video_file)
             video_path = fs.path(filename)
-
             print(f"💾 Video saved to: {video_path}")
 
-            # Create VideoFile record
+            # Create VideoFile record (initially without session if not provided)
             video_obj = VideoFile.objects.create(
                 filename=video_file.name,
                 file_path=filename,
@@ -284,17 +272,32 @@ class VideoUploadAPI(APIView):
                 video_end_time=request.POST.get('end_time'),
                 processing_status='uploaded',
                 uploaded_at=timezone.now(),
-                # NEW: Link to session if provided
-                analysis_session=associated_session
+                analysis_session=associated_session  # May be None
             )
 
-            print(f"📄 Video record created: {video_obj.id}, associated with session: {associated_session.id if associated_session else None}")
+            print(f"📄 Video record created: {video_obj.id}, session: {associated_session.id if associated_session else None}")
 
-            # Determine processing logic based on session association
+            # 🔥 AUTO-GROUPING LOGIC (only if no session was explicitly provided)
+            if not session_id and video_obj.video_date and location_id:
+                try:
+                    video_date_obj = datetime.strptime(video_obj.video_date, '%Y-%m-%d').date()
+                    existing_session = AnalysisSession.objects.filter(
+                        start_datetime__date=video_date_obj,
+                        location_id=location_id,
+                        status='pending_upload'
+                    ).first()
+
+                    if existing_session:
+                        video_obj.analysis_session = existing_session
+                        video_obj.save()
+                        associated_session = existing_session  # Update reference for later logic
+                        print(f"✅ Auto-added to existing session: {existing_session.name}")
+                except Exception as e:
+                    print(f"⚠️  Warning during auto-grouping: {str(e)}")
+
+            # Determine processing logic based on final session association
             if associated_session:
-                # If associated with a session, do NOT start individual processing yet.
-                # The session processing will handle all videos in the session later.
-                print("ℹ️  Video uploaded to session. Individual processing skipped. Session processing must be initiated separately.")
+                print("ℹ️  Video uploaded to session. Individual processing skipped.")
                 return Response({
                     'status': 'success',
                     'message': f'Video uploaded successfully to session "{associated_session.name}". Session processing will start separately.',
@@ -307,33 +310,17 @@ class VideoUploadAPI(APIView):
                     }
                 })
             else:
-                # If NOT associated with a session, start individual processing as before
-                print("📍 Processing without session association.")
+                # Process individually
+                print("📍 Processing without session association via Celery task.")
                 try:
-                    if location_id:
-                        location = Location.objects.get(id=location_id)
-                        print(f"📍 Processing with location: {location.display_name}")
-
-                        thread = threading.Thread(
-                            target=self.process_video_with_location_profile,
-                            args=(video_obj.id, video_path, location_id)
-                        )
-                    else:
-                        print("📍 Processing with default detector")
-                        thread = threading.Thread(
-                            target=self.process_video_background,
-                            args=(video_obj.id, video_path)
-                        )
-
-                    thread.daemon = True
-                    thread.start()
-
-                    print("✅ Background processing started successfully")
+                    task = process_video_task.delay(video_obj.id, location_id=location_id)
+                    print(f"✅ Celery task started: {task.id} for video {video_obj.id}")
 
                     return Response({
                         'status': 'success',
-                        'message': 'Video uploaded and processing started',
+                        'message': 'Video uploaded and processing started (via Celery)',
                         'upload_id': str(video_obj.id),
+                        'task_id': task.id,
                         'video_info': {
                             'filename': video_file.name,
                             'size': video_file.size,
@@ -342,12 +329,11 @@ class VideoUploadAPI(APIView):
                     })
 
                 except Exception as e:
-                    print(f"❌ Error starting processing: {str(e)}")
+                    print(f"❌ Error starting Celery processing: {str(e)}")
                     video_obj.processing_status = 'failed'
                     video_obj.save()
-
                     return Response(
-                        {'error': f'Failed to start processing: {str(e)}'},
+                        {'error': f'Failed to start processing via Celery: {str(e)}'},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
 
@@ -355,232 +341,10 @@ class VideoUploadAPI(APIView):
             print(f"💥 UPLOAD ERROR: {str(e)}")
             import traceback
             traceback.print_exc()
-
             return Response(
                 {'error': f'Upload failed: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-    
-    def process_video_with_location_profile(self, video_id, video_path, location_id):
-        """Process video using location-specific detector"""
-        from ml.detector_factory import DetectorFactory
-        from .progress import ProgressTracker
-        
-        print("🔄 STARTING BACKGROUND PROCESSING")
-        print(f"   - Video ID: {video_id}")
-        print(f"   - Video Path: {video_path}")
-        print(f"   - Location ID: {location_id}")
-        
-        progress_tracker = ProgressTracker(video_id)
-        detector = None  # Initialize detector variable
-        
-        try:
-            video_obj = VideoFile.objects.get(id=video_id)
-            location = Location.objects.get(id=location_id)
-            
-            print(f"📍 LOCATION DETAILS:")
-            print(f"   - Name: {location.display_name}")
-            print(f"   - Profile: {location.processing_profile.display_name}")
-            print(f"   - Detector: {location.processing_profile.detector_class}")
-            
-            video_obj.processing_status = 'processing'
-            video_obj.save()
-            
-            print("🔧 CREATING DETECTOR...")
-            # Get detector instance - FIXED: This was causing the NameError
-            detector = DetectorFactory.get_detector(location.processing_profile)
-            print(f"✅ DETECTOR CREATED: {type(detector).__name__}")
-            
-            progress_tracker.set_progress(5, f"Starting {location.processing_profile.display_name}...")
-            
-            # Analyze video with progress tracking and save_output=True
-            print(f"🎯 Starting video analysis with {type(detector).__name__}...")
-            report = detector.analyze_video(video_path, progress_tracker, save_output=True)
-            
-            # Check if this is Baliwasan report
-            if 'baliwasan_specific' in report:
-                print("✅ BALIWASAN Y-JUNCTION ANALYSIS COMPLETED!")
-                print(f"   - Total vehicles: {report['summary']['total_vehicles_counted']}")
-            else:
-                print("ℹ️  Generic analysis completed")
-            
-            progress_tracker.set_progress(95, "Saving location-optimized results...")
-            
-            # Create TrafficAnalysis record
-            analysis = TrafficAnalysis.objects.create(
-                video_file=video_obj,
-                location=location,
-                total_vehicles=report['summary']['total_vehicles_counted'],
-                processing_time_seconds=report['metadata']['processing_time'],
-                car_count=report['summary']['vehicle_breakdown'].get('car', 0),
-                truck_count=report['summary']['vehicle_breakdown'].get('truck', 0),
-                motorcycle_count=report['summary']['vehicle_breakdown'].get('motorcycle', 0),
-                bus_count=report['summary']['vehicle_breakdown'].get('bus', 0),
-                bicycle_count=report['summary']['vehicle_breakdown'].get('bicycle', 0),
-                peak_traffic=report['summary']['peak_traffic'],
-                average_traffic=report['summary']['average_traffic_density'],
-                congestion_level=report['metrics']['congestion_level'],
-                traffic_pattern=report['metrics']['traffic_pattern'],
-                analysis_data=report,
-                metrics_summary={
-                    'processing_profile': location.processing_profile.name,
-                    'location_name': location.display_name,
-                    'detector_type': location.processing_profile.display_name,
-                    'detector_class': type(detector).__name__
-                }
-            )
-            
-            # ✅ CRITICAL: Save processed video path to database - CORRECTED LOGIC
-            if 'output_video_path' in report and report['output_video_path']:
-                from django.conf import settings # Import settings
-                import os # Import os
-
-                # Get the absolute path returned by the detector
-                absolute_output_path = report['output_video_path']
-                print(f"🔍 Detector returned absolute path: {absolute_output_path}")
-
-                # Convert the absolute path to a path relative to MEDIA_ROOT
-                media_root_normalized = os.path.normpath(settings.MEDIA_ROOT)
-                absolute_output_path_normalized = os.path.normpath(absolute_output_path)
-
-                if absolute_output_path_normalized.startswith(media_root_normalized + os.sep):
-                    relative_path = absolute_output_path_normalized[len(media_root_normalized) + len(os.sep):]
-                    print(f"✅ Calculated relative path: {relative_path}")
-                else:
-                    print(f"❌ WARNING: Output path {absolute_output_path} is not within MEDIA_ROOT {settings.MEDIA_ROOT}")
-                    relative_path = absolute_output_path
-
-                video_obj.processed_video_path = relative_path
-                video_obj.save()
-                print(f"✅ Saved processed video path to database: {relative_path}")
-            else:
-                print("⚠️  No output_video_path in report - video may not be saved")
-            
-            # Update video status
-            video_obj.processing_status = 'completed'
-            video_obj.processed = True
-            video_obj.processed_at = timezone.now()
-            video_obj.save()
-            
-            progress_tracker.set_progress(100, f"{location.processing_profile.display_name} completed successfully!")
-            progress_tracker.complete_processing("Video analysis completed!")
-            
-            print(f"✅ Location-based processing completed for {video_obj.filename}")
-            print(f"✅ Detector used: {type(detector).__name__}")
-            print(f"✅ Total vehicles counted: {analysis.total_vehicles}")
-            
-        except Exception as e:
-            print(f"❌ Location-based processing failed: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Update progress with error
-            progress_tracker.set_progress(0, f"Processing failed: {str(e)}")
-            
-            try:
-                video_obj = VideoFile.objects.get(id=video_id)
-                video_obj.processing_status = 'failed'
-                video_obj.save()
-            except:
-                pass
-    
-    def process_video_background(self, video_id, video_path, location_id=None):
-        """Process video in background thread with progress tracking"""
-        from .progress import ProgressTracker
-        from ml.vehicle_detector import RTXVehicleDetector
-        
-        progress_tracker = ProgressTracker(video_id)
-        output_video_path = None
-        
-        try:
-            video_obj = VideoFile.objects.get(id=video_id)
-            video_obj.processing_status = 'processing'
-            video_obj.save()
-            
-            progress_tracker.set_progress(0, "Starting video analysis...")
-            
-            # Analyze video with progress tracking
-            detector = RTXVehicleDetector()
-            report = detector.analyze_video(video_path, progress_tracker, save_output=True)
-            
-            progress_tracker.set_progress(95, "Saving results to database...")
-            
-            # Get location if provided
-            location = None
-            if location_id:
-                try:
-                    location = Location.objects.get(id=location_id)
-                except Location.DoesNotExist:
-                    pass
-            
-            # Create TrafficAnalysis record
-            analysis = TrafficAnalysis.objects.create(
-                video_file=video_obj,
-                location=location,
-                total_vehicles=report['summary']['total_vehicles_counted'],
-                processing_time_seconds=report['metadata']['processing_time'],
-                car_count=report['summary']['vehicle_breakdown'].get('car', 0),
-                truck_count=report['summary']['vehicle_breakdown'].get('truck', 0),
-                motorcycle_count=report['summary']['vehicle_breakdown'].get('motorcycle', 0),
-                bus_count=report['summary']['vehicle_breakdown'].get('bus', 0),
-                bicycle_count=report['summary']['vehicle_breakdown'].get('bicycle', 0),
-                peak_traffic=report['summary']['peak_traffic'],
-                average_traffic=report['summary']['average_traffic_density'],
-                congestion_level=report['metrics']['congestion_level'],
-                traffic_pattern=report['metrics']['traffic_pattern'],
-                analysis_data=report
-            )
-            
-            # Save processed video path if available - CORRECTED LOGIC
-            if 'output_video_path' in report and report['output_video_path']:
-                from django.conf import settings # Import settings
-                import os # Import os
-
-                # Get the absolute path returned by the detector
-                absolute_output_path = report['output_video_path']
-                print(f"🔍 Detector returned absolute path: {absolute_output_path}")
-
-                # Convert the absolute path to a path relative to MEDIA_ROOT
-                media_root_normalized = os.path.normpath(settings.MEDIA_ROOT)
-                absolute_output_path_normalized = os.path.normpath(absolute_output_path)
-
-                if absolute_output_path_normalized.startswith(media_root_normalized + os.sep):
-                    relative_path = absolute_output_path_normalized[len(media_root_normalized) + len(os.sep):]
-                    print(f"✅ Calculated relative path: {relative_path}")
-                else:
-                    print(f"❌ WARNING: Output path {absolute_output_path} is not within MEDIA_ROOT {settings.MEDIA_ROOT}")
-                    relative_path = absolute_output_path
-
-                video_obj.processed_video_path = relative_path
-                output_video_path = report['output_video_path'] # Keep original for logging
-                print(f"✓ Saved processed video path: {relative_path}")
-            
-            # Update video status
-            video_obj.processing_status = 'completed'
-            video_obj.processed = True
-            video_obj.save()
-            
-            progress_tracker.set_progress(100, "Analysis completed successfully!")
-            
-            print(f"✓ Video processing completed: {video_obj.filename}")
-            if output_video_path:
-                print(f"✓ Processed video available at: {output_video_path}")
-            
-        except Exception as e:
-            print(f"✗ Video processing failed: {e}")
-            progress_tracker.set_progress(0, f"Processing failed: {str(e)}")
-            video_obj = VideoFile.objects.get(id=video_id)
-            video_obj.processing_status = 'failed'
-            video_obj.save()
-        finally:
-            # Clear progress after 5 minutes
-            import threading
-            def clear_progress():
-                import time
-                time.sleep(300)
-                progress_tracker.clear_progress()
-            
-            threading.Thread(target=clear_progress).start()
 
 class VideoProgressAPI(APIView):
     def get(self, request, video_id):
@@ -786,48 +550,63 @@ class HealthCheckAPI(APIView):
         })
 
 class VideoDeleteAPI(APIView):
+    """
+    DELETE /api/videos/{video_id}/
+    """
     def delete(self, request, video_id):
-        """
-        Delete a video analysis and associated files
-        Frontend calls: DELETE /api/videos/{video_id}/
-        """
         try:
-            video_obj = VideoFile.objects.get(id=video_id)
+            print(f"🗑️ DELETE request for video: {video_id}")
             
-            # Store filename for success message
+            # Get the video object
+            video_obj = VideoFile.objects.get(id=video_id)
             filename = video_obj.filename
             
-            # Delete associated files from filesystem
-            if video_obj.file_path:
-                if os.path.isfile(video_obj.file_path.path):
-                    os.remove(video_obj.file_path.path)
-                    print(f"✓ Deleted original video: {video_obj.file_path.path}")
+            print(f"📹 Video found: {filename}, status: {video_obj.processing_status}")
             
-            if video_obj.processed_video_path:
-                if os.path.isfile(video_obj.processed_video_path.path):
-                    os.remove(video_obj.processed_video_path.path)
-                    print(f"✓ Deleted processed video: {video_obj.processed_video_path.path}")
+            # Check if video is currently processing
+            if video_obj.processing_status == 'processing':
+                return Response(
+                    {'error': 'Video is currently processing. Stop processing first or wait for it to complete.'},
+                    status=status.HTTP_423_LOCKED
+                )
             
-            # Delete database record (this will cascade to related records)
+            # Delete files from filesystem
+            files_deleted = []
+            if video_obj.file_path and os.path.exists(video_obj.file_path.path):
+                os.remove(video_obj.file_path.path)
+                files_deleted.append('original video')
+                print(f"✓ Deleted original video file")
+            
+            if video_obj.processed_video_path and os.path.exists(video_obj.processed_video_path.path):
+                os.remove(video_obj.processed_video_path.path)
+                files_deleted.append('processed video') 
+                print(f"✓ Deleted processed video file")
+            
+            # Delete from database
             video_obj.delete()
+            print(f"✅ Database record deleted")
             
             return Response({
-                'status': 'success', 
-                'message': f'Video analysis for "{filename}" deleted successfully'
+                'status': 'success',
+                'message': f'Video "{filename}" deleted successfully',
+                'files_deleted': files_deleted
             })
             
         except VideoFile.DoesNotExist:
+            print(f"❌ Video not found: {video_id}")
             return Response(
-                {'error': 'Video not found'}, 
+                {'error': 'Video not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
         except Exception as e:
-            print(f"Error deleting video {video_id}: {e}")
+            print(f"❌ Error deleting video {video_id}: {e}")
+            import traceback
+            traceback.print_exc()
             return Response(
-                {'error': f'Error deleting video: {str(e)}'}, 
+                {'error': f'Error deleting video: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
+        
 class ProcessedVideoViewAPI(APIView):
     def get(self, request, video_id):
         """
@@ -1222,24 +1001,23 @@ class ExportAnalysisExcelAPI(APIView):
             return Response({'error': str(e)}, status=500)
         
 class GeneratePredictionsAPI(APIView):
-    """Generate traffic predictions based on historical data"""
-    
     def post(self, request):
         try:
-            from .services import generate_traffic_predictions
-            
+            from .services import generate_traffic_predictions  # Use the new function
+
             location_id = request.data.get('location_id')
             days_ahead = int(request.data.get('days_ahead', 7))
-            
+
             predictions = generate_traffic_predictions(location_id, days_ahead)
-            
+
             return Response({
                 'status': 'success',
-                'message': f'Generated {len(predictions)} traffic predictions',
+                'message': f'Generated {len(predictions)} traffic predictions from historical analysis data',
                 'predictions_count': len(predictions),
-                'days_ahead': days_ahead
+                'days_ahead': days_ahead,
+                'data_source': 'TrafficAnalysis'
             })
-            
+
         except Exception as e:
             print(f"Error generating predictions: {e}")
             return Response({
@@ -1386,30 +1164,6 @@ class PredictionInsightsAPI(APIView):
                 'message': f'Failed to get insights: {str(e)}'
             }, status=500)
 
-class GeneratePredictionsAPI(APIView):
-    def post(self, request):
-        try:
-            from .services import generate_traffic_predictions  # Use the new function
-            
-            location_id = request.data.get('location_id')
-            days_ahead = int(request.data.get('days_ahead', 7))
-            
-            predictions = generate_traffic_predictions(location_id, days_ahead)
-            
-            return Response({
-                'status': 'success',
-                'message': f'Generated {len(predictions)} traffic predictions from historical analysis data',
-                'predictions_count': len(predictions),
-                'days_ahead': days_ahead,
-                'data_source': 'TrafficAnalysis'
-            })
-            
-        except Exception as e:
-            return Response({
-                'status': 'error',
-                'message': f'Failed to generate predictions: {str(e)}'
-            }, status=500)
-
 class AnalysisSessionListAPI(APIView):
     """Handle listing and creating Analysis Sessions"""
     def get(self, request):
@@ -1431,7 +1185,6 @@ class AnalysisSessionListAPI(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class AnalysisSessionDetailAPI(APIView):
-    """Handle retrieving, updating, or deleting a specific Analysis Session"""
     def get_object(self, session_id):
         try:
             return AnalysisSession.objects.get(id=session_id)
@@ -1439,36 +1192,52 @@ class AnalysisSessionDetailAPI(APIView):
             return None
 
     def get(self, request, session_id):
+        """GET /api/sessions/{session_id}/"""
         session = self.get_object(session_id)
         if session is None:
-            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': 'Session not found'}, status=404)
         serializer = AnalysisSessionSerializer(session)
         return Response(serializer.data)
 
-    def put(self, request, session_id):
-        session = self.get_object(session_id)
-        if session is None:
-            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        # Allow updating status, name, etc., but be careful about times if processing has started
-        serializer = AnalysisSessionSerializer(session, data=request.data, partial=True) # Use partial=True for flexibility
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
     def delete(self, request, session_id):
-        session = self.get_object(session_id)
-        if session is None:
-            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
+        """DELETE /api/sessions/{session_id}/"""
+        try:
+            print(f"🗑️ DELETE request for session: {session_id}")
+            
+            session = self.get_object(session_id)
+            if session is None:
+                return Response({'error': 'Session not found'}, status=404)
 
-        # Check if session is currently processing before allowing deletion
-        if session.status == 'processing':
-            return Response({'error': 'Cannot delete a session that is currently processing.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        session.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
+            # Check if session is processing
+            if session.status == 'processing':
+                return Response(
+                    {'error': 'Session is currently processing. Stop processing first or wait for it to complete.'},
+                    status=423
+                )
+            
+            session_name = session.name
+            video_count = session.video_files.count()
+            
+            print(f"📁 Session found: {session_name}, videos: {video_count}, status: {session.status}")
+            
+            # Delete session (this will cascade delete videos due to ForeignKey)
+            session.delete()
+            
+            print(f"✅ Successfully deleted session: {session_name}")
+            
+            return Response({
+                'message': f'Session "{session_name}" and {video_count} associated videos deleted successfully'
+            })
+            
+        except Exception as e:
+            print(f"❌ Error deleting session {session_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Error deleting session: {str(e)}'},
+                status=500
+            )
+        
 class AnalysisSessionVideoListAPI(APIView):
     """Handle listing videos associated with a specific Analysis Session"""
     def get(self, request, session_id):
@@ -1481,7 +1250,7 @@ class AnalysisSessionVideoListAPI(APIView):
         return Response(serializer.data)
     
 class ProcessAnalysisSessionAPI(APIView):
-    """Initiate processing for an Analysis Session - FIXED VERSION"""
+    """Initiate processing for an Analysis Session - UPDATED FOR CELERY"""
     
     def post(self, request, session_id):
         session = AnalysisSession.objects.filter(id=session_id).first()
@@ -1490,12 +1259,6 @@ class ProcessAnalysisSessionAPI(APIView):
 
         if session.status in ['processing', 'completed']:
             return Response({'error': f'Session is already {session.status}.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Check ffmpeg availability
-        if not self.check_ffmpeg_available():
-            return Response({
-                'error': 'FFmpeg not found. Please install FFmpeg to process video sessions.'
-            }, status=status.HTTP_400_BAD_REQUEST)
 
         # Check if there are videos associated with the session
         video_files = session.video_files.filter(
@@ -1518,303 +1281,19 @@ class ProcessAnalysisSessionAPI(APIView):
         session.status = 'processing'
         session.save()
 
-        # Start background processing task
+        # Start Celery task
         try:
-            thread = threading.Thread(
-                target=self.process_session_background,
-                args=(session,)
-            )
-            thread.daemon = True
-            thread.start()
-            return Response({'message': f'Processing started for session {session.name}', 'session_id': session.id})
+            task = process_session_task.delay(session.id)
+            print(f"✅ Celery session task started: {task.id} for session {session.id}")
+            return Response({
+                'message': f'Processing started for session {session.name}',
+                'session_id': session.id,
+                'task_id': task.id # Return task ID if needed for frontend tracking
+            })
         except Exception as e:
             session.status = 'failed'
             session.save()
-            return Response({'error': f'Failed to start processing: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    def check_ffmpeg_available(self):
-        """Check if ffmpeg is available in system PATH"""
-        import subprocess
-        try:
-            result = subprocess.run(['ffmpeg', '-version'], 
-                                  capture_output=True, text=True, timeout=5)
-            return result.returncode == 0
-        except (subprocess.SubprocessError, FileNotFoundError):
-            print("❌ FFmpeg not found in system PATH")
-            return False
-
-    def process_session_background(self, session, progress_tracker=None):
-        """Background task to concatenate videos and run analysis - FIXED VERSION"""
-        import subprocess
-        import tempfile
-        import os
-        import threading
-        
-        # Create progress tracker if not provided
-        if progress_tracker is None:
-            from .progress import ProgressTracker
-            progress_tracker = ProgressTracker(session.id)
-
-        try:
-            progress_tracker.set_progress(0, "Starting session processing...")
-            session.status = 'processing'
-            session.save()
-
-            # Get sorted list of video files
-            video_files = session.video_files.filter(
-                processing_status__in=['uploaded', 'completed']
-            ).order_by('video_date', 'video_start_time')
-            
-            if not video_files.exists():
-                raise ValueError("No video files found in the session for processing.")
-
-            print(f"🔄 Processing {video_files.count()} videos in session {session.name}")
-
-            # Check if we have multiple videos to concatenate
-            if video_files.count() == 1:
-                # Single video - no need for concatenation
-                progress_tracker.set_progress(20, "Processing single video...")
-                single_video = video_files.first()
-                video_path = single_video.file_path.path
-                print(f"📹 Processing single video: {single_video.filename}")
-                
-            else:
-                # Multiple videos - concatenate them
-                progress_tracker.set_progress(10, "Concatenating video files...")
-                
-                # Create a temporary file list for ffmpeg
-                temp_list_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
-                temp_output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-
-                try:
-                    for vf in video_files:
-                        # Ensure the path is absolute if needed by ffmpeg
-                        abs_path = os.path.abspath(vf.file_path.path)
-                        temp_list_file.write(f"file '{abs_path}'\n")
-                        print(f"📹 Added video to concatenation list: {vf.filename}")
-                    temp_list_file.close()
-
-                    # Use ffmpeg to concatenate with better error handling
-                    cmd = [
-                        'ffmpeg', '-f', 'concat', '-safe', '0', '-i', temp_list_file.name,
-                        '-c', 'copy',
-                        temp_output_path, '-y'
-                    ]
-                    print(f"🎬 Running ffmpeg command: {' '.join(cmd)}")
-                    
-                    # Run with timeout and capture output
-                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
-                                          text=True, timeout=300)  # 5 minute timeout
-                    
-                    if result.returncode != 0:
-                        print(f"❌ FFmpeg error output: {result.stderr}")
-                        raise RuntimeError(f"ffmpeg failed: {result.stderr}")
-
-                    video_path = temp_output_path
-                    progress_tracker.set_progress(30, "Concatenated successfully, starting analysis...")
-
-                except subprocess.TimeoutExpired:
-                    raise RuntimeError("FFmpeg concatenation timed out after 5 minutes")
-                except Exception as e:
-                    raise RuntimeError(f"Video concatenation failed: {str(e)}")
-
-            # Load detector based on session.location.processing_profile
-            from ml.detector_factory import DetectorFactory
-
-            print(f"📍 Loading detector for session {session.name} based on location: {session.location.display_name}")
-            print(f"📍 Location's profile: {session.location.processing_profile.display_name}")
-            print(f"📍 Profile's detector class: {session.location.processing_profile.detector_class}")
-            
-            detector = DetectorFactory.get_detector(session.location.processing_profile)
-            print(f"✅ Detector loaded: {type(detector).__name__}")
-
-            # Analyze the video using the dynamically loaded detector
-            report = detector.analyze_video(video_path, progress_tracker=progress_tracker, save_output=True)
-
-            progress_tracker.set_progress(90, "Saving aggregated results...")
-
-            # Create or update TrafficAnalysis record
-            aggregated_analysis, created = TrafficAnalysis.objects.get_or_create(
-                analysis_session=session,
-                defaults={
-                    'location': session.location,
-                    'total_vehicles': report['summary']['total_vehicles_counted'],
-                    'processing_time_seconds': report['metadata']['processing_time'],
-                    'analyzed_at': timezone.now(),
-                    'car_count': report['summary']['vehicle_breakdown'].get('car', 0),
-                    'truck_count': report['summary']['vehicle_breakdown'].get('truck', 0),
-                    'motorcycle_count': report['summary']['vehicle_breakdown'].get('motorcycle', 0),
-                    'bus_count': report['summary']['vehicle_breakdown'].get('bus', 0),
-                    'bicycle_count': report['summary']['vehicle_breakdown'].get('bicycle', 0),
-                    'peak_traffic': report['summary']['peak_traffic'],
-                    'average_traffic': report['summary']['average_traffic_density'],
-                    'congestion_level': report['metrics']['congestion_level'],
-                    'traffic_pattern': report['metrics']['traffic_pattern'],
-                    'analysis_data': report,
-                    'metrics_summary': {
-                        'source_session_id': str(session.id),
-                        'videos_processed_count': video_files.count(),
-                        'aggregated_from_individual_analyses': False,
-                        'detector_used_for_session': type(detector).__name__
-                    }
-                }
-            )
-            
-            # If the analysis already existed, update it
-            if not created:
-                aggregated_analysis.total_vehicles = report['summary']['total_vehicles_counted']
-                aggregated_analysis.processing_time_seconds = report['metadata']['processing_time']
-                aggregated_analysis.analyzed_at = timezone.now()
-                aggregated_analysis.car_count = report['summary']['vehicle_breakdown'].get('car', 0)
-                aggregated_analysis.truck_count = report['summary']['vehicle_breakdown'].get('truck', 0)
-                aggregated_analysis.motorcycle_count = report['summary']['vehicle_breakdown'].get('motorcycle', 0)
-                aggregated_analysis.bus_count = report['summary']['vehicle_breakdown'].get('bus', 0)
-                aggregated_analysis.bicycle_count = report['summary']['vehicle_breakdown'].get('bicycle', 0)
-                aggregated_analysis.peak_traffic = report['summary']['peak_traffic']
-                aggregated_analysis.average_traffic = report['summary']['average_traffic_density']
-                aggregated_analysis.congestion_level = report['metrics']['congestion_level']
-                aggregated_analysis.traffic_pattern = report['metrics']['traffic_pattern']
-                aggregated_analysis.analysis_data = report
-                aggregated_analysis.metrics_summary = {
-                    'source_session_id': str(session.id),
-                    'videos_processed_count': video_files.count(),
-                    'aggregated_from_individual_analyses': False,
-                    'detector_used_for_session': type(detector).__name__
-                }
-                aggregated_analysis.save()
-
-            print(f"✅ Aggregated analysis {'created' if created else 'updated'}: {aggregated_analysis.id}")
-
-            # === ENHANCED PATH HANDLING LOGIC ===
-            if 'output_video_path' in report and report['output_video_path']:
-                from django.conf import settings
-                import os
-
-                output_path = report['output_video_path']
-                print(f"🔍 Detector returned path: {output_path}")
-                print(f"🔍 MEDIA_ROOT: {settings.MEDIA_ROOT}")
-
-                # Normalize the path (handles mixed slashes, etc.)
-                normalized_path = os.path.normpath(output_path)
-                
-                # Check if it's already a valid path within MEDIA_ROOT
-                media_root_normalized = os.path.normpath(settings.MEDIA_ROOT)
-                
-                # Try different approaches to find the correct relative path
-                relative_path = None
-                
-                # Approach 1: Path is already absolute and within MEDIA_ROOT
-                if os.path.isabs(normalized_path) and normalized_path.startswith(media_root_normalized):
-                    relative_path = normalized_path[len(media_root_normalized):].lstrip(os.sep)
-                    print(f"✅ Approach 1: Absolute path within MEDIA_ROOT → relative: {relative_path}")
-                
-                # Approach 2: Path is relative and starts with 'media/'
-                elif normalized_path.replace('\\', '/').startswith('media/'):
-                    # Remove the 'media/' prefix since MEDIA_ROOT already points to media directory
-                    relative_path = normalized_path.replace('\\', '/')[6:]  # Remove 'media/'
-                    print(f"✅ Approach 2: Relative path with 'media/' prefix → relative: {relative_path}")
-                
-                # Approach 3: Path is relative but doesn't start with 'media/'
-                elif not os.path.isabs(normalized_path):
-                    relative_path = normalized_path
-                    print(f"✅ Approach 3: Plain relative path → using as-is: {relative_path}")
-                
-                # Approach 4: Try to find the path by other means
-                else:
-                    # Test if the path exists as-is
-                    if os.path.exists(normalized_path):
-                        # Try to make it relative to MEDIA_ROOT
-                        try:
-                            relative_path = os.path.relpath(normalized_path, media_root_normalized)
-                            print(f"✅ Approach 4: Made path relative to MEDIA_ROOT: {relative_path}")
-                        except ValueError:
-                            # Path is on different drive, etc.
-                            print(f"❌ Path is on different drive or cannot be made relative")
-                            relative_path = None
-                
-                # Validate and assign the path
-                if relative_path:
-                    # Test that the file actually exists
-                    test_absolute_path = os.path.join(media_root_normalized, relative_path)
-                    if os.path.exists(test_absolute_path):
-                        session.processed_session_video_path.name = relative_path
-                        print(f"✅ Session processed video path saved: {session.processed_session_video_path.name}")
-                        print(f"✅ File verified at: {test_absolute_path}")
-                    else:
-                        print(f"❌ Calculated path does not exist: {test_absolute_path}")
-                        # Try to find the file by other means
-                        found_path = self._find_video_file(settings.MEDIA_ROOT, normalized_path)
-                        if found_path:
-                            session.processed_session_video_path.name = found_path
-                            print(f"✅ Found alternative path: {found_path}")
-                        else:
-                            print(f"⚠️  Could not locate video file, but saving path anyway for debugging")
-                            session.processed_session_video_path.name = relative_path
-                else:
-                    print(f"❌ Could not determine valid relative path for: {output_path}")
-                    # Don't fail the entire session just because of path issues
-                    print(f"⚠️  Proceeding without video path due to path resolution issue")
-
-            else:
-                print("⚠️  No 'output_video_path' key found in the detector's report. Session video path not saved.")
-
-            # Ensure session status and processed_at are set correctly before saving
-            session.status = 'completed'
-            session.processed_at = timezone.now()
-            session.save()
-            
-            progress_tracker.set_progress(100, "Session processing completed!")
-            progress_tracker.complete_processing("Session analysis completed!")
-
-            print(f"✅ Session {session.name} processing completed successfully!")
-            print(f"✅ Total vehicles counted: {aggregated_analysis.total_vehicles}")
-            print(f"✅ Detector used: {type(detector).__name__}")
-
-            # Clean up temporary files
-            try:
-                if 'temp_list_file' in locals():
-                    os.unlink(temp_list_file.name)
-                if 'temp_output_path' in locals() and video_files.count() > 1:
-                    os.unlink(temp_output_path)
-                print("✅ Temporary files cleaned up")
-            except OSError as e:
-                print(f"⚠️  Error cleaning up temporary files: {e}")
-
-        except Exception as e:
-            print(f"❌ Error processing session {session.id}: {e}")
-            import traceback
-            traceback.print_exc()
-            session.status = 'failed'
-            session.save()
-            progress_tracker.set_progress(0, f"Session processing failed: {str(e)}")
-
-    def _find_video_file(self, media_root, original_path):
-        """
-        Helper method to find video file when path resolution fails
-        """
-        import os
-        import glob
-        
-        print(f"🔍 Searching for video file: {original_path}")
-        
-        # Extract filename from path
-        filename = os.path.basename(original_path)
-        print(f"🔍 Looking for filename: {filename}")
-        
-        # Search recursively in media_root
-        search_pattern = os.path.join(media_root, '**', filename)
-        matching_files = glob.glob(search_pattern, recursive=True)
-        
-        if matching_files:
-            found_path = matching_files[0]
-            # Convert to relative path
-            relative_path = os.path.relpath(found_path, media_root)
-            print(f"✅ Found video file at: {found_path}")
-            print(f"✅ Relative path: {relative_path}")
-            return relative_path
-        
-        print(f"❌ Could not find video file: {filename}")
-        return None
+            return Response({'error': f'Failed to start processing via Celery: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 class SessionVideoDownloadAPI(APIView):
     """
@@ -2341,3 +1820,72 @@ class ExportSessionExcelAPI(APIView):
             return Response({'error': 'Session not found'}, status=404)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
+
+class QuickProcessSessionAPI(APIView):
+    def post(self, request, session_id):
+        """One-click session processing"""
+        try:
+            from .tasks import process_session_task
+            
+            session = AnalysisSession.objects.get(id=session_id)
+            
+            if session.status != 'pending_upload':
+                return Response(
+                    {'error': f'Session is already {session.status}. Cannot process again.'}, 
+                    status=400
+                )
+            
+            # Check if session has videos
+            if session.video_files.count() == 0:
+                return Response(
+                    {'error': 'Session has no videos to process'}, 
+                    status=400
+                )
+            
+            # Start the parallel processing
+            task = process_session_task.delay(session_id)
+            
+            return Response({
+                'status': 'started',
+                'message': f'Session processing started for {session.video_files.count()} videos',
+                'task_id': task.id,
+                'videos_count': session.video_files.count()
+            })
+            
+        except AnalysisSession.DoesNotExist:
+            return Response({'error': 'Session not found'}, status=404)
+        
+class StopProcessingAPI(APIView):
+    """Stop processing for a video or session"""
+    
+    def post(self, request, item_id, item_type):
+        try:
+            if item_type == 'video':
+                item = VideoFile.objects.get(id=item_id)
+                if item.processing_status == 'processing':
+                    item.processing_status = 'cancelled'
+                    item.save()
+                    return Response({'message': 'Video processing stopped'})
+                else:
+                    return Response({'error': 'Video is not processing'}, status=400)
+                    
+            elif item_type == 'session':
+                session = AnalysisSession.objects.get(id=item_id)
+                if session.status == 'processing':
+                    # Stop all processing videos in this session
+                    processing_videos = session.video_files.filter(processing_status='processing')
+                    for video in processing_videos:
+                        video.processing_status = 'cancelled'
+                        video.save()
+                    
+                    session.status = 'cancelled'
+                    session.save()
+                    return Response({'message': 'Session processing stopped'})
+                else:
+                    return Response({'error': 'Session is not processing'}, status=400)
+                    
+            else:
+                return Response({'error': 'Invalid item type'}, status=400)
+                
+        except (VideoFile.DoesNotExist, AnalysisSession.DoesNotExist):
+            return Response({'error': 'Item not found'}, status=404)

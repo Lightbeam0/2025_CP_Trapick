@@ -16,7 +16,7 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-
+DEBUG = True
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
@@ -24,7 +24,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-_u9zxz!@e8mafz9^@b$)*hi-egorgmvgg+16%7re0@9g3k*d9='
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
 
 ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0']
 
@@ -209,8 +208,8 @@ import dj_database_url
 DATABASES['default'] = dj_database_url.config(default=f"sqlite:///{BASE_DIR}/db.sqlite3")
 
 # ✅ Security for production
-DEBUG = 'RENDER' not in os.environ
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+#DEBUG = 'RENDER' not in os.environ
+#ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0']
 
 # Add Render hostname dynamically
 RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
@@ -219,3 +218,19 @@ if RENDER_EXTERNAL_HOSTNAME:
 
 # ✅ Static files (already have this but add storage for whitenoise)
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+
+CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_TASK_ACKS_LATE = True
+
+# Define a specific queue for TRAPICK
+from kombu import Queue
+CELERY_TASK_ROUTES = {
+    'trapickapp.tasks.process_video_task': {'queue': 'trapick_queue'},
+    'trapickapp.tasks.process_session_task': {'queue': 'trapick_queue'},
+}
+# Optionally, define the queue explicitly
+CELERY_TASK_QUEUES = (
+    Queue('trapick_queue', routing_key='trapick_queue'),
+)
+CELERY_TASK_DEFAULT_QUEUE = 'trapick_queue'

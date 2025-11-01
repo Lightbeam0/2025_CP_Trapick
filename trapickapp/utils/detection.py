@@ -165,7 +165,7 @@ class VehicleDetector:
     @transaction.atomic
     def save_detection_results(video_id, results):
         """Save results to database with enhanced data."""
-        from .models import VehicleDetection, TrafficAnalysis
+        from ..models import VehicleDetection, TrafficAnalysis
         
         # Batch processing for efficiency
         batch_size = 1000

@@ -862,7 +862,7 @@ function Settings() {
             >
               + Add New Profile
             </button>
-            
+
             <button
               onClick={fetchProcessingProfiles}
               style={{
@@ -880,13 +880,13 @@ function Settings() {
             </button>
           </div>
 
-          {/* Profile Form */}
+          {/* Profile Form - THIS IS THE MISSING PART */}
           {showProfileForm && (
             <div className="dashboard-card" style={{ marginBottom: '24px' }}>
               <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '16px' }}>
                 {editingProfile ? 'Edit Processing Profile' : 'Add New Processing Profile'}
               </h2>
-              
+
               <form onSubmit={handleProfileSubmit}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
                   <div>
@@ -909,7 +909,7 @@ function Settings() {
                       placeholder="e.g., baliwasan_yjunction"
                     />
                   </div>
-                  
+
                   <div>
                     <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
                       Display Name *
@@ -979,7 +979,7 @@ function Settings() {
                       ))}
                     </select>
                   </div>
-                  
+
                   <div>
                     <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
                       Detector Class *
@@ -1007,6 +1007,7 @@ function Settings() {
                   </div>
                 </div>
 
+                {/* THIS PART WAS MISSING IN THE SNIPPET */}
                 <div style={{ marginBottom: '16px' }}>
                   <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
                     Detector Module
@@ -1056,7 +1057,7 @@ function Settings() {
                   >
                     {editingProfile ? 'Update Profile' : 'Create Profile'}
                   </button>
-                  
+
                   <button
                     type="button"
                     onClick={cancelProfileEdit}

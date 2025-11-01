@@ -6,6 +6,7 @@ urlpatterns = [
     path('api/upload/video/', api_views.VideoUploadAPI.as_view(), name='upload_video'),
     path('api/progress/<uuid:video_id>/', api_views.VideoProgressAPI.as_view(), name='video_progress'),
     path('api/analysis/<uuid:upload_id>/', api_views.AnalysisResultsAPI.as_view(), name='analysis_results'),
+    path('api/stop-processing/<uuid:item_id>/<str:item_type>/', api_views.StopProcessingAPI.as_view(), name='stop_processing'),
     
     # ==================== VIDEO FILE SERVING ====================
     path('api/video/<uuid:video_id>/view/', api_views.ProcessedVideoViewAPI.as_view(), name='view_processed_video'),
@@ -47,6 +48,7 @@ urlpatterns = [
     path('api/sessions/<uuid:session_id>/', api_views.AnalysisSessionDetailAPI.as_view(), name='session_detail'),
     path('api/sessions/<uuid:session_id>/videos/', api_views.AnalysisSessionVideoListAPI.as_view(), name='session_videos'),
     path('api/sessions/<uuid:session_id>/process/', api_views.ProcessAnalysisSessionAPI.as_view(), name='process_session'),
+    path('api/sessions/<uuid:session_id>/quick-process/', api_views.QuickProcessSessionAPI.as_view(), name='quick_process_session'),
     
     # ==================== SESSION VIDEO ENDPOINTS ====================
     path('api/session-video/<uuid:session_id>/view/', api_views.SessionVideoViewAPI.as_view(), name='view_session_video'),

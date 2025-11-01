@@ -298,7 +298,7 @@ def get_peak_hours_analysis():
         
         # Get locations with analyses
         locations = Location.objects.filter(
-            traffic_analysis__isnull=False
+            trafficanalysis__isnull=False
         ).distinct()
         
         print(f"📍 Found {locations.count()} locations with analyses")
