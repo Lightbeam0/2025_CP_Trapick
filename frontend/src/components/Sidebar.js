@@ -1,28 +1,25 @@
-// src/components/Sidebar.js
+// src/components/Sidebar.js - REMOVE SESSIONS LINK
 import React, { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { FaChartLine, FaCarSide, FaTrafficLight, FaCog, FaUpload, FaFileAlt, FaMagic, FaLayerGroup } from "react-icons/fa";
+import { FaChartLine, FaCarSide, FaTrafficLight, FaCog, FaUpload, FaFileAlt, FaMagic } from "react-icons/fa";
 import VideoUploadModal from "./VideoUploadModal";
 
 function Sidebar() {
   const location = useLocation();
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
 
-// In the menuItems array, add:
-const menuItems = [
+  const menuItems = [
     { path: "/", label: "Overview", icon: <FaChartLine /> },
     { path: "/vehicles", label: "Vehicles Passing", icon: <FaCarSide /> },
     { path: "/congested", label: "Congested Roads", icon: <FaTrafficLight /> },
     { path: "/analysis", label: "Analysis Results", icon: <FaFileAlt /> },
-    { path: "/sessions", label: "Analysis Sessions", icon: <FaLayerGroup /> },
     { path: "/predictions", label: "Traffic Predictions", icon: <FaMagic /> },
     { path: "/settings", label: "Settings", icon: <FaCog /> },
-];  
+  ];  
 
   const handleUploadSuccess = (result) => {
     console.log("Upload successful:", result);
     setIsUploadModalOpen(false);
-    // You can add a success notification here
     alert(`Video uploaded successfully! Processing ID: ${result.upload_id}`);
   };
 
@@ -52,7 +49,6 @@ const menuItems = [
             ))}
           </ul>
 
-          {/* Functional Upload Button */}
           <button
             onClick={() => setIsUploadModalOpen(true)}
             style={{
@@ -82,7 +78,6 @@ const menuItems = [
         </div>
       </div>
 
-      {/* Video Upload Modal */}
       <VideoUploadModal 
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}

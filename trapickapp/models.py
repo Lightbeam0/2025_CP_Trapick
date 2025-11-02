@@ -5,28 +5,56 @@ import uuid
 import os
 from django.contrib.auth.models import User
 
+# trapickapp/models.py - Update ProcessingProfile model
 class ProcessingProfile(models.Model):
     """Customizable processing profiles"""
     name = models.CharField(max_length=100, unique=True)
     display_name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     
-    detector_class = models.CharField(max_length=100, default='RTXVehicleDetector')
-    detector_module = models.CharField(max_length=200, default='ml.vehicle_detector')
-    config_parameters = models.JSONField(default=dict, blank=True)
+    # Detector configuration
+    detector_class = models.CharField(
+        max_length=100,
+        default='RTXVehicleDetector',
+        help_text="Python class name of the detector to use"
+    )
+    detector_module = models.CharField(
+        max_length=200,
+        default='ml.vehicle_detector',
+        help_text="Python module path where detector class is located"
+    )
     
+    # Configuration parameters
+    config_parameters = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="JSON configuration for this processing profile"
+    )
+    
+    # Road type categorization
     ROAD_TYPES = [
         ('highway', 'Highway'),
         ('intersection', 'Intersection'),
         ('y_junction', 'Y-Junction'),
+        ('t_intersection', 'T-Intersection'),
+        ('roundabout', 'Roundabout'),
         ('urban', 'Urban Street'),
         ('generic', 'Generic'),
+        ('custom', 'Custom'),
     ]
-    road_type = models.CharField(max_length=50, choices=ROAD_TYPES, default='generic')
+    road_type = models.CharField(
+        max_length=50,
+        choices=ROAD_TYPES,
+        default='generic'
+    )
     
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(default=timezone.now)
-
+    updated_at = models.DateTimeField(auto_now=True)  # ADD THIS LINE
+    
+    class Meta:
+        ordering = ['road_type', 'display_name']
+    
     def __str__(self):
         return f"{self.display_name} ({self.get_road_type_display()})"
     
@@ -37,6 +65,7 @@ class ProcessingProfile(models.Model):
             detector_class = getattr(module, self.detector_class)
             return detector_class(**self.config_parameters)
         except (ImportError, AttributeError) as e:
+            print(f"❌ [DETECTOR] Error loading detector {self.detector_class}: {e}")
             from ml.vehicle_detector import RTXVehicleDetector
             return RTXVehicleDetector()
 
@@ -198,7 +227,6 @@ class TrafficAnalysis(models.Model):
             'total': self.total_vehicles
         }
 
-        
 class VehicleType(models.Model):
     name = models.CharField(max_length=50, unique=True)
     display_name = models.CharField(max_length=50, blank=True)
@@ -477,16 +505,3 @@ def update_traffic_analysis_counts(sender, instance, created, **kwargs):
             analysis.bicycle_count + analysis.other_count
         )
         analysis.save()
-
-
-@receiver(post_save, sender=VideoFile)
-def update_analysis_session_status(sender, instance, created, **kwargs):
-    """Update analysis session status when videos are added"""
-    if created and instance.analysis_session:
-        session = instance.analysis_session
-        if session.status == 'pending_upload':
-            # Check if there are enough videos to start processing
-            video_count = session.video_files.count()
-            if video_count >= 1:  # Adjust threshold as needed
-                session.status = 'pending_upload'  # Keep as pending until explicitly processed
-                session.save()

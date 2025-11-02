@@ -1,47 +1,47 @@
-// src/pages/AnalysisResults.js
+// src/pages/AnalysisResults.js - UPDATED FOR NEW APPROACH
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import ProcessedVideoViewer from "../components/ProcessedVideoViewer"; // Import the viewer
+import ProcessedVideoViewer from "../components/ProcessedVideoViewer";
 
 function AnalysisResults() {
   const [selectedVideoId, setSelectedVideoId] = useState(null);
-  const [selectedSessionId, setSelectedSessionId] = useState(null); // New state for selected session
-  const [analyses, setAnalyses] = useState([]); // Holds individual video analyses
-  const [sessions, setSessions] = useState([]); // Holds session analyses
+  const [videos, setVideos] = useState([]);
+  const [locationGroups, setLocationGroups] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [sessionsLoading, setSessionsLoading] = useState(false); // Separate loading state for sessions
   const [error, setError] = useState(null);
-  const [sessionErrors, setSessionErrors] = useState({}); // Track errors per session
-  const [filter, setFilter] = useState("all"); // all, completed, processing, failed
-
-  // Add date filter state
+  const [filter, setFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState('all');
   const [locationFilter, setLocationFilter] = useState('all');
+  const [locations, setLocations] = useState([]);
+  const [ungroupedVideos, setUngroupedVideos] = useState([]);
+  const [selectedGroup, setSelectedGroup] = useState(null);
 
-  // Fetch individual video analyses (existing logic)
   useEffect(() => {
-    fetchAnalyses();
-    fetchSessions(); // Fetch sessions too
-  }, [filter]);
+    fetchVideos();
+    fetchLocationGroups();
+    fetchLocations();
+    fetchUngroupedVideos();
+  }, [filter, dateFilter, locationFilter]);
 
-  const fetchAnalyses = async () => {
+  const fetchVideos = async () => {
     try {
       setLoading(true);
       const response = await axios.get("http://127.0.0.1:8000/api/videos/");
+      
       let videoData = response.data;
-
+      
       // Filter videos based on selection
       if (filter !== "all") {
         videoData = videoData.filter(video => video.processing_status === filter);
       }
 
       // For each video, get its analysis data
-      const analysesWithDetails = await Promise.all(
+      const videosWithDetails = await Promise.all(
         videoData.map(async (video) => {
           try {
             const analysisResponse = await axios.get(`http://127.0.0.1:8000/api/analysis/${video.id}/`);
             return {
-              type: 'video', // Add type identifier
+              type: 'video',
               id: video.id,
               ...video,
               analysis: analysisResponse.data.analysis || null,
@@ -50,7 +50,7 @@ function AnalysisResults() {
           } catch (error) {
             console.error(`Error fetching analysis for video ${video.id}:`, error);
             return {
-              type: 'video', // Add type identifier
+              type: 'video',
               id: video.id,
               ...video,
               analysis: null,
@@ -61,171 +61,57 @@ function AnalysisResults() {
         })
       );
 
-      setAnalyses(analysesWithDetails);
+      setVideos(videosWithDetails);
       setError(null);
     } catch (err) {
-      console.error("Error fetching analyses:", err);
-      setError("Failed to load analysis data");
+      console.error("Error fetching videos:", err);
+      setError("Failed to load video data");
     } finally {
       setLoading(false);
     }
   };
 
-  // Updated fetchSessions function with optimizations
-const fetchSessions = async () => {
-  try {
-    setSessionsLoading(true);
-    setSessionErrors({});
-    const response = await axios.get('http://127.0.0.1:8000/api/sessions/');
-    let sessionData = response.data;
-
-    // Filter sessions based on selection
-    if (filter !== "all") {
-      sessionData = sessionData.filter(session => {
-        if (filter === 'completed') return session.status === 'completed';
-        if (filter === 'processing') return session.status === 'processing';
-        if (filter === 'failed') return session.status === 'failed';
-        if (filter === 'uploaded') return session.status === 'pending_upload';
-        return true;
-      });
+  const fetchLocationGroups = async () => {
+    try {
+      const response = await axios.get("http://127.0.0.1:8000/api/location-groups/");
+      setLocationGroups(response.data);
+    } catch (err) {
+      console.error("Error fetching location groups:", err);
     }
-
-    // For each session, get its aggregated analysis data if available
-    const sessionsWithDetails = await Promise.all(
-      sessionData.map(async (session) => {
-        let aggregatedAnalysis = null;
-        let sessionError = null;
-
-        if (session.status === 'completed') {
-          try {
-            // Try multiple approaches to find the session analysis
-            
-            // Approach 1: Look for TrafficAnalysis with analysis_session matching session ID
-            const sessionAnalysesResponse = await axios.get(`http://127.0.0.1:8000/api/sessions/${session.id}/traffic-analyses/`);
-            const sessionAnalyses = sessionAnalysesResponse.data;
-            
-            if (sessionAnalyses && sessionAnalyses.length > 0) {
-              // Use the first analysis found (should be the aggregated one)
-              const sessionAnalysis = sessionAnalyses[0];
-              
-              // Extract analysis data from the TrafficAnalysis record
-              aggregatedAnalysis = {
-                total_vehicles: sessionAnalysis.total_vehicles || 0,
-                vehicle_breakdown: sessionAnalysis.analysis_data?.summary?.vehicle_breakdown || {
-                  cars: sessionAnalysis.car_count || 0,
-                  trucks: sessionAnalysis.truck_count || 0,
-                  motorcycles: sessionAnalysis.motorcycle_count || 0,
-                  buses: sessionAnalysis.bus_count || 0,
-                  bicycles: sessionAnalysis.bicycle_count || 0,
-                  others: sessionAnalysis.other_count || 0
-                },
-                congestion_level: sessionAnalysis.congestion_level || 'low',
-                traffic_pattern: sessionAnalysis.traffic_pattern || 'stable'
-              };
-              
-              console.log(`✅ Found session analysis for session ${session.id}:`, aggregatedAnalysis);
-            } else {
-              // Approach 2: Check if there's analysis data in the session itself
-              if (session.analysis_data) {
-                aggregatedAnalysis = {
-                  total_vehicles: session.analysis_data.summary?.total_vehicles_counted || 0,
-                  vehicle_breakdown: session.analysis_data.summary?.vehicle_breakdown || {},
-                  congestion_level: session.analysis_data.metrics?.congestion_level || 'low',
-                  traffic_pattern: session.analysis_data.metrics?.traffic_pattern || 'stable'
-                };
-                console.log(`✅ Using session-level analysis data for ${session.id}`);
-              } else {
-                sessionError = "No analysis data found for completed session";
-                console.warn(`❌ No analysis data found for completed session ${session.id}`);
-              }
-            }
-          } catch (error) {
-            console.error(`Error fetching analysis for session ${session.id}:`, error);
-            sessionError = `Failed to load analysis  ${error.message}`;
-          }
-        }
-
-        // Track session errors
-        if (sessionError) {
-          setSessionErrors(prev => ({
-            ...prev,
-            [session.id]: sessionError
-          }));
-        }
-
-        return {
-          type: 'session',
-          id: session.id,
-          ...session,
-          analysis: aggregatedAnalysis,
-          video_info: null,
-          error: sessionError
-        };
-      })
-    );
-
-    setSessions(sessionsWithDetails);
-  } catch (err) {
-    console.error("Error fetching sessions:", err);
-    setError("Failed to load session data");
-  } finally {
-    setSessionsLoading(false);
-  }
-};
-
-  // Get unique location options from both analyses and sessions
-  const getLocationOptions = () => {
-    const locations = new Set();
-    
-    // Add locations from video analyses
-    analyses.forEach(analysis => {
-      if (analysis.location) {
-        locations.add(`${analysis.location.id}-${analysis.location.display_name}`);
-      }
-    });
-    
-    // Add locations from sessions
-    sessions.forEach(session => {
-      if (session.location) {
-        locations.add(`${session.location}-${session.location_details?.display_name || 'Unknown'}`);
-      }
-    });
-    
-    return Array.from(locations).map(loc => {
-      const [id, name] = loc.split('-');
-      return { id, name };
-    });
   };
 
-  // Combine and filter analyses and sessions
+  const fetchLocations = async () => {
+    try {
+      const response = await axios.get("http://127.0.0.1:8000/api/locations/");
+      setLocations(response.data);
+    } catch (err) {
+      console.error("Error fetching locations:", err);
+    }
+  };
+
+  const fetchUngroupedVideos = async () => {
+    try {
+      const response = await axios.get("http://127.0.0.1:8000/api/videos/ungrouped/");
+      setUngroupedVideos(response.data);
+    } catch (err) {
+      console.error("Error fetching ungrouped videos:", err);
+    }
+  };
+
   const getCombinedResults = () => {
-    let combined = [...analyses, ...sessions];
+    let combined = [...videos];
 
     // Filter by status
     if (filter !== "all") {
-      combined = combined.filter(item => {
-        if (item.type === 'video') {
-          return item.processing_status === filter;
-        } else { // item.type === 'session'
-          return item.status === filter;
-        }
-      });
+      combined = combined.filter(item => item.processing_status === filter);
     }
 
     // Filter by date
     if (dateFilter !== 'all') {
       const today = new Date();
       combined = combined.filter(item => {
-        let itemDate;
+        let itemDate = item.video_date ? new Date(item.video_date) : new Date(item.uploaded_at);
         
-        if (item.type === 'video') {
-          // For videos, use video_date if available, otherwise uploaded_at
-          itemDate = item.video_date ? new Date(item.video_date) : new Date(item.uploaded_at);
-        } else { // item.type === 'session'
-          // For sessions, use start_datetime
-          itemDate = new Date(item.start_datetime);
-        }
-
         switch (dateFilter) {
           case 'today':
             return itemDate.toDateString() === today.toDateString();
@@ -246,22 +132,14 @@ const fetchSessions = async () => {
     // Filter by location
     if (locationFilter !== 'all') {
       combined = combined.filter(item => {
-        if (item.type === 'video') {
-          return item.location && item.location.id.toString() === locationFilter;
-        } else { // item.type === 'session'
-          return item.location && item.location.toString() === locationFilter;
-        }
+        return item.location && item.location.id.toString() === locationFilter;
       });
     }
 
     // Sort by date/time (descending)
     combined.sort((a, b) => {
       const getDate = (item) => {
-        if (item.type === 'video') {
-          return item.video_date ? new Date(item.video_date) : new Date(item.uploaded_at);
-        } else {
-          return new Date(item.start_datetime);
-        }
+        return item.video_date ? new Date(item.video_date) : new Date(item.uploaded_at);
       };
       
       return getDate(b) - getDate(a);
@@ -270,128 +148,89 @@ const fetchSessions = async () => {
     return combined;
   };
 
-  // View functions - update to handle type
-  const viewProcessedVideo = (itemId, itemType) => { // Accept type
-    if (itemType === 'session') {
-        setSelectedSessionId(itemId); // Set session ID
-        setSelectedVideoId(null);    // Clear video ID
-    } else { // itemType === 'video'
-        setSelectedVideoId(itemId);  // Set video ID
-        setSelectedSessionId(null);  // Clear session ID
-    }
+  const viewProcessedVideo = (videoId) => {
+    setSelectedVideoId(videoId);
   };
 
-  // 🔥 NEW: Stop processing function
-  const stopProcessing = async (itemId, itemType, itemName) => {
+  const deleteVideo = async (videoId, videoName) => {
     try {
-      const confirmStop = window.confirm(
-        `Are you sure you want to stop processing for "${itemName}"?`
-      );
-      
-      if (!confirmStop) return;
-      
-      await axios.post(`http://127.0.0.1:8000/api/stop-processing/${itemId}/${itemType}/`);
-      alert(`Processing stopped for ${itemType}`);
-      
-      // Refresh the list
-      if (itemType === 'session') {
-        fetchSessions();
-      } else {
-        fetchAnalyses();
-      }
-      
-    } catch (error) {
-      console.error('Error stopping processing:', error);
-      alert(`Error stopping processing: ${error.response?.data?.error || error.message}`);
-    }
-  };
-
-  // In AnalysisResults.js - Improved delete function
-  const deleteAnalysis = async (itemId, itemType, itemName) => {
-    console.log(`🗑️ Attempting to delete ${itemType} ${itemId}`);
-    
-    let endpoint, successMessage, errorMessage;
-    
-    if (itemType === 'session') {
-      endpoint = `http://127.0.0.1:8000/api/sessions/${itemId}/`;
-      successMessage = 'Analysis session deleted successfully!';
-      errorMessage = 'Error deleting analysis session';
-    } else { // itemType === 'video'
-      endpoint = `http://127.0.0.1:8000/api/videos/${itemId}/`;
-      successMessage = 'Video analysis deleted successfully!';
-      errorMessage = 'Error deleting video analysis';
-    }
-
-    console.log(`🔍 DELETE endpoint: ${endpoint}`);
-
-    try {
-      // First, get current status to check if we can delete
-      const statusResponse = await axios.get(endpoint.replace(/\/$/, '') + '/');
-      const itemData = statusResponse.data;
-      
-      const status = itemType === 'session' ? itemData.status : itemData.processing_status;
-      console.log(`📊 ${itemType} status: ${status}`);
-
-      // Check if item is processing
-      if (status === 'processing') {
-        const forceDelete = window.confirm(
-          `⚠️ This ${itemType} is currently processing!\n\n` +
-          `Force deletion may cause issues.\n\n` +
-          `Do you want to force delete "${itemName}"?`
-        );
-        
-        if (!forceDelete) {
-          console.log('❌ User cancelled deletion');
-          return;
-        }
-      } else {
-        // Normal confirmation for non-processing items
-        if (!window.confirm(`Are you sure you want to delete the ${itemType} "${itemName}"?`)) {
-          console.log('❌ User cancelled deletion');
-          return;
-        }
+      if (!window.confirm(`Are you sure you want to delete the video "${videoName}"?`)) {
+        return;
       }
 
-      console.log(`🚀 Sending DELETE request to: ${endpoint}`);
-      
-      // Proceed with deletion
-      const response = await axios.delete(endpoint);
-      console.log('✅ Delete response:', response.data);
-      
-      alert(successMessage);
-      
-      // Refresh the list
-      if (itemType === 'session') {
-        fetchSessions();
-      } else {
-        fetchAnalyses();
-      }
+      await axios.delete(`http://127.0.0.1:8000/api/videos/${videoId}/`);
+      alert('Video deleted successfully!');
+      fetchVideos();
+      fetchUngroupedVideos();
       
     } catch (err) {
-      console.error(`❌ ${errorMessage}:`, err);
-      console.error('Error details:', err.response);
-      
-      if (err.response?.status === 405) {
-        alert(`❌ DELETE method not allowed. The server doesn't support deleting ${itemType}s.`);
-      } else if (err.response?.status === 423) {
-        alert(`❌ Cannot delete ${itemType} while processing. Please wait for processing to complete or stop processing first.`);
-      } else if (err.response?.status === 404) {
-        alert(`❌ ${itemType} not found. It may have been already deleted.`);
-      } else if (err.response?.data?.error) {
-        alert(`❌ ${errorMessage}: ${err.response.data.error}`);
-      } else if (err.response?.status === 500) {
-        alert(`❌ Server error while deleting ${itemType}. Check server logs.`);
-      } else {
-        alert(`❌ ${errorMessage}: ${err.message}`);
-      }
+      console.error('Error deleting video:', err);
+      alert(`Error deleting video: ${err.response?.data?.error || err.message}`);
     }
   };
-  const getStatusBadge = (status, type) => { // Accept type to maybe customize session statuses
+
+  const updateVideoMetadata = async (videoId, updates) => {
+    try {
+      await axios.put(`http://127.0.0.1:8000/api/videos/${videoId}/manage/`, updates);
+      alert('Video metadata updated successfully!');
+      fetchVideos();
+      fetchUngroupedVideos();
+    } catch (err) {
+      console.error('Error updating video metadata:', err);
+      alert(`Error updating video: ${err.response?.data?.error || err.message}`);
+    }
+  };
+
+  const addVideosToGroup = async (group, videoIds) => {
+    try {
+      await axios.post(`http://127.0.0.1:8000/api/location-groups/${group.id}/videos/`, {
+        video_ids: videoIds
+      });
+      alert(`Added ${videoIds.length} videos to ${group.location_details.display_name} - ${group.date}`);
+      fetchVideos();
+      fetchUngroupedVideos();
+      fetchLocationGroups();
+    } catch (err) {
+      console.error('Error adding videos to group:', err);
+      alert(`Error adding videos to group: ${err.response?.data?.error || err.message}`);
+    }
+  };
+
+  const removeVideosFromGroup = async (group, videoIds) => {
+    try {
+      await axios.delete(`http://127.0.0.1:8000/api/location-groups/${group.id}/videos/`, {
+        data: { video_ids: videoIds }
+      });
+      alert(`Removed ${videoIds.length} videos from ${group.location_details.display_name} - ${group.date}`);
+      fetchVideos();
+      fetchUngroupedVideos();
+      fetchLocationGroups();
+    } catch (err) {
+      console.error('Error removing videos from group:', err);
+      alert(`Error removing videos from group: ${err.response?.data?.error || err.message}`);
+    }
+  };
+
+  const createLocationGroup = async (locationId, date) => {
+    try {
+      await axios.post('http://127.0.0.1:8000/api/location-groups/', {
+        location: locationId,
+        date: date
+      });
+      alert('Location group created successfully!');
+      fetchLocationGroups();
+    } catch (err) {
+      console.error('Error creating location group:', err);
+      alert(`Error creating group: ${err.response?.data?.error || err.message}`);
+    }
+  };
+
+  const getStatusBadge = (status) => {
     const statusConfig = {
       'completed': { color: '#10b981', text: 'Completed' },
       'processing': { color: '#f59e0b', text: 'Processing' },
       'failed': { color: '#ef4444', text: 'Failed' },
-      'pending_upload': { color: '#6b7280', text: 'Pending Upload' } // Add session status
+      'pending': { color: '#6b7280', text: 'Pending' }
     };
 
     const config = statusConfig[status] || { color: '#6b7280', text: status };
@@ -433,53 +272,27 @@ const fetchSessions = async () => {
     );
   };
 
-  const formatFileSize = (bytes) => {
-    if (!bytes) return 'Unknown';
-    const mb = bytes / (1024 * 1024);
-    return `${mb.toFixed(1)} MB`;
-  };
-
-  const formatDuration = (seconds) => {
-    if (!seconds) return 'Unknown';
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  // NEW: Check which viewer to render
+  // Show video viewer when a video is selected
   if (selectedVideoId) {
     return (
       <ProcessedVideoViewer
         videoId={selectedVideoId}
-        type="video" // Pass type
+        type="video"
         onClose={() => setSelectedVideoId(null)}
         onBack={() => setSelectedVideoId(null)}
       />
     );
   }
 
-  if (selectedSessionId) { // Render viewer for session
-    return (
-      <ProcessedVideoViewer
-        videoId={selectedSessionId} // Pass session ID here
-        type="session" // Pass type
-        onClose={() => setSelectedSessionId(null)}
-        onBack={() => setSelectedSessionId(null)}
-      />
-    );
-  }
-
-  // Combine and filter results for display
   const combinedResults = getCombinedResults();
-  const isLoading = loading || sessionsLoading;
 
   return (
     <div className="main-content">
       <header style={{ marginBottom: '32px' }}>
         <h1 style={{ fontSize: '32px', fontWeight: 'bold', color: '#2d3748', margin: '0 0 8px 0' }}>
-          Video & Session Analysis Results
+          Video Analysis Results
         </h1>
-        <p style={{ color: '#666', margin: 0 }}>View and manage all processed traffic video analyses and sessions</p>
+        <p style={{ color: '#666', margin: 0 }}>View and manage all processed traffic video analyses</p>
       </header>
 
       {/* Filters and Stats */}
@@ -488,11 +301,10 @@ const fetchSessions = async () => {
           <div>
             <h3 style={{ margin: '0 0 8px 0' }}>Analysis Overview</h3>
             <p style={{ color: '#666', margin: 0, fontSize: '14px' }}>
-              Total: {combinedResults.length} items •
-              Videos: {analyses.length} •
-              Sessions: {sessions.length} •
-              Completed: {combinedResults.filter(a => a.status === 'completed' || a.processing_status === 'completed').length}
-              {sessionsLoading && " • (Loading sessions...)"}
+              Total Videos: {combinedResults.length} •
+              Completed: {combinedResults.filter(v => v.processing_status === 'completed').length} •
+              Ungrouped: {ungroupedVideos.length} •
+              Location Groups: {locationGroups.length}
             </p>
           </div>
 
@@ -519,8 +331,8 @@ const fetchSessions = async () => {
                 className="select-input"
               >
                 <option value="all">All Locations</option>
-                {getLocationOptions().map(loc => (
-                  <option key={loc.id} value={loc.id}>{loc.name}</option>
+                {locations.map(loc => (
+                  <option key={loc.id} value={loc.id}>{loc.display_name}</option>
                 ))}
               </select>
             </div>
@@ -533,27 +345,26 @@ const fetchSessions = async () => {
                 className="select-input"
                 style={{ minWidth: '120px' }}
               >
-                <option value="all">All Analyses/Sessions</option>
+                <option value="all">All Videos</option>
                 <option value="completed">Completed</option>
                 <option value="processing">Processing</option>
                 <option value="failed">Failed</option>
-                <option value="uploaded">Pending Upload (Sessions)</option>
               </select>
             </div>
 
             <button
-              onClick={() => { fetchAnalyses(); fetchSessions(); }} // Refresh both
-              disabled={isLoading}
+              onClick={() => { fetchVideos(); fetchLocationGroups(); fetchUngroupedVideos(); }}
+              disabled={loading}
               style={{
                 padding: '8px 16px',
                 border: '1px solid #ddd',
                 borderRadius: '4px',
                 backgroundColor: 'white',
-                cursor: isLoading ? 'not-allowed' : 'pointer',
-                opacity: isLoading ? 0.6 : 1
+                cursor: loading ? 'not-allowed' : 'pointer',
+                opacity: loading ? 0.6 : 1
               }}
             >
-              {isLoading ? 'Refreshing...' : 'Refresh'}
+              {loading ? 'Refreshing...' : 'Refresh'}
             </button>
           </div>
         </div>
@@ -572,25 +383,133 @@ const fetchSessions = async () => {
         </div>
       )}
 
-      {isLoading ? (
-        <div style={{ textAlign: 'center', padding: '40px' }}>
-          <div style={{ fontSize: '18px', color: '#666' }}>
-            {loading && sessionsLoading 
-              ? "Loading analyses and sessions..." 
-              : loading 
-                ? "Loading video analyses..." 
-                : "Loading sessions..."}
+      {/* Quick Actions */}
+      <div className="dashboard-card" style={{ marginBottom: '24px' }}>
+        <h3 style={{ marginBottom: '16px' }}>Quick Actions</h3>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => {
+              const location = prompt("Enter location ID:");
+              const date = prompt("Enter date (YYYY-MM-DD):");
+              if (location && date) {
+                createLocationGroup(location, date);
+              }
+            }}
+            style={{
+              padding: '8px 16px',
+              border: '1px solid #10b981',
+              borderRadius: '4px',
+              backgroundColor: '#f0fff4',
+              color: '#065f46',
+              cursor: 'pointer'
+            }}
+          >
+            + Create Location Group
+          </button>
+          
+          {ungroupedVideos.length > 0 && (
+            <span style={{ color: '#666', fontSize: '14px', display: 'flex', alignItems: 'center' }}>
+              {ungroupedVideos.length} videos available for grouping
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Location Groups */}
+      {locationGroups.length > 0 && (
+        <div className="dashboard-card" style={{ marginBottom: '24px' }}>
+          <h3 style={{ marginBottom: '16px' }}>Location-Date Groups</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
+            {locationGroups.map(group => (
+              <div key={group.id} style={{
+                padding: '16px',
+                backgroundColor: '#f8fafc',
+                borderRadius: '8px',
+                border: '1px solid #e5e7eb'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '12px' }}>
+                  <div>
+                    <h4 style={{ fontWeight: '600', marginBottom: '4px' }}>
+                      {group.location_details?.display_name || 'Unknown Location'}
+                    </h4>
+                    <p style={{ color: '#666', fontSize: '14px' }}>{group.date}</p>
+                  </div>
+                  <span style={{
+                    backgroundColor: '#3b82f6',
+                    color: 'white',
+                    padding: '4px 8px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '500'
+                  }}>
+                    {group.video_count} videos
+                  </span>
+                </div>
+                
+                <div style={{ fontSize: '14px', color: '#666', marginBottom: '12px' }}>
+                  Total Vehicles: {group.total_vehicles || 0}
+                </div>
+                
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => {
+                      const videoIds = ungroupedVideos.map(v => v.id);
+                      if (videoIds.length > 0) {
+                        addVideosToGroup(group, videoIds.slice(0, 3)); // Add first 3 for demo
+                      }
+                    }}
+                    disabled={ungroupedVideos.length === 0}
+                    style={{
+                      padding: '6px 12px',
+                      border: '1px solid #10b981',
+                      borderRadius: '4px',
+                      backgroundColor: ungroupedVideos.length === 0 ? '#f3f4f6' : '#f0fff4',
+                      color: ungroupedVideos.length === 0 ? '#9ca3af' : '#065f46',
+                      cursor: ungroupedVideos.length === 0 ? 'not-allowed' : 'pointer',
+                      fontSize: '12px'
+                    }}
+                  >
+                    Add Videos
+                  </button>
+                  
+                  <button
+                    onClick={() => {
+                      // View group analysis
+                      window.open(`#group-${group.id}`, '_blank');
+                    }}
+                    style={{
+                      padding: '6px 12px',
+                      border: '1px solid #3b82f6',
+                      borderRadius: '4px',
+                      backgroundColor: '#f0f9ff',
+                      color: '#1e40af',
+                      cursor: 'pointer',
+                      fontSize: '12px'
+                    }}
+                  >
+                    View Analysis
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
+        </div>
+      )}
+
+      {/* Videos Table */}
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: '40px' }}>
+          <div style={{ fontSize: '18px', color: '#666' }}>Loading video analyses...</div>
         </div>
       ) : combinedResults.length === 0 ? (
         <div className="dashboard-card" style={{ textAlign: 'center', padding: '40px' }}>
           <div style={{ fontSize: '18px', color: '#666', marginBottom: '16px' }}>
-            No analyses or sessions found
+            No videos found
           </div>
           <p style={{ color: '#999' }}>
             {filter !== 'all' || dateFilter !== 'all' || locationFilter !== 'all'
-              ? 'No items match your filters.'
-              : 'Upload a video or create a session to see analysis results.'}
+              ? 'No videos match your filters.'
+              : 'Upload a video to see analysis results.'}
           </p>
         </div>
       ) : (
@@ -598,86 +517,80 @@ const fetchSessions = async () => {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Type & Information</th>
+                <th>Video Information</th>
                 <th>Date & Time</th>
                 <th>Analysis Results</th>
                 <th>Status</th>
+                <th>Group</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {combinedResults.map((item) => (
-                <tr key={`${item.type}-${item.id}`}>
+              {combinedResults.map((video) => (
+                <tr key={video.id}>
                   <td>
                     <div>
                       <div style={{ fontWeight: '600', marginBottom: '4px' }}>
-                        {/* Distinguish type visually */}
-                        {item.type === 'session' ? '[SESSION] ' : '[VIDEO] '}
-                        {item.type === 'session' ? item.name : (item.title || item.filename)}
+                        {video.title || video.filename}
                       </div>
                       <div style={{ fontSize: '12px', color: '#666' }}>
-                        {/* Show relevant info based on type */}
-                        {item.type === 'session' ? (
-                          <>
-                            {item.location_details?.display_name || `Loc ID: ${item.location}`} •
-                            {item.video_files_count} videos
-                          </>
-                        ) : (
-                          <>
-                            Duration: {formatDuration(item.duration_seconds)} •
-                            {item.location && ` ${item.location.display_name}`}
-                          </>
-                        )}
+                        Duration: {video.duration_seconds ? `${Math.round(video.duration_seconds / 60)}min` : 'Unknown'} •
+                        {video.location && ` ${video.location.display_name}`}
                       </div>
                     </div>
                   </td>
                   <td>
                     <div>
                       <div style={{ fontWeight: '500' }}>
-                        {item.type === 'session' ?
-                          `${new Date(item.start_datetime).toLocaleDateString('en-US', { timeZone: 'UTC' })} to ${new Date(item.end_datetime).toLocaleDateString('en-US', { timeZone: 'UTC' })}` :
-                          (item.video_date_display || 'Unknown date')
-                        }
+                        {video.video_date_display || 'Unknown date'}
                       </div>
                       <div style={{ fontSize: '12px', color: '#666' }}>
-                        {item.type === 'session' ? `Status: ${item.status}` : (item.time_range || 'Time unknown')}
+                        {video.time_range || 'Time unknown'}
                       </div>
                     </div>
                   </td>
                   <td>
-                    {item.error ? (
+                    {video.error ? (
                       <span style={{ color: '#ef4444', fontSize: '12px' }}>
-                        Error: {item.error}
+                        Error: {video.error}
                       </span>
-                    ) : item.analysis ? (
+                    ) : video.analysis ? (
                       <div>
                         <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '4px' }}>
-                          <span style={{ fontWeight: '600' }}>{item.analysis.total_vehicles} vehicles</span>
-                          {item.analysis.congestion_level && (
-                            getCongestionBadge(item.analysis.congestion_level)
+                          <span style={{ fontWeight: '600' }}>{video.analysis.total_vehicles} vehicles</span>
+                          {video.analysis.congestion_level && (
+                            getCongestionBadge(video.analysis.congestion_level)
                           )}
                         </div>
                         <div style={{ fontSize: '12px', color: '#666' }}>
-                          Cars: {item.analysis.vehicle_breakdown?.cars || 0} •
-                          Trucks: {item.analysis.vehicle_breakdown?.trucks || 0} •
-                          Motorcycles: {item.analysis.vehicle_breakdown?.motorcycles || 0}
+                          Cars: {video.analysis.vehicle_breakdown?.cars || 0} •
+                          Trucks: {video.analysis.vehicle_breakdown?.trucks || 0} •
+                          Motorcycles: {video.analysis.vehicle_breakdown?.motorcycles || 0}
                         </div>
                       </div>
-                    ) : item.status === 'completed' || item.processing_status === 'completed' ? (
+                    ) : video.processing_status === 'completed' ? (
                       <span style={{ color: '#999', fontSize: '14px' }}>No analysis data</span>
                     ) : (
                       <span style={{ color: '#999', fontSize: '14px' }}>Analysis in progress...</span>
                     )}
                   </td>
                   <td>
-                    {getStatusBadge(item.status || item.processing_status, item.type)}
+                    {getStatusBadge(video.processing_status)}
                   </td>
                   <td>
-                    {/* ✅ UPDATED ACTIONS COLUMN */}
+                    {video.location_date_group ? (
+                      <span style={{ fontSize: '12px', color: '#666' }}>
+                        {video.location_date_group.location_details?.display_name} - {video.location_date_group.date}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: '12px', color: '#999' }}>Ungrouped</span>
+                    )}
+                  </td>
+                  <td>
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                      {(item.status === 'completed' || item.processing_status === 'completed') && (
+                      {video.processing_status === 'completed' && (
                         <button
-                          onClick={() => viewProcessedVideo(item.id, item.type)}
+                          onClick={() => viewProcessedVideo(video.id)}
                           style={{
                             padding: '6px 12px',
                             border: 'none',
@@ -688,44 +601,49 @@ const fetchSessions = async () => {
                             cursor: 'pointer'
                           }}
                         >
-                          View {item.type === 'session' ? 'Session' : 'Video'}
+                          View Video
                         </button>
                       )}
 
-                      {/* Show stop button for processing items */}
-                      {(item.status === 'processing' || item.processing_status === 'processing') && (
-                        <button
-                          onClick={() => stopProcessing(item.id, item.type, item.type === 'session' ? item.name : item.filename)}
-                          style={{
-                            padding: '6px 12px',
-                            border: '1px solid #f59e0b',
-                            borderRadius: '4px',
-                            backgroundColor: '#fff7ed',
-                            color: '#d97706',
-                            fontSize: '12px',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          ⏹️ Stop
-                        </button>
-                      )}
-
-                      {/* Delete button - disabled for processing items */}
                       <button
-                        onClick={() => deleteAnalysis(item.id, item.type, item.type === 'session' ? item.name : item.filename)}
-                        disabled={item.status === 'processing' || item.processing_status === 'processing'}
+                        onClick={() => {
+                          const newDate = prompt("Enter new date (YYYY-MM-DD):", video.video_date);
+                          const newLocation = prompt("Enter new location ID:", video.location?.id);
+                          if (newDate || newLocation) {
+                            updateVideoMetadata(video.id, {
+                              video_date: newDate,
+                              location_id: newLocation
+                            });
+                          }
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          border: '1px solid #f59e0b',
+                          borderRadius: '4px',
+                          backgroundColor: 'white',
+                          color: '#f59e0b',
+                          fontSize: '12px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Edit
+                      </button>
+
+                      <button
+                        onClick={() => deleteVideo(video.id, video.title || video.filename)}
+                        disabled={video.processing_status === 'processing'}
                         style={{
                           padding: '6px 12px',
                           border: '1px solid #ef4444',
                           borderRadius: '4px',
-                          backgroundColor: item.status === 'processing' || item.processing_status === 'processing' ? '#f3f4f6' : 'white',
-                          color: item.status === 'processing' || item.processing_status === 'processing' ? '#9ca3af' : '#ef4444',
+                          backgroundColor: video.processing_status === 'processing' ? '#f3f4f6' : 'white',
+                          color: video.processing_status === 'processing' ? '#9ca3af' : '#ef4444',
                           fontSize: '12px',
-                          cursor: item.status === 'processing' || item.processing_status === 'processing' ? 'not-allowed' : 'pointer'
+                          cursor: video.processing_status === 'processing' ? 'not-allowed' : 'pointer'
                         }}
-                        title={item.status === 'processing' || item.processing_status === 'processing' ? 'Stop processing first' : `Delete ${item.type}`}
+                        title={video.processing_status === 'processing' ? 'Stop processing first' : 'Delete video'}
                       >
-                        {item.status === 'processing' || item.processing_status === 'processing' ? '⏳ Processing...' : 'Delete'}
+                        {video.processing_status === 'processing' ? '⏳' : 'Delete'}
                       </button>
                     </div>
                   </td>
@@ -733,42 +651,6 @@ const fetchSessions = async () => {
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {/* Analysis Statistics */}
-      {combinedResults.length > 0 && (
-        <div className="dashboard-card" style={{ marginTop: '24px' }}>
-          <h3 style={{ marginBottom: '16px' }}>Analysis Statistics</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
-            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#3b82f6' }}>
-                {combinedResults.length}
-              </div>
-              <div style={{ fontSize: '14px', color: '#666' }}>Total Items</div>
-            </div>
-
-            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
-                {combinedResults.filter(a => a.status === 'completed' || a.processing_status === 'completed').length}
-              </div>
-              <div style={{ fontSize: '14px', color: '#666' }}>Completed</div>
-            </div>
-
-            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#f59e0b' }}>
-                {combinedResults.filter(a => a.status === 'processing' || a.processing_status === 'processing').length}
-              </div>
-              <div style={{ fontSize: '14px', color: '#666' }}>Processing</div>
-            </div>
-
-            <div style={{ textAlign: 'center', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
-              <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#ef4444' }}>
-                {combinedResults.filter(a => a.status === 'failed' || a.processing_status === 'failed').length}
-              </div>
-              <div style={{ fontSize: '14px', color: '#666' }}>Failed</div>
-            </div>
-          </div>
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-// src/App.js
+// src/App.js - REMOVE SESSIONS ROUTE
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
@@ -8,7 +8,6 @@ import CongestedRoads from './pages/CongestedRoads';
 import Settings from './pages/Settings';
 import AnalysisResults from './pages/AnalysisResults';
 import TrafficPredictions from './pages/TrafficPredictions';
-import AnalysisSessions from './pages/AnalysisSessions';
 import './App.css';
 
 function App() {
@@ -23,7 +22,6 @@ function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/analysis" element={<AnalysisResults />} />
           <Route path="/predictions" element={<TrafficPredictions />} />
-          <Route path="/sessions" element={<AnalysisSessions />} />
         </Routes>
       </div>
     </Router>
