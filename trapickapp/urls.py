@@ -6,7 +6,6 @@ urlpatterns = [
     path('api/upload/video/', api_views.VideoUploadAPI.as_view(), name='upload_video'),
     path('api/progress/<uuid:video_id>/', api_views.VideoProgressAPI.as_view(), name='video_progress'),
     path('api/analysis/<uuid:upload_id>/', api_views.AnalysisResultsAPI.as_view(), name='analysis_results'),
-    path('api/stop-processing/<uuid:item_id>/<str:item_type>/', api_views.StopProcessingAPI.as_view(), name='stop_processing'),
     
     # ==================== VIDEO FILE SERVING ====================
     path('api/video/<uuid:video_id>/view/', api_views.ProcessedVideoViewAPI.as_view(), name='view_processed_video'),
@@ -42,23 +41,6 @@ urlpatterns = [
     # ==================== SYSTEM ENDPOINTS ====================
     path('api/health/', api_views.HealthCheckAPI.as_view(), name='health_check'),
     path('api/debug/data/', api_views.DebugDataAPI.as_view(), name='debug_data'),
-    
-    # ==================== SESSION-SPECIFIC ENDPOINTS ====================
-    path('api/sessions/', api_views.AnalysisSessionListAPI.as_view(), name='session_list'),
-    path('api/sessions/<uuid:session_id>/', api_views.AnalysisSessionDetailAPI.as_view(), name='session_detail'),
-    path('api/sessions/<uuid:session_id>/videos/', api_views.AnalysisSessionVideoListAPI.as_view(), name='session_videos'),
-    path('api/sessions/<uuid:session_id>/process/', api_views.ProcessAnalysisSessionAPI.as_view(), name='process_session'),
-    path('api/sessions/<uuid:session_id>/quick-process/', api_views.QuickProcessSessionAPI.as_view(), name='quick_process_session'),
-    
-    # ==================== SESSION VIDEO ENDPOINTS ====================
-    path('api/session-video/<uuid:session_id>/view/', api_views.SessionVideoViewAPI.as_view(), name='view_session_video'),
-    path('api/session-video/<uuid:session_id>/download/', api_views.SessionVideoDownloadAPI.as_view(), name='download_session_video'),  # NEW
-    
-    # ==================== SESSION ANALYSIS & EXPORT ====================
-    path('api/sessions/<uuid:session_id>/traffic-analyses/', api_views.SessionTrafficAnalysesListAPI.as_view(), name='session_traffic_analyses'),
-    path('api/export/session/<uuid:session_id>/csv/', api_views.ExportSessionCSVAPI.as_view(), name='export_session_csv'),
-    path('api/export/session/<uuid:session_id>/pdf/', api_views.ExportSessionPDFAPI.as_view(), name='export_session_pdf'),
-    path('api/export/session/<uuid:session_id>/excel/', api_views.ExportSessionExcelAPI.as_view(), name='export_session_excel'),
     
     # ==================== WEBSOCKET ====================
     re_path(r'ws/video-progress/(?P<video_id>[^/]+)/$', api_views.VideoProgressAPI.as_view()),

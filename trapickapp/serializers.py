@@ -1,6 +1,6 @@
 # trapickapp/serializers.py
 from rest_framework import serializers
-from .models import VehicleType, Location, VideoFile, TrafficAnalysis, Detection, TrafficPrediction, ProcessingProfile, AnalysisSession
+from .models import LocationDateGroup, VehicleType, Location, VideoFile, TrafficAnalysis, Detection, TrafficPrediction, ProcessingProfile
 
 
 class VehicleTypeSerializer(serializers.ModelSerializer):
@@ -127,36 +127,59 @@ class TrafficPredictionSerializer(serializers.ModelSerializer):
         data['day_name'] = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][instance.day_of_week]
         return data
     
-class AnalysisSessionSerializer(serializers.ModelSerializer):
+class LocationDateGroupSerializer(serializers.ModelSerializer):
     location_details = LocationSerializer(source='location', read_only=True)
-    video_files_count = serializers.SerializerMethodField()
-    processed_session_video_url = serializers.SerializerMethodField()
-    processed_session_video_download_url = serializers.SerializerMethodField()  # NEW
-
+    video_count = serializers.SerializerMethodField()
+    total_vehicles = serializers.SerializerMethodField()
+    
     class Meta:
-        model = AnalysisSession
+        model = LocationDateGroup
         fields = [
-            'id', 'name', 'location', 'location_details', 'start_datetime', 'end_datetime',
-            'status', 'created_at', 'processed_at', 'video_files_count',
-            'processed_session_video_path', 'processed_session_video_url', 'processed_session_video_download_url'  # UPDATED
+            'id', 'location', 'location_details', 'date', 
+            'created_at', 'updated_at', 'video_count', 'total_vehicles'
         ]
-        read_only_fields = ['id', 'created_at', 'processed_at', 'video_files_count', 'processed_session_video_url', 'processed_session_video_download_url']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_video_count(self, obj):
+        return obj.videos.count()
+    
+    def get_total_vehicles(self, obj):
+        analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=obj)
+        return sum(analysis.total_vehicles for analysis in analyses)
 
-    def get_video_files_count(self, obj):
-        return obj.video_files.count()
-
-    def get_processed_session_video_url(self, obj):
-        """Generate the URL to view the processed session video"""
-        if obj.processed_session_video_path and obj.status == 'completed':
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(f'/api/session-video/{obj.id}/view/')
-        return None
-
-    def get_processed_session_video_download_url(self, obj):
-        """Generate the URL to download the processed session video"""
-        if obj.processed_session_video_path and obj.status == 'completed':
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(f'/api/session-video/{obj.id}/download/')
-        return None
+class VideoFileSerializer(serializers.ModelSerializer):
+    video_date_display = serializers.SerializerMethodField()
+    time_range = serializers.SerializerMethodField()
+    location_name = serializers.SerializerMethodField()
+    has_analysis = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = VideoFile
+        fields = [
+            'id', 'filename', 'processing_status', 'uploaded_at',
+            'processed', 'duration_seconds', 'title',
+            'video_date', 'video_start_time', 'video_end_time',
+            'video_date_display', 'time_range', 'location_name',
+            'has_analysis', 'location_date_group'
+        ]
+    
+    def get_video_date_display(self, obj):
+        if not obj.video_date:
+            return "Unknown"
+        if isinstance(obj.video_date, str):
+            return obj.video_date
+        try:
+            return obj.video_date.strftime("%Y-%m-%d")
+        except AttributeError:
+            return str(obj.video_date)
+    
+    def get_time_range(self, obj):
+        return obj.get_video_time_range()
+    
+    def get_location_name(self, obj):
+        if hasattr(obj, 'traffic_analysis') and obj.traffic_analysis.location:
+            return obj.traffic_analysis.location.display_name
+        return "Not assigned"
+    
+    def get_has_analysis(self, obj):
+        return hasattr(obj, 'traffic_analysis')

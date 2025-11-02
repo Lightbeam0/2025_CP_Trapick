@@ -14,7 +14,7 @@ import os
 from django.utils import timezone
 from datetime import timedelta
 from .progress import ProgressTracker
-from .models import VideoFile, TrafficAnalysis, Location, AnalysisSession, ProcessingProfile, VehicleType, Detection, TrafficReport, FrameAnalysis, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction, SystemConfig
+from .models import VideoFile, TrafficAnalysis, Location, ProcessingProfile, VehicleType, Detection, TrafficReport, FrameAnalysis, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction, SystemConfig, LocationDateGroup
 from django.db import models
 import csv
 import json
@@ -27,9 +27,356 @@ from reportlab.lib import colors
 from io import BytesIO
 import openpyxl
 from datetime import datetime
-from .tasks import process_video_task, process_session_task
+from .tasks import process_video_task
 
-# Update these API views to use real data:
+class VideoUploadAPI(APIView):
+    def post(self, request):
+        print("🔍 DEBUG: VideoUploadAPI called")
+        print(f"🔍 Request FILES: {list(request.FILES.keys())}")
+
+        try:
+            if 'video' not in request.FILES:
+                return Response(
+                    {'error': 'No video file provided'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            video_file = request.FILES['video']
+            print(f"✅ Video file received: {video_file.name} ({video_file.size} bytes)")
+
+            # Validate file type
+            allowed_types = ['video/mp4', 'video/avi', 'video/mov', 'video/webm']
+            if video_file.content_type not in allowed_types:
+                return Response(
+                    {'error': 'Invalid file type. Please upload MP4, AVI, MOV, or WebM.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Validate file size
+            max_size = 2 * 1024 * 1024 * 1024  # 2GB
+            if video_file.size > max_size:
+                return Response(
+                    {'error': 'File too large. Maximum size is 2GB.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Get form data
+            title = request.POST.get('title', video_file.name)
+            location_id = request.POST.get('location_id')
+            video_date = request.POST.get('video_date')
+            video_start_time = request.POST.get('video_start_time')
+            video_end_time = request.POST.get('video_end_time')
+
+            # Validate required fields
+            if not location_id:
+                return Response(
+                    {'error': 'Location is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if not video_date:
+                return Response(
+                    {'error': 'Video recording date is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Validate location exists
+            try:
+                location = Location.objects.get(id=location_id)
+            except Location.DoesNotExist:
+                return Response(
+                    {'error': 'Location not found'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Save video file
+            fs = FileSystemStorage()
+            filename = fs.save(f'videos/{video_file.name}', video_file)
+            video_path = fs.path(filename)
+            print(f"💾 Video saved to: {video_path}")
+
+            # Create VideoFile record
+            video_obj = VideoFile.objects.create(
+                filename=video_file.name,
+                file_path=filename,
+                title=title,
+                video_date=video_date,
+                video_start_time=video_start_time,
+                video_end_time=video_end_time,
+                processing_status='uploaded',
+                uploaded_at=timezone.now()
+            )
+
+            print(f"📄 Video record created: {video_obj.id}")
+
+            # Start processing immediately via Celery
+            try:
+                task = process_video_task.delay(video_obj.id, location_id=location_id)
+                print(f"✅ Celery task started: {task.id} for video {video_obj.id}")
+
+                return Response({
+                    'status': 'success',
+                    'message': 'Video uploaded and processing started',
+                    'upload_id': str(video_obj.id),
+                    'task_id': task.id,
+                    'video_info': {
+                        'filename': video_file.name,
+                        'size': video_file.size,
+                        'type': video_file.content_type
+                    }
+                })
+
+            except Exception as e:
+                print(f"❌ Error starting Celery processing: {str(e)}")
+                video_obj.processing_status = 'failed'
+                video_obj.save()
+                return Response(
+                    {'error': f'Failed to start processing: {str(e)}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+        except Exception as e:
+            print(f"💥 UPLOAD ERROR: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Upload failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class LocationDateGroupListAPI(APIView):
+    """Handle location-date groups"""
+    
+    def get(self, request):
+        groups = LocationDateGroup.objects.all().select_related('location').order_by('-date')
+        serializer = LocationDateGroupSerializer(groups, many=True)
+        return Response(serializer.data)
+    
+    def post(self, request):
+        """Create a new location-date group"""
+        serializer = LocationDateGroupSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class LocationDateGroupDetailAPI(APIView):
+    """Handle individual location-date group operations"""
+    
+    def get_object(self, group_id):
+        try:
+            return LocationDateGroup.objects.get(id=group_id)
+        except LocationDateGroup.DoesNotExist:
+            return None
+
+    def get(self, request, group_id):
+        group = self.get_object(group_id)
+        if group is None:
+            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = LocationDateGroupSerializer(group)
+        return Response(serializer.data)
+
+    def put(self, request, group_id):
+        group = self.get_object(group_id)
+        if group is None:
+            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = LocationDateGroupSerializer(group, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, group_id):
+        group = self.get_object(group_id)
+        if group is None:
+            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Check if group has videos
+        if group.videos.exists():
+            return Response({
+                'error': 'Cannot delete group that contains videos. Remove videos first.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        group.delete()
+        return Response({'message': 'Group deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+
+class GroupVideosAPI(APIView):
+    """Add/remove videos from location-date groups"""
+    
+    def post(self, request, group_id):
+        """Add videos to a group"""
+        try:
+            group = LocationDateGroup.objects.get(id=group_id)
+            video_ids = request.data.get('video_ids', [])
+            
+            if not video_ids:
+                return Response({'error': 'No video IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get videos that are completed and not already in a group
+            videos = VideoFile.objects.filter(
+                id__in=video_ids,
+                processing_status='completed',
+                location_date_group__isnull=True
+            )
+            
+            updated_count = 0
+            for video in videos:
+                video.location_date_group = group
+                video.save()
+                updated_count += 1
+            
+            return Response({
+                'message': f'Successfully added {updated_count} videos to group',
+                'group_id': str(group_id),
+                'videos_added': updated_count
+            })
+            
+        except LocationDateGroup.DoesNotExist:
+            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    def delete(self, request, group_id):
+        """Remove videos from a group"""
+        try:
+            group = LocationDateGroup.objects.get(id=group_id)
+            video_ids = request.data.get('video_ids', [])
+            
+            if not video_ids:
+                return Response({'error': 'No video IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            videos = VideoFile.objects.filter(
+                id__in=video_ids,
+                location_date_group=group
+            )
+            
+            updated_count = 0
+            for video in videos:
+                video.location_date_group = None
+                video.save()
+                updated_count += 1
+            
+            return Response({
+                'message': f'Successfully removed {updated_count} videos from group',
+                'videos_removed': updated_count
+            })
+            
+        except LocationDateGroup.DoesNotExist:
+            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+
+class VideoManagementAPI(APIView):
+    """Handle video metadata updates and management"""
+    
+    def put(self, request, video_id):
+        """Update video metadata (date, time, location)"""
+        try:
+            video = VideoFile.objects.get(id=video_id)
+            
+            # Allowed fields to update
+            allowed_fields = ['video_date', 'video_start_time', 'video_end_time', 'title']
+            update_data = {field: request.data.get(field) for field in allowed_fields if field in request.data}
+            
+            # Handle location change
+            new_location_id = request.data.get('location_id')
+            if new_location_id:
+                try:
+                    new_location = Location.objects.get(id=new_location_id)
+                    # Update associated traffic analysis if exists
+                    if hasattr(video, 'traffic_analysis'):
+                        video.traffic_analysis.location = new_location
+                        video.traffic_analysis.save()
+                except Location.DoesNotExist:
+                    return Response({'error': 'Location not found'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Update video fields
+            for field, value in update_data.items():
+                setattr(video, field, value)
+            video.save()
+            
+            serializer = VideoFileSerializer(video)
+            return Response(serializer.data)
+            
+        except VideoFile.DoesNotExist:
+            return Response({'error': 'Video not found'}, status=status.HTTP_404_NOT_FOUND)
+
+class UngroupedVideosAPI(APIView):
+    """Get videos that are not in any group"""
+    
+    def get(self, request):
+        videos = VideoFile.objects.filter(
+            processing_status='completed',
+            location_date_group__isnull=True
+        ).order_by('-uploaded_at')
+        
+        serializer = VideoFileSerializer(videos, many=True)
+        return Response(serializer.data)
+
+class GroupAnalysisAPI(APIView):
+    """Get aggregated analysis for a location-date group"""
+    
+    def get(self, request, group_id):
+        try:
+            group = LocationDateGroup.objects.get(id=group_id)
+            videos = group.videos.filter(processing_status='completed')
+            
+            # Get all analyses for videos in this group
+            analyses = TrafficAnalysis.objects.filter(video_file__in=videos)
+            
+            if not analyses.exists():
+                return Response({'error': 'No analyses found for this group'}, status=status.HTTP_404_NOT_FOUND)
+            
+            # Calculate aggregated statistics
+            aggregated_data = {
+                'total_vehicles': sum(analysis.total_vehicles for analysis in analyses),
+                'car_count': sum(analysis.car_count for analysis in analyses),
+                'truck_count': sum(analysis.truck_count for analysis in analyses),
+                'motorcycle_count': sum(analysis.motorcycle_count for analysis in analyses),
+                'bus_count': sum(analysis.bus_count for analysis in analyses),
+                'bicycle_count': sum(analysis.bicycle_count for analysis in analyses),
+                'other_count': sum(analysis.other_count for analysis in analyses),
+                'total_processing_time': sum(analysis.processing_time_seconds for analysis in analyses),
+                'video_count': videos.count(),
+                'time_range': self.get_time_range(videos),
+                'average_congestion': self.get_average_congestion(analyses)
+            }
+            
+            return Response(aggregated_data)
+            
+        except LocationDateGroup.DoesNotExist:
+            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    def get_time_range(self, videos):
+        """Calculate time range for videos in group"""
+        times = []
+        for video in videos:
+            if video.video_start_time:
+                times.append(video.video_start_time)
+            if video.video_end_time:
+                times.append(video.video_end_time)
+        
+        if times:
+            return f"{min(times).strftime('%H:%M')} - {max(times).strftime('%H:%M')}"
+        return "Time range not available"
+    
+    def get_average_congestion(self, analyses):
+        """Calculate average congestion level"""
+        congestion_levels = {
+            'very_low': 0,
+            'low': 1, 
+            'medium': 2,
+            'high': 3,
+            'severe': 4
+        }
+        
+        if not analyses:
+            return 'low'
+        
+        total_score = sum(congestion_levels.get(analysis.congestion_level, 0) for analysis in analyses)
+        avg_score = total_score / len(analyses)
+        
+        for level, score in congestion_levels.items():
+            if avg_score <= score:
+                return level
+        return 'severe'
 
 class AnalysisOverviewAPI(APIView):
     def get(self, request):
@@ -186,165 +533,6 @@ class DebugDataAPI(APIView):
         
         return Response(stats)
 
-class VideoUploadAPI(APIView):
-    def post(self, request):
-        print("🔍 DEBUG: VideoUploadAPI called")
-        print(f"🔍 Request method: {request.method}")
-        print(f"🔍 Request FILES: {list(request.FILES.keys())}")
-        print(f"🔍 Request data: {dict(request.POST)}")
-
-        try:
-            if 'video' not in request.FILES:
-                print("❌ ERROR: No video file in request.FILES")
-                return Response(
-                    {'error': 'No video file provided'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            video_file = request.FILES['video']
-            print(f"✅ Video file received: {video_file.name} ({video_file.size} bytes)")
-
-            allowed_types = ['video/mp4', 'video/avi', 'video/mov', 'video/webm']
-            if video_file.content_type not in allowed_types:
-                print(f"❌ ERROR: Invalid file type: {video_file.content_type}")
-                return Response(
-                    {'error': 'Invalid file type. Please upload MP4, AVI, MOV, or WebM.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            max_size = 2 * 1024 * 1024 * 1024  # 2GB
-            if video_file.size > max_size:
-                print(f"❌ ERROR: File too large: {video_file.size} bytes")
-                return Response(
-                    {'error': 'File too large. Maximum size is 2GB.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            title = request.POST.get('title', video_file.name)
-            location_id = request.POST.get('location_id')
-            video_date = request.POST.get('video_date')
-            session_id = request.POST.get('session_id')
-
-            print(f"📝 Form data - Title: {title}, Location: {location_id}, Date: {video_date}, Session ID: {session_id}")
-
-            if not video_date:
-                return Response(
-                    {'error': 'Video recording date is required'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Validate session_id if provided
-            associated_session = None
-            if session_id:
-                try:
-                    associated_session = AnalysisSession.objects.get(id=session_id)
-                    print(f"📍 Video will be associated with session: {associated_session.name} (ID: {session_id})")
-
-                    session_start = associated_session.start_datetime.date()
-                    session_end = associated_session.end_datetime.date()
-                    video_date_obj = datetime.strptime(video_date, '%Y-%m-%d').date()
-
-                    if not (session_start <= video_date_obj <= session_end):
-                        return Response({
-                            'error': f'Video date {video_date_obj} is outside session range {session_start} to {session_end}'
-                        }, status=status.HTTP_400_BAD_REQUEST)
-
-                except AnalysisSession.DoesNotExist:
-                    print(f"❌ ERROR: Session ID {session_id} does not exist.")
-                    return Response(
-                        {'error': f'Session with ID {session_id} not found.'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-            # Save video file
-            fs = FileSystemStorage()
-            filename = fs.save(f'videos/{video_file.name}', video_file)
-            video_path = fs.path(filename)
-            print(f"💾 Video saved to: {video_path}")
-
-            # Create VideoFile record (initially without session if not provided)
-            video_obj = VideoFile.objects.create(
-                filename=video_file.name,
-                file_path=filename,
-                title=title,
-                video_date=video_date,
-                video_start_time=request.POST.get('start_time'),
-                video_end_time=request.POST.get('end_time'),
-                processing_status='uploaded',
-                uploaded_at=timezone.now(),
-                analysis_session=associated_session  # May be None
-            )
-
-            print(f"📄 Video record created: {video_obj.id}, session: {associated_session.id if associated_session else None}")
-
-            # 🔥 AUTO-GROUPING LOGIC (only if no session was explicitly provided)
-            if not session_id and video_obj.video_date and location_id:
-                try:
-                    video_date_obj = datetime.strptime(video_obj.video_date, '%Y-%m-%d').date()
-                    existing_session = AnalysisSession.objects.filter(
-                        start_datetime__date=video_date_obj,
-                        location_id=location_id,
-                        status='pending_upload'
-                    ).first()
-
-                    if existing_session:
-                        video_obj.analysis_session = existing_session
-                        video_obj.save()
-                        associated_session = existing_session  # Update reference for later logic
-                        print(f"✅ Auto-added to existing session: {existing_session.name}")
-                except Exception as e:
-                    print(f"⚠️  Warning during auto-grouping: {str(e)}")
-
-            # Determine processing logic based on final session association
-            if associated_session:
-                print("ℹ️  Video uploaded to session. Individual processing skipped.")
-                return Response({
-                    'status': 'success',
-                    'message': f'Video uploaded successfully to session "{associated_session.name}". Session processing will start separately.',
-                    'upload_id': str(video_obj.id),
-                    'session_id': str(associated_session.id),
-                    'video_info': {
-                        'filename': video_file.name,
-                        'size': video_file.size,
-                        'type': video_file.content_type
-                    }
-                })
-            else:
-                # Process individually
-                print("📍 Processing without session association via Celery task.")
-                try:
-                    task = process_video_task.delay(video_obj.id, location_id=location_id)
-                    print(f"✅ Celery task started: {task.id} for video {video_obj.id}")
-
-                    return Response({
-                        'status': 'success',
-                        'message': 'Video uploaded and processing started (via Celery)',
-                        'upload_id': str(video_obj.id),
-                        'task_id': task.id,
-                        'video_info': {
-                            'filename': video_file.name,
-                            'size': video_file.size,
-                            'type': video_file.content_type
-                        }
-                    })
-
-                except Exception as e:
-                    print(f"❌ Error starting Celery processing: {str(e)}")
-                    video_obj.processing_status = 'failed'
-                    video_obj.save()
-                    return Response(
-                        {'error': f'Failed to start processing via Celery: {str(e)}'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
-
-        except Exception as e:
-            print(f"💥 UPLOAD ERROR: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return Response(
-                {'error': f'Upload failed: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
 
 class VideoProgressAPI(APIView):
     def get(self, request, video_id):
@@ -606,7 +794,7 @@ class VideoDeleteAPI(APIView):
                 {'error': f'Error deleting video: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
+            
 class ProcessedVideoViewAPI(APIView):
     def get(self, request, video_id):
         """
@@ -1163,729 +1351,3 @@ class PredictionInsightsAPI(APIView):
                 'status': 'error',
                 'message': f'Failed to get insights: {str(e)}'
             }, status=500)
-
-class AnalysisSessionListAPI(APIView):
-    """Handle listing and creating Analysis Sessions"""
-    def get(self, request):
-        sessions = AnalysisSession.objects.all().order_by('-created_at')
-        serializer = AnalysisSessionSerializer(sessions, many=True)
-        return Response(serializer.data)
-
-    def post(self, request):
-        # Validate required fields
-        required_fields = ['name', 'location', 'start_datetime', 'end_datetime']
-        for field in required_fields:
-            if field not in request.data:
-                return Response({'error': f'{field} is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-        serializer = AnalysisSessionSerializer(data=request.data)
-        if serializer.is_valid():
-            session = serializer.save()
-            return Response(AnalysisSessionSerializer(session).data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class AnalysisSessionDetailAPI(APIView):
-    def get_object(self, session_id):
-        try:
-            return AnalysisSession.objects.get(id=session_id)
-        except AnalysisSession.DoesNotExist:
-            return None
-
-    def get(self, request, session_id):
-        """GET /api/sessions/{session_id}/"""
-        session = self.get_object(session_id)
-        if session is None:
-            return Response({'error': 'Session not found'}, status=404)
-        serializer = AnalysisSessionSerializer(session)
-        return Response(serializer.data)
-
-    def delete(self, request, session_id):
-        """DELETE /api/sessions/{session_id}/"""
-        try:
-            print(f"🗑️ DELETE request for session: {session_id}")
-            
-            session = self.get_object(session_id)
-            if session is None:
-                return Response({'error': 'Session not found'}, status=404)
-
-            # Check if session is processing
-            if session.status == 'processing':
-                return Response(
-                    {'error': 'Session is currently processing. Stop processing first or wait for it to complete.'},
-                    status=423
-                )
-            
-            session_name = session.name
-            video_count = session.video_files.count()
-            
-            print(f"📁 Session found: {session_name}, videos: {video_count}, status: {session.status}")
-            
-            # Delete session (this will cascade delete videos due to ForeignKey)
-            session.delete()
-            
-            print(f"✅ Successfully deleted session: {session_name}")
-            
-            return Response({
-                'message': f'Session "{session_name}" and {video_count} associated videos deleted successfully'
-            })
-            
-        except Exception as e:
-            print(f"❌ Error deleting session {session_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            return Response(
-                {'error': f'Error deleting session: {str(e)}'},
-                status=500
-            )
-        
-class AnalysisSessionVideoListAPI(APIView):
-    """Handle listing videos associated with a specific Analysis Session"""
-    def get(self, request, session_id):
-        session = AnalysisSession.objects.filter(id=session_id).first()
-        if not session:
-            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        videos = session.video_files.all().order_by('video_date', 'video_start_time') # Order by date/time
-        serializer = VideoFileSerializer(videos, many=True)
-        return Response(serializer.data)
-    
-class ProcessAnalysisSessionAPI(APIView):
-    """Initiate processing for an Analysis Session - UPDATED FOR CELERY"""
-    
-    def post(self, request, session_id):
-        session = AnalysisSession.objects.filter(id=session_id).first()
-        if not session:
-            return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        if session.status in ['processing', 'completed']:
-            return Response({'error': f'Session is already {session.status}.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Check if there are videos associated with the session
-        video_files = session.video_files.filter(
-            processing_status__in=['uploaded', 'completed']
-        ).order_by('video_date', 'video_start_time')
-        
-        print(f"🔍 Found {video_files.count()} videos ready for session processing in session {session_id}")
-
-        if not video_files.exists():
-            # Debug: Check if there are ANY videos linked to the session at all
-            all_session_videos = session.video_files.all()
-            print(f"🔍 Found {all_session_videos.count()} total videos linked to session {session_id}")
-            for v in all_session_videos:
-                print(f"   - Video {v.id}: {v.filename}, Status: {v.processing_status}, Processed: {v.processed}")
-            # End Debug
-
-            return Response({'error': 'No videos found in the session to process.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Update session status
-        session.status = 'processing'
-        session.save()
-
-        # Start Celery task
-        try:
-            task = process_session_task.delay(session.id)
-            print(f"✅ Celery session task started: {task.id} for session {session.id}")
-            return Response({
-                'message': f'Processing started for session {session.name}',
-                'session_id': session.id,
-                'task_id': task.id # Return task ID if needed for frontend tracking
-            })
-        except Exception as e:
-            session.status = 'failed'
-            session.save()
-            return Response({'error': f'Failed to start processing via Celery: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-class SessionVideoDownloadAPI(APIView):
-    """
-    Download the processed video for an Analysis Session.
-    Frontend calls: GET /api/session-video/{session_id}/download/
-    """
-    
-    def get(self, request, session_id):
-        try:
-            session_obj = AnalysisSession.objects.get(id=session_id)
-
-            # Check if processing is completed
-            if session_obj.status != 'completed':
-                return Response(
-                    {'error': 'Session processing not completed yet'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Check if the processed video path field has content
-            if not session_obj.processed_session_video_path:
-                return Response(
-                    {'error': 'Processed session video path not found in database. The session might not have been processed correctly or the video path was not saved.'},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            # Construct the full file system path
-            try:
-                full_video_path = session_obj.processed_session_video_path.path
-                print(f"🔍 Using FileField.path: {full_video_path}")
-            except Exception as e:
-                print(f"❌ Error getting FileField.path: {e}")
-                # Fallback: manually construct path
-                relative_path = session_obj.processed_session_video_path.name
-                full_video_path = os.path.join(settings.MEDIA_ROOT, relative_path)
-                print(f"🔍 Using manual path construction: {full_video_path}")
-
-            # Check if the file exists
-            if not os.path.exists(full_video_path):
-                print(f"❌ Session video file NOT FOUND at: {full_video_path}")
-                return Response(
-                    {
-                        'error': f'Processed session video file is missing on the server. '
-                                 f'Expected path: {full_video_path}'
-                    },
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            print(f"✓ Downloading session video from: {full_video_path}")
-
-            # Verify file is readable and not empty
-            try:
-                file_size = os.path.getsize(full_video_path)
-                if file_size == 0:
-                    return Response(
-                        {'error': 'Processed session video file is empty (0 bytes)'},
-                        status=status.HTTP_404_NOT_FOUND
-                    )
-                print(f"✓ Video file size: {file_size} bytes")
-            except OSError as e:
-                return Response(
-                    {'error': f'Cannot access video file: {str(e)}'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            # Serve the file with attachment content disposition for downloading
-            response = FileResponse(open(full_video_path, 'rb'), content_type='video/mp4')
-            response['Content-Disposition'] = f'attachment; filename="session_{session_obj.name}_{session_obj.id}.mp4"'
-            response['Content-Length'] = str(file_size)
-            return response
-
-        except AnalysisSession.DoesNotExist:
-            return Response(
-                {'error': 'Analysis session not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except FileNotFoundError:
-            return Response(
-                {'error': 'Processed session video file could not be opened. It might have been deleted.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-        except Exception as e:
-            print(f"❌ UNEXPECTED ERROR in SessionVideoDownloadAPI for session {session_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            return Response(
-                {'error': f'Unexpected error downloading session video file: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-class SessionVideoViewAPI(APIView):
-    """
-    Serve the processed video for an Analysis Session.
-    Frontend calls: GET /api/session-video/{session_id}/view/
-    """
-    
-    def get(self, request, session_id):
-        try:
-            session_obj = AnalysisSession.objects.get(id=session_id)
-
-            # Check if processing is completed
-            if session_obj.status != 'completed':
-                return Response(
-                    {'error': 'Session processing not completed yet'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Check if the processed video path field has content
-            if not session_obj.processed_session_video_path:
-                return Response(
-                    {'error': 'Processed session video path not found in database. The session might not have been processed correctly or the video path was not saved.'},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            # Construct the full file system path
-            try:
-                full_video_path = session_obj.processed_session_video_path.path
-                print(f"🔍 Using FileField.path: {full_video_path}")
-            except Exception as e:
-                print(f"❌ Error getting FileField.path: {e}")
-                # Fallback: manually construct path
-                relative_path = session_obj.processed_session_video_path.name
-                full_video_path = os.path.join(settings.MEDIA_ROOT, relative_path)
-                print(f"🔍 Using manual path construction: {full_video_path}")
-
-            # Check if the file exists
-            if not os.path.exists(full_video_path):
-                print(f"❌ Session video file NOT FOUND at: {full_video_path}")
-                return Response(
-                    {
-                        'error': f'Processed session video file is missing on the server. '
-                                 f'Expected path: {full_video_path}'
-                    },
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            print(f"✓ Serving session video from: {full_video_path}")
-
-            # Verify file is readable and not empty
-            try:
-                file_size = os.path.getsize(full_video_path)
-                if file_size == 0:
-                    return Response(
-                        {'error': 'Processed session video file is empty (0 bytes)'},
-                        status=status.HTTP_404_NOT_FOUND
-                    )
-                print(f"✓ Video file size: {file_size} bytes")
-            except OSError as e:
-                return Response(
-                    {'error': f'Cannot access video file: {str(e)}'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            # Serve the file with inline content disposition for viewing
-            response = FileResponse(open(full_video_path, 'rb'), content_type='video/mp4')
-            response['Content-Disposition'] = f'inline; filename="session_{session_obj.name}.mp4"'
-            response['Content-Length'] = str(file_size)
-            return response
-
-        except AnalysisSession.DoesNotExist:
-            return Response(
-                {'error': 'Analysis session not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except FileNotFoundError:
-            return Response(
-                {'error': 'Processed session video file could not be opened. It might have been deleted.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-        except Exception as e:
-            print(f"❌ UNEXPECTED ERROR in SessionVideoViewAPI for session {session_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            return Response(
-                {'error': f'Unexpected error serving session video file: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-class SessionTrafficAnalysesListAPI(APIView):
-    def get(self, request, session_id):
-        try:
-            session = AnalysisSession.objects.filter(id=session_id).first()
-            if not session:
-                return Response(
-                    {'error': 'Analysis session not found'},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            # FIXED: Look for analyses where analysis_session matches the session ID
-            # Also include analyses that might be linked via other methods
-            session_analyses = TrafficAnalysis.objects.filter(
-                models.Q(analysis_session_id=session_id) | 
-                models.Q(video_file__analysis_session_id=session_id)
-            ).distinct()
-            
-            print(f"🔍 Found {session_analyses.count()} analyses for session {session_id}")
-            
-            if session_analyses.exists():
-                for analysis in session_analyses:
-                    print(f"   - Analysis ID: {analysis.id}, Session ID: {analysis.analysis_session_id if analysis.analysis_session else 'None'}")
-                    print(f"   - Video Session ID: {analysis.video_file.analysis_session_id if analysis.video_file and analysis.video_file.analysis_session else 'None'}")
-            else:
-                print(f"⚠️  No analyses found for session {session_id}")
-                # Try to create an aggregated analysis if session is completed but no analysis exists
-                if session.status == 'completed':
-                    print(f"🔄 Session {session_id} is completed but has no analysis. Checking for individual video analyses...")
-                    
-                    # Get all individual analyses from session videos
-                    individual_analyses = TrafficAnalysis.objects.filter(
-                        video_file__analysis_session_id=session_id
-                    )
-                    
-                    if individual_analyses.exists():
-                        print(f"📊 Found {individual_analyses.count()} individual analyses, creating aggregated summary...")
-                        
-                        # Create aggregated analysis from individual analyses
-                        total_vehicles = sum(analysis.total_vehicles for analysis in individual_analyses if analysis.total_vehicles)
-                        car_count = sum(analysis.car_count for analysis in individual_analyses if analysis.car_count)
-                        truck_count = sum(analysis.truck_count for analysis in individual_analyses if analysis.truck_count)
-                        motorcycle_count = sum(analysis.motorcycle_count for analysis in individual_analyses if analysis.motorcycle_count)
-                        
-                        # Create aggregated analysis record
-                        aggregated_analysis = TrafficAnalysis.objects.create(
-                            analysis_session=session,
-                            location=session.location,
-                            total_vehicles=total_vehicles,
-                            processing_time_seconds=sum(analysis.processing_time_seconds for analysis in individual_analyses if analysis.processing_time_seconds),
-                            analyzed_at=timezone.now(),
-                            car_count=car_count,
-                            truck_count=truck_count,
-                            motorcycle_count=motorcycle_count,
-                            bus_count=sum(analysis.bus_count for analysis in individual_analyses if analysis.bus_count),
-                            bicycle_count=sum(analysis.bicycle_count for analysis in individual_analyses if analysis.bicycle_count),
-                            congestion_level=self.calculate_aggregated_congestion(individual_analyses),
-                            traffic_pattern='aggregated',
-                            analysis_data={
-                                'summary': {
-                                    'total_vehicles_counted': total_vehicles,
-                                    'vehicle_breakdown': {
-                                        'cars': car_count,
-                                        'trucks': truck_count,
-                                        'motorcycles': motorcycle_count
-                                    }
-                                },
-                                'metadata': {
-                                    'aggregated_from_individual': True,
-                                    'individual_analyses_count': individual_analyses.count()
-                                }
-                            },
-                            metrics_summary={
-                                'aggregated_from_individual_analyses': True,
-                                'individual_analyses_count': individual_analyses.count(),
-                                'source': 'auto_generated_from_individuals'
-                            }
-                        )
-                        session_analyses = TrafficAnalysis.objects.filter(id=aggregated_analysis.id)
-                        print(f"✅ Created aggregated analysis: {aggregated_analysis.id}")
-            
-            serializer = TrafficAnalysisSerializer(session_analyses, many=True)
-            return Response(serializer.data)
-
-        except Exception as e:
-            print(f"Error fetching analyses for session {session_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            return Response(
-                {'error': 'Failed to fetch analyses for session'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-    
-    def calculate_aggregated_congestion(self, analyses):
-        """Calculate aggregated congestion level from individual analyses"""
-        if not analyses:
-            return 'low'
-        
-        congestion_levels = {
-            'very_low': 0,
-            'low': 1, 
-            'medium': 2,
-            'high': 3,
-            'severe': 4
-        }
-        
-        total_vehicles = sum(analysis.total_vehicles for analysis in analyses if analysis.total_vehicles)
-        analysis_count = analyses.count()
-        
-        if analysis_count == 0:
-            return 'low'
-            
-        avg_vehicles = total_vehicles / analysis_count
-        
-        if avg_vehicles > 100:
-            return 'severe'
-        elif avg_vehicles > 70:
-            return 'high'
-        elif avg_vehicles > 40:
-            return 'medium'
-        elif avg_vehicles > 20:
-            return 'low'
-        else:
-            return 'very_low'
-
-class ExportSessionCSVAPI(APIView):
-    def get(self, request, session_id):
-        try:
-            session = AnalysisSession.objects.get(id=session_id)
-            analysis = TrafficAnalysis.objects.filter(analysis_session=session).first()
-            
-            if not analysis:
-                return Response({'error': 'No aggregated analysis data found for this session'}, status=404)
-
-            response = HttpResponse(content_type='text/csv')
-            response['Content-Disposition'] = f'attachment; filename="session_analysis_{session.name}_{session_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv"'
-
-            writer = csv.writer(response)
-
-            writer.writerow(['Session Analysis Report', f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'])
-            writer.writerow(['Session Name:', session.name])
-            writer.writerow(['Location:', session.location.display_name])
-            writer.writerow(['Date Range:', f"{session.start_datetime} to {session.end_datetime}"])
-            writer.writerow(['Status:', session.status])
-            writer.writerow(['Videos Processed:', session.video_files.count()])
-            writer.writerow([])
-
-            writer.writerow(['SUMMARY'])
-            writer.writerow(['Total Vehicles:', analysis.total_vehicles])
-            writer.writerow(['Processing Time:', f"{analysis.processing_time_seconds} seconds"])
-            writer.writerow(['Congestion Level:', analysis.congestion_level])
-            writer.writerow(['Traffic Pattern:', analysis.traffic_pattern])
-            writer.writerow([])
-
-            writer.writerow(['VEHICLE BREAKDOWN'])
-            writer.writerow(['Vehicle Type', 'Count'])
-            writer.writerow(['Cars', analysis.car_count])
-            writer.writerow(['Trucks', analysis.truck_count])
-            writer.writerow(['Motorcycles', analysis.motorcycle_count])
-            writer.writerow(['Buses', analysis.bus_count])
-            writer.writerow(['Bicycles', analysis.bicycle_count])
-            writer.writerow(['Others', analysis.other_count])
-            writer.writerow([])
-
-            writer.writerow(['METRICS'])
-            writer.writerow(['Peak Traffic:', analysis.peak_traffic])
-            writer.writerow(['Average Traffic:', analysis.average_traffic])
-
-            return response
-
-        except AnalysisSession.DoesNotExist:
-            return Response({'error': 'Session not found'}, status=404)
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
-
-
-class ExportSessionPDFAPI(APIView):
-    def get(self, request, session_id):
-        try:
-            session = AnalysisSession.objects.get(id=session_id)
-            analysis = TrafficAnalysis.objects.filter(analysis_session=session).first()
-            
-            if not analysis:
-                return Response({'error': 'No aggregated analysis data found for this session'}, status=404)
-
-            buffer = BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=letter)
-            styles = getSampleStyleSheet()
-
-            title_style = ParagraphStyle(
-                'CustomTitle',
-                parent=styles['Heading1'],
-                fontSize=16,
-                spaceAfter=30,
-                textColor=colors.HexColor('#1e40af')
-            )
-
-            heading_style = ParagraphStyle(
-                'CustomHeading',
-                parent=styles['Heading2'],
-                fontSize=12,
-                spaceAfter=12,
-                textColor=colors.HexColor('#374151')
-            )
-
-            content = []
-            content.append(Paragraph('Session Traffic Analysis Report', title_style))
-            content.append(Paragraph(f'Session: {session.name}', styles['Normal']))
-            content.append(Paragraph(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', styles['Normal']))
-            content.append(Spacer(1, 20))
-
-            content.append(Paragraph('Session Information', heading_style))
-            session_info_data = [
-                ['Session Name:', session.name],
-                ['Location:', session.location.display_name],
-                ['Date Range:', f"{session.start_datetime.strftime('%Y-%m-%d %H:%M:%S')} to {session.end_datetime.strftime('%Y-%m-%d %H:%M:%S')}"],
-                ['Status:', session.status],
-                ['Videos Processed:', str(session.video_files.count())]
-            ]
-            session_info_table = Table(session_info_data, colWidths=[150, 300])
-            session_info_table.setStyle(TableStyle([
-                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-            ]))
-            content.append(session_info_table)
-            content.append(Spacer(1, 20))
-
-            content.append(Paragraph('Analysis Summary', heading_style))
-            summary_data = [
-                ['Total Vehicles:', str(analysis.total_vehicles)],
-                ['Processing Time:', f"{analysis.processing_time_seconds} seconds"],
-                ['Congestion Level:', analysis.congestion_level],
-                ['Traffic Pattern:', analysis.traffic_pattern]
-            ]
-            summary_table = Table(summary_data, colWidths=[150, 300])
-            summary_table.setStyle(TableStyle([
-                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3f4f6')),
-            ]))
-            content.append(summary_table)
-            content.append(Spacer(1, 20))
-
-            content.append(Paragraph('Vehicle Breakdown', heading_style))
-            vehicle_data = [
-                ['Vehicle Type', 'Count'],
-                ['Cars', str(analysis.car_count)],
-                ['Trucks', str(analysis.truck_count)],
-                ['Motorcycles', str(analysis.motorcycle_count)],
-                ['Buses', str(analysis.bus_count)],
-                ['Bicycles', str(analysis.bicycle_count)],
-                ['Other Vehicles', str(analysis.other_count)]
-            ]
-            vehicle_table = Table(vehicle_data, colWidths=[200, 100])
-            vehicle_table.setStyle(TableStyle([
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9fafb')])
-            ]))
-            content.append(vehicle_table)
-
-            doc.build(content)
-
-            pdf = buffer.getvalue()
-            buffer.close()
-
-            response = HttpResponse(content_type='application/pdf')
-            response['Content-Disposition'] = f'attachment; filename="session_analysis_{session.name}_{session_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf"'
-            response.write(pdf)
-
-            return response
-
-        except AnalysisSession.DoesNotExist:
-            return Response({'error': 'Session not found'}, status=404)
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
-
-
-class ExportSessionExcelAPI(APIView):
-    def get(self, request, session_id):
-        try:
-            session = AnalysisSession.objects.get(id=session_id)
-            analysis = TrafficAnalysis.objects.filter(analysis_session=session).first()
-
-            if not analysis:
-                return Response({'error': 'No aggregated analysis data found for this session'}, status=404)
-
-            wb = openpyxl.Workbook()
-            ws = wb.active
-
-            sanitized_session_name = (
-                session.name.replace(":", "_")
-                .replace("\\", "_")
-                .replace("/", "_")
-                .replace("?", "_")
-                .replace("*", "_")
-                .replace("[", "_")
-                .replace("]", "_")
-            )
-            sheet_title = f"Session_{sanitized_session_name}"[:31]
-            ws.title = sheet_title
-
-            ws.append(['Session Analysis Report', f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'])
-            ws.append(['Session Name:', session.name])
-            ws.append(['Location:', session.location.display_name])
-            ws.append(['Date Range:', f"{session.start_datetime} to {session.end_datetime}"])
-            ws.append(['Status:', session.status])
-            ws.append(['Videos Processed:', session.video_files.count()])
-            ws.append([])
-
-            ws.append(['SUMMARY'])
-            ws.append(['Total Vehicles:', analysis.total_vehicles])
-            ws.append(['Processing Time:', analysis.processing_time_seconds])
-            ws.append(['Congestion Level:', analysis.congestion_level])
-            ws.append([])
-
-            ws.append(['VEHICLE BREAKDOWN'])
-            ws.append(['Vehicle Type', 'Count'])
-            ws.append(['Cars', analysis.car_count])
-            ws.append(['Trucks', analysis.truck_count])
-            ws.append(['Motorcycles', analysis.motorcycle_count])
-            ws.append(['Buses', analysis.bus_count])
-            ws.append(['Bicycles', analysis.bicycle_count])
-            ws.append(['Others', analysis.other_count])
-
-            buffer = BytesIO()
-            wb.save(buffer)
-            buffer.seek(0)
-
-            response = HttpResponse(
-                buffer.getvalue(),
-                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
-            response['Content-Disposition'] = (
-                f'attachment; filename="session_analysis_{session.name}_{session_id}_'
-                f'{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx"'
-            )
-
-            return response
-
-        except AnalysisSession.DoesNotExist:
-            return Response({'error': 'Session not found'}, status=404)
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
-
-class QuickProcessSessionAPI(APIView):
-    def post(self, request, session_id):
-        """One-click session processing"""
-        try:
-            from .tasks import process_session_task
-            
-            session = AnalysisSession.objects.get(id=session_id)
-            
-            if session.status != 'pending_upload':
-                return Response(
-                    {'error': f'Session is already {session.status}. Cannot process again.'}, 
-                    status=400
-                )
-            
-            # Check if session has videos
-            if session.video_files.count() == 0:
-                return Response(
-                    {'error': 'Session has no videos to process'}, 
-                    status=400
-                )
-            
-            # Start the parallel processing
-            task = process_session_task.delay(session_id)
-            
-            return Response({
-                'status': 'started',
-                'message': f'Session processing started for {session.video_files.count()} videos',
-                'task_id': task.id,
-                'videos_count': session.video_files.count()
-            })
-            
-        except AnalysisSession.DoesNotExist:
-            return Response({'error': 'Session not found'}, status=404)
-        
-class StopProcessingAPI(APIView):
-    """Stop processing for a video or session"""
-    
-    def post(self, request, item_id, item_type):
-        try:
-            if item_type == 'video':
-                item = VideoFile.objects.get(id=item_id)
-                if item.processing_status == 'processing':
-                    item.processing_status = 'cancelled'
-                    item.save()
-                    return Response({'message': 'Video processing stopped'})
-                else:
-                    return Response({'error': 'Video is not processing'}, status=400)
-                    
-            elif item_type == 'session':
-                session = AnalysisSession.objects.get(id=item_id)
-                if session.status == 'processing':
-                    # Stop all processing videos in this session
-                    processing_videos = session.video_files.filter(processing_status='processing')
-                    for video in processing_videos:
-                        video.processing_status = 'cancelled'
-                        video.save()
-                    
-                    session.status = 'cancelled'
-                    session.save()
-                    return Response({'message': 'Session processing stopped'})
-                else:
-                    return Response({'error': 'Session is not processing'}, status=400)
-                    
-            else:
-                return Response({'error': 'Invalid item type'}, status=400)
-                
-        except (VideoFile.DoesNotExist, AnalysisSession.DoesNotExist):
-            return Response({'error': 'Item not found'}, status=404)

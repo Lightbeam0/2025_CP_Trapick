@@ -4,90 +4,41 @@ from django.utils import timezone
 import uuid
 import os
 from django.contrib.auth.models import User
-from django.core.exceptions import ValidationError
-
 
 class ProcessingProfile(models.Model):
-    """Customizable processing profiles that users can create and manage"""
+    """Customizable processing profiles"""
     name = models.CharField(max_length=100, unique=True)
     display_name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     
-    # Detector configuration
-    detector_class = models.CharField(
-        max_length=100,
-        default='RTXVehicleDetector',
-        help_text="Python class name of the detector to use"
-    )
-    detector_module = models.CharField(
-        max_length=200,
-        default='ml.vehicle_detector',
-        help_text="Python module path where detector class is located"
-    )
+    detector_class = models.CharField(max_length=100, default='RTXVehicleDetector')
+    detector_module = models.CharField(max_length=200, default='ml.vehicle_detector')
+    config_parameters = models.JSONField(default=dict, blank=True)
     
-    # Configuration parameters
-    config_parameters = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="JSON configuration for this processing profile"
-    )
-    
-    # Road type categorization (for organization)
     ROAD_TYPES = [
         ('highway', 'Highway'),
         ('intersection', 'Intersection'),
         ('y_junction', 'Y-Junction'),
-        ('t_intersection', 'T-Intersection'),
-        ('roundabout', 'Roundabout'),
         ('urban', 'Urban Street'),
         ('generic', 'Generic'),
-        ('custom', 'Custom'),
     ]
-    road_type = models.CharField(
-        max_length=50,
-        choices=ROAD_TYPES,
-        default='generic'
-    )
+    road_type = models.CharField(max_length=50, choices=ROAD_TYPES, default='generic')
     
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(default=timezone.now)
-    updated_at = models.DateTimeField(auto_now=True)
-    
-    class Meta:
-        ordering = ['road_type', 'display_name']
-    
+
     def __str__(self):
         return f"{self.display_name} ({self.get_road_type_display()})"
     
     def get_detector_instance(self):
         """Dynamically import and return the detector instance"""
         try:
-            print(f"🔄 [DETECTOR] Importing {self.detector_class} from {self.detector_module}")
-            
-            # Import the module
             module = __import__(self.detector_module, fromlist=[self.detector_class])
-            print(f"✅ [DETECTOR] Module imported: {module}")
-            
-            # Get the class
             detector_class = getattr(module, self.detector_class)
-            print(f"✅ [DETECTOR] Class found: {detector_class}")
-            
-            # Create instance with config parameters
-            instance = detector_class(**self.config_parameters)
-            print(f"✅ [DETECTOR] Instance created: {instance}")
-            
-            return instance
-            
+            return detector_class(**self.config_parameters)
         except (ImportError, AttributeError) as e:
-            print(f"❌ [DETECTOR] Error loading detector {self.detector_class}: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Fallback to default detector
             from ml.vehicle_detector import RTXVehicleDetector
-            print("🔄 [DETECTOR] Using fallback RTXVehicleDetector")
             return RTXVehicleDetector()
-
 
 class Location(models.Model):
     name = models.CharField(max_length=100)
@@ -98,80 +49,31 @@ class Location(models.Model):
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(default=timezone.now)
     
-    # UPDATED: ForeignKey to ProcessingProfile instead of choices
     processing_profile = models.ForeignKey(
         ProcessingProfile,
-        on_delete=models.PROTECT,  # Prevent deletion if locations use this profile
-        related_name='locations',
-        help_text="Select or create a processing profile for this location"
+        on_delete=models.PROTECT,
+        related_name='locations'
     )
     
-    # Location-specific configuration overrides
     detection_config = models.JSONField(default=dict, blank=True)
-    
+
     def __str__(self):
-        return f"{self.display_name} ({self.processing_profile.display_name})"
+        return f"{self.display_name}"
 
-    def get_detector_class(self):
-        """Return the appropriate detector instance for this location"""
-        from ml.detector_factory import DetectorFactory
-        return DetectorFactory.get_detector(self.processing_profile)
-
-
-class AnalysisSession(models.Model):
+class LocationDateGroup(models.Model):
+    """Groups processed videos by location and date"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=200, help_text="User-defined name for this session")
-    location = models.ForeignKey('Location', on_delete=models.CASCADE, help_text="Location this session covers")
-    start_datetime = models.DateTimeField(help_text="Start datetime of the session")
-    end_datetime = models.DateTimeField(help_text="End datetime of the session")
-    status = models.CharField(
-        max_length=20,
-        choices=[
-            ('pending_upload', 'Pending Upload'),
-            ('processing', 'Processing'),
-            ('completed', 'Completed'),
-            ('failed', 'Failed'),
-        ],
-        default='pending_upload'
-    )
+    location = models.ForeignKey(Location, on_delete=models.CASCADE, related_name='date_groups')
+    date = models.DateField()
     created_at = models.DateTimeField(default=timezone.now)
-    processed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
     
-    # UPDATED: Improved FileField configuration for session videos
-    processed_session_video_path = models.FileField(
-        upload_to='processed_session_videos/', 
-        null=True, 
-        blank=True,
-        max_length=500,  # Increased max_length for longer paths
-        help_text="Processed video file for the entire analysis session"
-    )
+    class Meta:
+        unique_together = ['location', 'date']
+        ordering = ['-date']
 
     def __str__(self):
-        return f"Session: {self.name} ({self.location.display_name}) - {self.start_datetime} to {self.end_datetime}"
-
-    class Meta:
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['status']),
-            models.Index(fields=['location', 'created_at']),
-        ]
-
-    def clean(self):
-        """Validate session data"""
-        if self.start_datetime and self.end_datetime:
-            if self.end_datetime <= self.start_datetime:
-                raise ValidationError("End datetime must be after start datetime")
-    
-    def get_video_files_count(self):
-        """Get count of video files in this session"""
-        return self.video_files.count()
-    
-    def get_processed_video_url(self):
-        """Get URL for processed session video"""
-        if self.processed_session_video_path and self.status == 'completed':
-            return f"/api/session-video/{self.id}/view/"
-        return None
-
+        return f"{self.location.display_name} - {self.date}"
 
 class VideoFile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -186,13 +88,13 @@ class VideoFile(models.Model):
     video_end_time = models.TimeField(null=True, blank=True, help_text="End time of video recording")
     original_duration = models.FloatField(null=True, blank=True, help_text="Original video duration in seconds")
 
-    # LINK TO ANALYSIS SESSION
-    analysis_session = models.ForeignKey(
-        AnalysisSession, 
-        on_delete=models.CASCADE, 
+    # LINK TO LOCATION DATE GROUP
+    location_date_group = models.ForeignKey(
+        LocationDateGroup, 
+        on_delete=models.SET_NULL, 
         null=True, 
         blank=True, 
-        related_name='video_files'
+        related_name='videos'
     )
 
     # PROCESSING STATUS FIELDS
@@ -205,7 +107,6 @@ class VideoFile(models.Model):
             ('processing', 'Processing'),
             ('completed', 'Completed'),
             ('failed', 'Failed'),
-            ('uploaded', 'Uploaded'),  # Added for session processing
         ],
         default='pending'
     )
@@ -216,74 +117,28 @@ class VideoFile(models.Model):
     title = models.CharField(max_length=200, null=True, blank=True)
     resolution = models.CharField(max_length=20, null=True, blank=True)
 
-    def __str__(self):
-        date_str = self.video_date.strftime("%Y-%m-%d") if self.video_date else "Unknown Date"
-        session_info = f" - Session: {self.analysis_session.name}" if self.analysis_session else ""
-        return f"{self.filename} - {date_str}{session_info}"
-
     class Meta:
         ordering = ['-uploaded_at']
         indexes = [
             models.Index(fields=['processing_status']),
-            models.Index(fields=['analysis_session', 'video_date']),
-            models.Index(fields=['video_date', 'video_start_time']),
+            models.Index(fields=['location_date_group', 'video_date']),
         ]
 
+    def __str__(self):
+        return f"{self.filename} - {self.video_date if self.video_date else 'Unknown Date'}"
+
     def get_video_time_range(self):
-        """Get formatted time range for display"""
         if self.video_start_time and self.video_end_time:
             return f"{self.video_start_time.strftime('%H:%M')} - {self.video_end_time.strftime('%H:%M')}"
         return "Time unknown"
-    
-    def get_file_size(self):
-        """Get file size in MB"""
-        try:
-            if self.file_path and os.path.exists(self.file_path.path):
-                size_bytes = self.file_path.size
-                return round(size_bytes / (1024 * 1024), 2)  # Convert to MB
-        except (ValueError, OSError):
-            pass
-        return 0
-
-
-class VehicleType(models.Model):
-    name = models.CharField(max_length=50, unique=True)
-    display_name = models.CharField(max_length=50, blank=True)
-    created_at = models.DateTimeField(default=timezone.now)
-
-    def save(self, *args, **kwargs):
-        if not self.display_name:
-            self.display_name = self.name.capitalize()
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return self.display_name
-
-    class Meta:
-        ordering = ['display_name']
-
 
 class TrafficAnalysis(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    
-    # Make video_file optional to support session-based analyses
     video_file = models.OneToOneField(
         VideoFile, 
         on_delete=models.CASCADE, 
-        related_name='traffic_analysis', 
-        null=True, 
-        blank=True
+        related_name='traffic_analysis'
     )
-    
-    # Add the session link
-    analysis_session = models.ForeignKey(
-        AnalysisSession, 
-        on_delete=models.CASCADE, 
-        null=True, 
-        blank=True, 
-        related_name='traffic_analyses'
-    )
-    
     location = models.ForeignKey(Location, on_delete=models.SET_NULL, null=True, blank=True)
     
     # VEHICLE COUNTS
@@ -327,18 +182,12 @@ class TrafficAnalysis(models.Model):
     # ANALYSIS DATA
     analysis_data = models.JSONField(default=dict)
     metrics_summary = models.JSONField(default=dict)
-    
+
     class Meta:
         verbose_name_plural = "Traffic Analyses"
-        indexes = [
-            models.Index(fields=['analyzed_at']),
-            models.Index(fields=['location', 'analyzed_at']),
-            models.Index(fields=['analysis_session', 'analyzed_at']),
-        ]
         ordering = ['-analyzed_at']
 
     def get_vehicle_breakdown(self):
-        """Get vehicle breakdown as dictionary"""
         return {
             'cars': self.car_count,
             'trucks': self.truck_count,
@@ -349,19 +198,22 @@ class TrafficAnalysis(models.Model):
             'total': self.total_vehicles
         }
 
+        
+class VehicleType(models.Model):
+    name = models.CharField(max_length=50, unique=True)
+    display_name = models.CharField(max_length=50, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def save(self, *args, **kwargs):
+        if not self.display_name:
+            self.display_name = self.name.capitalize()
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        if self.video_file:
-            return f"Analysis for {self.video_file.filename}"
-        elif self.analysis_session:
-            return f"Session Analysis for {self.analysis_session.name}"
-        else:
-            return f"Traffic Analysis {self.id}"
+        return self.display_name
 
-    def clean(self):
-        """Validate that either video_file or analysis_session is provided"""
-        if not self.video_file and not self.analysis_session:
-            raise ValidationError("Either video_file or analysis_session must be provided")
-
+    class Meta:
+        ordering = ['display_name']
 
 class Detection(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
