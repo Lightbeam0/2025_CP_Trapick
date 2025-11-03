@@ -16,6 +16,7 @@ from datetime import timedelta
 from .progress import ProgressTracker
 from .models import VideoFile, TrafficAnalysis, Location, ProcessingProfile, VehicleType, Detection, TrafficReport, FrameAnalysis, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction, SystemConfig, LocationDateGroup
 from django.db import models
+from django.db.models import Prefetch
 import csv
 import json
 from django.http import HttpResponse
@@ -33,6 +34,7 @@ class VideoUploadAPI(APIView):
     def post(self, request):
         print("🔍 DEBUG: VideoUploadAPI called")
         print(f"🔍 Request FILES: {list(request.FILES.keys())}")
+        print(f"🔍 Request POST data: {request.POST}") # Log the POST data to see start/end times
 
         try:
             if 'video' not in request.FILES:
@@ -64,8 +66,9 @@ class VideoUploadAPI(APIView):
             title = request.POST.get('title', video_file.name)
             location_id = request.POST.get('location_id')
             video_date = request.POST.get('video_date')
-            video_start_time = request.POST.get('video_start_time')
-            video_end_time = request.POST.get('video_end_time')
+            # CRITICAL LINES: Get start and end time strings from the request
+            video_start_time_str = request.POST.get('start_time') # e.g., "04:59" or "04:59:30"
+            video_end_time_str = request.POST.get('end_time')     # e.g., "05:15" or "05:15:45"
 
             # Validate required fields
             if not location_id:
@@ -95,26 +98,62 @@ class VideoUploadAPI(APIView):
             video_path = fs.path(filename)
             print(f"💾 Video saved to: {video_path}")
 
-            # Create VideoFile record
+            # Parse time strings if provided
+            video_start_time_obj = None
+            video_end_time_obj = None
+
+            if video_start_time_str:
+                try:
+                    # Attempt to parse the time string. Adjust format as needed.
+                    # Common formats: "%H:%M:%S", "%H:%M"
+                    if len(video_start_time_str) == 8: # HH:MM:SS
+                        video_start_time_obj = datetime.strptime(video_start_time_str, '%H:%M:%S').time()
+                    elif len(video_start_time_str) == 5: # HH:MM
+                        video_start_time_obj = datetime.strptime(video_start_time_str, '%H:%M').time()
+                    else:
+                        print(f"Warning: Could not parse start time format: {video_start_time_str}")
+                        # You might want to return an error here instead
+                        # return Response({'error': f'Invalid start time format: {video_start_time_str}. Use HH:MM or HH:MM:SS.'}, status=status.HTTP_400_BAD_REQUEST)
+                except ValueError:
+                    print(f"Warning: Error parsing start time '{video_start_time_str}'")
+                    # You might want to return an error here instead
+                    # return Response({'error': f'Error parsing start time: {video_start_time_str}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if video_end_time_str:
+                try:
+                    if len(video_end_time_str) == 8: # HH:MM:SS
+                        video_end_time_obj = datetime.strptime(video_end_time_str, '%H:%M:%S').time()
+                    elif len(video_end_time_str) == 5: # HH:MM
+                        video_end_time_obj = datetime.strptime(video_end_time_str, '%H:%M').time()
+                    else:
+                        print(f"Warning: Could not parse end time format: {video_end_time_str}")
+                        # You might want to return an error here instead
+                except ValueError:
+                    print(f"Warning: Error parsing end time '{video_end_time_str}'")
+                    # You might want to return an error here instead
+
+            # Create VideoFile record - CRITICAL: Assign start/end time objects
             video_obj = VideoFile.objects.create(
                 filename=video_file.name,
                 file_path=filename,
                 title=title,
                 video_date=video_date,
-                video_start_time=video_start_time,
-                video_end_time=video_end_time,
-                processing_status='uploaded',
+                # CRITICAL LINES: Assign the parsed time objects (or None if parsing failed/parsing skipped)
+                video_start_time=video_start_time_obj,
+                video_end_time=video_end_time_obj,
+                processing_status='uploaded', # Or 'uploading' depending on your logic before the task
                 uploaded_at=timezone.now()
+                # ... other initial fields if needed ...
             )
 
-            print(f"📄 Video record created: {video_obj.id}")
+            print(f"📄 Video record created: {video_obj.id}, Start: {video_obj.video_start_time}, End: {video_obj.video_end_time}")
 
             # Start processing immediately via Celery
             try:
                 task = process_video_task.delay(video_obj.id, location_id=location_id)
                 print(f"✅ Celery task started: {task.id} for video {video_obj.id}")
 
-                return Response({
+                response_data = {
                     'status': 'success',
                     'message': 'Video uploaded and processing started',
                     'upload_id': str(video_obj.id),
@@ -124,7 +163,15 @@ class VideoUploadAPI(APIView):
                         'size': video_file.size,
                         'type': video_file.content_type
                     }
-                })
+                }
+
+                # Include start/end time in response if they were provided/parsed
+                if video_start_time_obj:
+                    response_data['video_info']['start_time'] = video_start_time_str
+                if video_end_time_obj:
+                    response_data['video_info']['end_time'] = video_end_time_str
+
+                return Response(response_data)
 
             except Exception as e:
                 print(f"❌ Error starting Celery processing: {str(e)}")
@@ -135,6 +182,13 @@ class VideoUploadAPI(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
+        except ValidationError as ve:
+            # Handle potential validation errors from VideoFile model (e.g., invalid time format if model validates)
+            print(f"Validation error: {ve}")
+            return Response(
+                {'error': f'Validation error: {str(ve)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         except Exception as e:
             print(f"💥 UPLOAD ERROR: {str(e)}")
             import traceback
@@ -262,41 +316,6 @@ class GroupVideosAPI(APIView):
             
         except LocationDateGroup.DoesNotExist:
             return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
-
-class VideoManagementAPI(APIView):
-    """Handle video metadata updates and management"""
-    
-    def put(self, request, video_id):
-        """Update video metadata (date, time, location)"""
-        try:
-            video = VideoFile.objects.get(id=video_id)
-            
-            # Allowed fields to update
-            allowed_fields = ['video_date', 'video_start_time', 'video_end_time', 'title']
-            update_data = {field: request.data.get(field) for field in allowed_fields if field in request.data}
-            
-            # Handle location change
-            new_location_id = request.data.get('location_id')
-            if new_location_id:
-                try:
-                    new_location = Location.objects.get(id=new_location_id)
-                    # Update associated traffic analysis if exists
-                    if hasattr(video, 'traffic_analysis'):
-                        video.traffic_analysis.location = new_location
-                        video.traffic_analysis.save()
-                except Location.DoesNotExist:
-                    return Response({'error': 'Location not found'}, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Update video fields
-            for field, value in update_data.items():
-                setattr(video, field, value)
-            video.save()
-            
-            serializer = VideoFileSerializer(video)
-            return Response(serializer.data)
-            
-        except VideoFile.DoesNotExist:
-            return Response({'error': 'Video not found'}, status=status.HTTP_404_NOT_FOUND)
 
 class UngroupedVideosAPI(APIView):
     """Get videos that are not in any group"""
@@ -736,64 +755,6 @@ class HealthCheckAPI(APIView):
             'video_count': VideoFile.objects.count(),
             'analysis_count': TrafficAnalysis.objects.count()
         })
-
-class VideoDeleteAPI(APIView):
-    """
-    DELETE /api/videos/{video_id}/
-    """
-    def delete(self, request, video_id):
-        try:
-            print(f"🗑️ DELETE request for video: {video_id}")
-            
-            # Get the video object
-            video_obj = VideoFile.objects.get(id=video_id)
-            filename = video_obj.filename
-            
-            print(f"📹 Video found: {filename}, status: {video_obj.processing_status}")
-            
-            # Check if video is currently processing
-            if video_obj.processing_status == 'processing':
-                return Response(
-                    {'error': 'Video is currently processing. Stop processing first or wait for it to complete.'},
-                    status=status.HTTP_423_LOCKED
-                )
-            
-            # Delete files from filesystem
-            files_deleted = []
-            if video_obj.file_path and os.path.exists(video_obj.file_path.path):
-                os.remove(video_obj.file_path.path)
-                files_deleted.append('original video')
-                print(f"✓ Deleted original video file")
-            
-            if video_obj.processed_video_path and os.path.exists(video_obj.processed_video_path.path):
-                os.remove(video_obj.processed_video_path.path)
-                files_deleted.append('processed video') 
-                print(f"✓ Deleted processed video file")
-            
-            # Delete from database
-            video_obj.delete()
-            print(f"✅ Database record deleted")
-            
-            return Response({
-                'status': 'success',
-                'message': f'Video "{filename}" deleted successfully',
-                'files_deleted': files_deleted
-            })
-            
-        except VideoFile.DoesNotExist:
-            print(f"❌ Video not found: {video_id}")
-            return Response(
-                {'error': 'Video not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            print(f"❌ Error deleting video {video_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            return Response(
-                {'error': f'Error deleting video: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
             
 class ProcessedVideoViewAPI(APIView):
     def get(self, request, video_id):
@@ -1351,3 +1312,807 @@ class PredictionInsightsAPI(APIView):
                 'status': 'error',
                 'message': f'Failed to get insights: {str(e)}'
             }, status=500)
+        
+    
+class AllGroupsAPI(APIView):
+    """Get all location-date groups with summary data - FIXED VERSION"""
+    
+    def get(self, request):
+        try:
+            print("🔍 [AllGroupsAPI] Fetching all groups with detailed info...")
+            
+            # Get all groups with their related data
+            groups = LocationDateGroup.objects.all().select_related('location').prefetch_related(
+                Prefetch(
+                    'videos',
+                    queryset=VideoFile.objects.filter(processing_status='completed')
+                )
+            ).order_by('-date', 'location__display_name')
+            
+            print(f"🔍 [AllGroupsAPI] Found {groups.count()} groups total")
+            
+            group_data = []
+            for group in groups:
+                # Get videos for this group
+                videos = group.videos.filter(processing_status='completed')
+                video_count = videos.count()
+                
+                # Get analyses for videos in this group
+                analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=group)
+                total_vehicles = sum(analysis.total_vehicles for analysis in analyses) if analyses else 0
+                
+                group_info = {
+                    'id': str(group.id),
+                    'location': {
+                        'id': group.location.id,
+                        'name': group.location.display_name,
+                        'display_name': group.location.display_name
+                    },
+                    'date': group.date.isoformat(),
+                    'video_count': video_count,
+                    'total_vehicles': total_vehicles,
+                    'time_range': group.get_time_range(),
+                    'created_at': group.created_at.isoformat(),
+                    'has_videos': video_count > 0
+                }
+                
+                # Debug info for each group
+                print(f"🔍 [AllGroupsAPI] Group: {group.location.display_name} - {group.date}")
+                print(f"   📹 Videos in group: {video_count}")
+                print(f"   🚗 Total vehicles: {total_vehicles}")
+                
+                group_data.append(group_info)
+            
+            # Also show ungrouped videos for debugging
+            ungrouped_videos = VideoFile.objects.filter(
+                processing_status='completed',
+                location_date_group__isnull=True
+            ).count()
+            print(f"🔍 [AllGroupsAPI] Ungrouped videos: {ungrouped_videos}")
+            
+            return Response({
+                'groups': group_data,
+                'ungrouped_videos_count': ungrouped_videos,
+                'total_groups': len(group_data)
+            })
+            
+        except Exception as e:
+            print(f"❌ [AllGroupsAPI] ERROR: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=500)
+        
+class GroupAnalysisDetailAPI(APIView):
+    """Get detailed analysis for a specific location-date group"""
+    
+    def get(self, request, group_id):
+        try:
+            print(f"🔍 DEBUG: Fetching group analysis for {group_id}")
+            
+            group = LocationDateGroup.objects.select_related('location').prefetch_related(
+                Prefetch(
+                    'videos',
+                    queryset=VideoFile.objects.filter(processing_status='completed').order_by('video_start_time')
+                )
+            ).get(id=group_id)
+            
+            # Get all analyses for this group
+            analyses = TrafficAnalysis.objects.filter(
+                video_file__location_date_group=group
+            ).select_related('video_file')
+            
+            # Calculate aggregated statistics
+            total_vehicles = sum(analysis.total_vehicles for analysis in analyses)
+            car_count = sum(analysis.car_count for analysis in analyses)
+            truck_count = sum(analysis.truck_count for analysis in analyses)
+            motorcycle_count = sum(analysis.motorcycle_count for analysis in analyses)
+            bus_count = sum(analysis.bus_count for analysis in analyses)
+            bicycle_count = sum(analysis.bicycle_count for analysis in analyses)
+            other_count = sum(analysis.other_count for analysis in analyses)
+            total_processing_time = sum(analysis.processing_time_seconds for analysis in analyses)
+            
+            aggregated_data = {
+                'total_vehicles': total_vehicles,
+                'car_count': car_count,
+                'truck_count': truck_count,
+                'motorcycle_count': motorcycle_count,
+                'bus_count': bus_count,
+                'bicycle_count': bicycle_count,
+                'other_count': other_count,
+                'total_processing_time': total_processing_time,
+                'average_congestion': self.calculate_average_congestion(analyses),
+                'peak_traffic': max(analysis.peak_traffic for analysis in analyses) if analyses else 0,
+                'video_count': group.videos.count(),
+                'time_range': group.get_time_range()
+            }
+            
+            # Get individual video analyses
+            video_analyses = []
+            for analysis in analyses:
+                video_analyses.append({
+                    'video_id': analysis.video_file.id,
+                    'filename': analysis.video_file.filename,
+                    'title': analysis.video_file.title,
+                    'start_time': analysis.video_file.video_start_time.strftime('%H:%M') if analysis.video_file.video_start_time else 'Unknown',
+                    'end_time': analysis.video_file.video_end_time.strftime('%H:%M') if analysis.video_file.video_end_time else 'Unknown',
+                    'duration': analysis.video_file.duration_seconds,
+                    'total_vehicles': analysis.total_vehicles,
+                    'congestion_level': analysis.congestion_level,
+                    'processing_time': analysis.processing_time_seconds,
+                    'vehicle_breakdown': {
+                        'cars': analysis.car_count,
+                        'trucks': analysis.truck_count,
+                        'motorcycles': analysis.motorcycle_count,
+                        'buses': analysis.bus_count,
+                        'bicycles': analysis.bicycle_count,
+                        'others': analysis.other_count
+                    }
+                })
+            
+            response_data = {
+                'group': {
+                    'id': group.id,
+                    'location': {
+                        'id': group.location.id,
+                        'name': group.location.display_name,
+                        'processing_profile': group.location.processing_profile.display_name if group.location.processing_profile else 'Default'
+                    },
+                    'date': group.date.isoformat(),
+                    'description': group.description
+                },
+                'aggregated_analysis': aggregated_data,
+                'video_analyses': video_analyses,
+                'videos': [
+                    {
+                        'id': video.id,
+                        'filename': video.filename,
+                        'title': video.title,
+                        'start_time': video.video_start_time.strftime('%H:%M') if video.video_start_time else 'Unknown',
+                        'end_time': video.video_end_time.strftime('%H:%M') if video.video_end_time else 'Unknown',
+                        'duration': video.duration_seconds
+                    }
+                    for video in group.videos.all()
+                ]
+            }
+            
+            print(f"✅ DEBUG: Successfully returning group analysis for {group_id}")
+            return Response(response_data)
+            
+        except LocationDateGroup.DoesNotExist:
+            print(f"❌ DEBUG: Group {group_id} not found")
+            return Response({'error': 'Group not found'}, status=404)
+        except Exception as e:
+            print(f"❌ DEBUG: Error in GroupAnalysisDetailAPI: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=500)
+    
+    def calculate_average_congestion(self, analyses):
+        if not analyses:
+            return 'low'
+        
+        congestion_levels = {
+            'very_low': 0,
+            'low': 1, 
+            'medium': 2,
+            'high': 3,
+            'severe': 4
+        }
+        
+        total_score = sum(congestion_levels.get(analysis.congestion_level, 0) for analysis in analyses)
+        avg_score = total_score / len(analyses)
+        
+        for level, score in congestion_levels.items():
+            if avg_score <= score:
+                return level
+        return 'severe'
+    
+class LocationGroupsAPI(APIView):
+    """Get all groups for a specific location - FIXED VERSION"""
+    
+    def get(self, request, location_id):
+        try:
+            print(f"🔍 [LocationGroupsAPI] Fetching groups for location: {location_id}")
+            
+            groups = LocationDateGroup.objects.filter(
+                location_id=location_id
+            ).select_related('location').prefetch_related('videos').order_by('-date')
+            
+            print(f"✅ [LocationGroupsAPI] Found {groups.count()} groups")
+            
+            group_data = []
+            for group in groups:
+                analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=group)
+                total_vehicles = sum(analysis.total_vehicles for analysis in analyses)
+                
+                group_data.append({
+                    'id': group.id,
+                    'date': group.date.isoformat(),
+                    'video_count': group.videos.count(),
+                    'total_vehicles': total_vehicles,
+                    'time_range': group.get_time_range(),
+                    'created_at': group.created_at.isoformat()
+                })
+            
+            return Response(group_data)
+            
+        except Exception as e:
+            print(f"❌ [LocationGroupsAPI] Error: {e}")
+            return Response({'error': str(e)}, status=500)
+
+class LocationGroupVideosAPI(APIView):
+    """Get all videos for a specific location group - FIXED VERSION"""
+    
+    def dispatch(self, request, *args, **kwargs):
+        print(f"🔍 [LocationGroupVideosAPI] Received {request.method} request")
+        print(f"🔍 [LocationGroupVideosAPI] Location ID: {kwargs.get('location_id')}")
+        print(f"🔍 [LocationGroupVideosAPI] Group ID: {kwargs.get('group_id')}")
+        print(f"🔍 [LocationGroupVideosAPI] Full path: {request.path}")
+        print(f"🔍 [LocationGroupVideosAPI] Query params: {request.GET}")
+        return super().dispatch(request, *args, **kwargs)
+    
+    def get(self, request, location_id, group_id):
+        try:
+            print(f"🔍 [LocationGroupVideosAPI] GET - Fetching videos for location {location_id}, group {group_id}")
+            
+            # Verify the group belongs to the specified location
+            group = LocationDateGroup.objects.select_related('location').get(
+                id=group_id, 
+                location_id=location_id
+            )
+            
+            print(f"✅ [LocationGroupVideosAPI] Found group: {group.location.display_name} - {group.date}")
+            
+            # Get videos sorted by start time
+            videos = group.videos.filter(
+                processing_status='completed'
+            ).order_by('video_start_time')
+            
+            print(f"✅ [LocationGroupVideosAPI] Found {videos.count()} videos")
+            
+            videos_data = []
+            for video in videos:
+                video_analysis = TrafficAnalysis.objects.filter(video_file=video).first()
+                
+                # Build video data with proper error handling
+                video_info = {
+                    'id': video.id,
+                    'filename': video.filename,
+                    'title': video.title or video.filename,
+                    'start_time': video.video_start_time.strftime('%H:%M') if video.video_start_time else 'Unknown',
+                    'end_time': video.video_end_time.strftime('%H:%M') if video.video_end_time else 'Unknown',
+                    'duration': video.duration_seconds or 0,
+                    'vehicle_count': video_analysis.total_vehicles if video_analysis else 0,
+                    'processing_status': video.processing_status,
+                    'uploaded_at': video.uploaded_at.isoformat() if video.uploaded_at else None
+                }
+                videos_data.append(video_info)
+            
+            response_data = {
+                'group': {
+                    'id': group.id,
+                    'date': group.date.isoformat(),
+                    'time_range': group.get_time_range(),
+                    'location': {
+                        'id': group.location.id,
+                        'display_name': group.location.display_name,
+                        'name': group.location.name
+                    }
+                },
+                'videos': videos_data,
+                'summary': {
+                    'total_videos': len(videos_data),
+                    'total_vehicles': sum(video['vehicle_count'] for video in videos_data),
+                    'time_range': group.get_time_range()
+                }
+            }
+            
+            print(f"✅ [LocationGroupVideosAPI] Successfully returning {len(videos_data)} videos")
+            return Response(response_data)
+            
+        except LocationDateGroup.DoesNotExist:
+            print(f"❌ [LocationGroupVideosAPI] Group not found or doesn't belong to location")
+            return Response(
+                {'error': 'Group not found or does not belong to this location'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            print(f"❌ [LocationGroupVideosAPI] Error: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Server error: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    def post(self, request, location_id, group_id):
+        """Handle POST requests with proper error message"""
+        print(f"❌ [LocationGroupVideosAPI] POST method not allowed for this endpoint")
+        return Response(
+            {
+                'error': 'Method not allowed',
+                'message': 'GET method is required for this endpoint',
+                'supported_methods': ['GET']
+            }, 
+            status=status.HTTP_405_METHOD_NOT_ALLOWED
+        )
+
+    def put(self, request, location_id, group_id):
+        """Handle PUT requests with proper error message"""
+        print(f"❌ [LocationGroupVideosAPI] PUT method not allowed for this endpoint")
+        return Response(
+            {
+                'error': 'Method not allowed', 
+                'message': 'GET method is required for this endpoint',
+                'supported_methods': ['GET']
+            }, 
+            status=status.HTTP_405_METHOD_NOT_ALLOWED
+        )
+
+    def patch(self, request, location_id, group_id):
+        """Handle PATCH requests with proper error message"""
+        print(f"❌ [LocationGroupVideosAPI] PATCH method not allowed for this endpoint")
+        return Response(
+            {
+                'error': 'Method not allowed',
+                'message': 'GET method is required for this endpoint',
+                'supported_methods': ['GET']
+            }, 
+            status=status.HTTP_405_METHOD_NOT_ALLOWED
+        )
+
+    def delete(self, request, location_id, group_id):
+        """Handle DELETE requests with proper error message"""
+        print(f"❌ [LocationGroupVideosAPI] DELETE method not allowed for this endpoint")
+        return Response(
+            {
+                'error': 'Method not allowed',
+                'message': 'GET method is required for this endpoint',
+                'supported_methods': ['GET']
+            }, 
+            status=status.HTTP_405_METHOD_NOT_ALLOWED
+        )
+
+    def options(self, request, *args, **kwargs):
+        """Handle OPTIONS requests to show allowed methods"""
+        response = super().options(request, *args, **kwargs)
+        response.data = {
+            'allowed_methods': ['GET', 'OPTIONS'],
+            'description': 'Get videos for a specific location-date group'
+        }
+        return response
+
+
+class LocationGroupDetailAPI(APIView):
+    """Get detailed information about a specific location group"""
+    
+    def get(self, request, group_id):
+        try:
+            group = LocationDateGroup.objects.select_related('location').prefetch_related('videos').get(id=group_id)
+            
+            # Get analyses for videos in this group
+            analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=group)
+            
+            group_data = {
+                'id': group.id,
+                'location': {
+                    'id': group.location.id,
+                    'name': group.location.display_name,
+                    'display_name': group.location.display_name
+                },
+                'date': group.date.isoformat(),
+                'description': "",
+                'video_count': group.videos.count(),
+                'total_vehicles': sum(analysis.total_vehicles for analysis in analyses),
+                'time_range': group.get_time_range(),
+                'videos': [
+                    {
+                        'id': video.id,
+                        'filename': video.filename,
+                        'title': video.title,
+                        'start_time': video.video_start_time.strftime('%H:%M') if video.video_start_time else 'Unknown',
+                        'end_time': video.video_end_time.strftime('%H:%M') if video.video_end_time else 'Unknown',
+                        'duration': video.duration_seconds,
+                        'vehicle_count': video.traffic_analysis.total_vehicles if hasattr(video, 'traffic_analysis') else 0
+                    }
+                    for video in group.videos.all().order_by('video_start_time')
+                ]
+            }
+            
+            return Response(group_data)
+            
+        except LocationDateGroup.DoesNotExist:
+            return Response({'error': 'Group not found'}, status=404)
+        except Exception as e:
+            print(f"Error getting group detail: {e}")
+            return Response({'error': str(e)}, status=500)
+
+class CreateLocationGroupAPI(APIView):
+    """Create a new location group"""
+    
+    def post(self, request):
+        serializer = LocationDateGroupSerializer(data=request.data)
+        if serializer.is_valid():
+            group = serializer.save()
+            return Response(LocationDateGroupSerializer(group).data, status=201)
+        return Response(serializer.errors, status=400)
+    
+class LocationGroupsWithVideosAPI(APIView):
+    """Get location groups with their videos - SIMPLIFIED VERSION"""
+    
+    def get(self, request):
+        try:
+            print("🔍 DEBUG: Fetching location groups with videos...")
+            
+            # Get all groups with their related data
+            groups = LocationDateGroup.objects.all().select_related('location').prefetch_related('videos').order_by('-date')
+            
+            group_data = []
+            for group in groups:
+                print(f"🔍 Processing group: {group.location.display_name} - {group.date}")
+                
+                # Get analyses for videos in this group
+                analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=group)
+                total_vehicles = sum(analysis.total_vehicles for analysis in analyses) if analyses else 0
+                
+                # Get videos for this group
+                videos_data = []
+                for video in group.videos.all():
+                    video_analysis = TrafficAnalysis.objects.filter(video_file=video).first()
+                    videos_data.append({
+                        'id': video.id,
+                        'filename': video.filename,
+                        'title': video.title,
+                        'start_time': video.video_start_time.strftime('%H:%M') if video.video_start_time else 'Unknown',
+                        'end_time': video.video_end_time.strftime('%H:%M') if video.video_end_time else 'Unknown',
+                        'duration': video.duration_seconds,
+                        'vehicle_count': video_analysis.total_vehicles if video_analysis else 0
+                    })
+                
+                group_data.append({
+                    'id': group.id,
+                    'name': f"{group.location.display_name} - {group.date}",
+                    'location': {
+                        'id': group.location.id,
+                        'name': group.location.display_name,
+                        'display_name': group.location.display_name
+                    },
+                    'date': group.date.isoformat(),
+                    'description': group.description or "",
+                    'video_count': group.videos.count(),
+                    'total_vehicles': total_vehicles,
+                    'time_range': group.get_time_range(),
+                    'videos': videos_data
+                })
+            
+            print(f"✅ DEBUG: Returning {len(group_data)} groups")
+            return Response(group_data)
+            
+        except Exception as e:
+            print(f"❌ DEBUG: Error in LocationGroupsWithVideosAPI: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=500)
+
+class AutoGroupVideosAPI(APIView):
+    """Automatically group all ungrouped videos"""
+    
+    def post(self, request):
+        try:
+            print("🔍 DEBUG: Starting auto-grouping...")
+            
+            # Get all completed videos that aren't in any group
+            ungrouped_videos = VideoFile.objects.filter(
+                processing_status='completed',
+                location_date_group__isnull=True
+            ).select_related('traffic_analysis')
+            
+            grouped_count = 0
+            errors = []
+            
+            for video in ungrouped_videos:
+                try:
+                    # Get location from traffic analysis
+                    if hasattr(video, 'traffic_analysis') and video.traffic_analysis.location:
+                        location = video.traffic_analysis.location
+                        
+                        # Use video date or fallback to analysis date
+                        if video.video_date:
+                            group_date = video.video_date
+                        else:
+                            group_date = video.traffic_analysis.analyzed_at.date()
+                        
+                        # Get or create group for this location and date
+                        group, created = LocationDateGroup.objects.get_or_create(
+                            location=location,
+                            date=group_date
+                        )
+                        
+                        # Add video to group
+                        video.location_date_group = group
+                        video.save()
+                        
+                        grouped_count += 1
+                        print(f"✅ Auto-grouped: {video.filename} → {location.display_name} - {group_date}")
+                    else:
+                        errors.append(f"Video {video.filename} has no location assigned")
+                        
+                except Exception as e:
+                    errors.append(f"Error grouping {video.filename}: {str(e)}")
+            
+            result = {
+                'grouped_count': grouped_count,
+                'errors': errors,
+                'remaining_ungrouped': VideoFile.objects.filter(
+                    processing_status='completed',
+                    location_date_group__isnull=True
+                ).count()
+            }
+            
+            return Response({
+                'status': 'success',
+                'message': f'Auto-grouping completed: {grouped_count} videos grouped',
+                'details': result
+            })
+            
+        except Exception as e:
+            print(f"❌ Error in auto-grouping: {e}")
+            return Response({
+                'error': f'Auto-grouping failed: {str(e)}'
+            }, status=500)
+        
+class VideoManagementAPI(APIView):
+    """Handle video metadata updates and management - FIXED VERSION"""
+    
+    def put(self, request, video_id):
+        """Update video metadata (date, time, location) - FIXED"""
+        try:
+            print(f"🔍 UPDATE VIDEO: Processing update for video {video_id}")
+            print(f"📦 Request data: {request.data}")
+            
+            video = VideoFile.objects.get(id=video_id)
+            
+            # Allowed fields to update
+            allowed_fields = ['video_date', 'video_start_time', 'video_end_time', 'title']
+            update_data = {}
+            
+            # Parse date/time fields properly
+            for field in allowed_fields:
+                if field in request.data:
+                    value = request.data.get(field)
+                    if value:  # Only update if value is provided and not empty
+                        if field == 'video_date':
+                            # Parse date string to Date object
+                            try:
+                                update_data[field] = datetime.strptime(value, '%Y-%m-%d').date()
+                            except ValueError:
+                                return Response(
+                                    {'error': f'Invalid date format for {field}. Use YYYY-MM-DD.'},
+                                    status=status.HTTP_400_BAD_REQUEST
+                                )
+                        elif field in ['video_start_time', 'video_end_time']:
+                            # Parse time string to Time object
+                            try:
+                                update_data[field] = datetime.strptime(value, '%H:%M').time()
+                            except ValueError:
+                                return Response(
+                                    {'error': f'Invalid time format for {field}. Use HH:MM.'},
+                                    status=status.HTTP_400_BAD_REQUEST
+                                )
+                        else:
+                            update_data[field] = value
+            
+            print(f"📝 Parsed fields to update: {update_data}")
+            
+            # Handle location change
+            new_location_id = request.data.get('location_id')
+            if new_location_id:
+                try:
+                    new_location = Location.objects.get(id=new_location_id)
+                    # Update associated traffic analysis if exists
+                    if hasattr(video, 'traffic_analysis'):
+                        video.traffic_analysis.location = new_location
+                        video.traffic_analysis.save()
+                        print(f"📍 Updated location to: {new_location.display_name}")
+                except Location.DoesNotExist:
+                    return Response(
+                        {'error': 'Location not found'}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            
+            # Update video fields
+            for field, value in update_data.items():
+                setattr(video, field, value)
+                print(f"✅ Updated {field} to: {value}")
+            
+            video.save()
+            
+            # If date changed, update the location-date group
+            if 'video_date' in update_data:
+                self.update_video_grouping(video)
+            
+            # Return the updated video with properly formatted dates/times
+            serializer = VideoFileSerializer(video)
+            response_data = {
+                'status': 'success',
+                'message': 'Video metadata updated successfully',
+                'video': serializer.data
+            }
+            
+            print(f"✅ UPDATE COMPLETE: Video {video_id} updated successfully")
+            return Response(response_data)
+            
+        except VideoFile.DoesNotExist:
+            return Response(
+                {'error': 'Video not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            print(f"❌ Error updating video: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Error updating video: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def update_video_grouping(self, video):
+        """Update video's location-date group after date change"""
+        try:
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.location:
+                location = video.traffic_analysis.location
+                group_date = video.video_date
+                
+                if group_date:
+                    # Get or create new group for updated date
+                    group, created = LocationDateGroup.objects.get_or_create(
+                        location=location,
+                        date=group_date
+                    )
+                    
+                    # Update video's group
+                    video.location_date_group = group
+                    video.save()
+                    print(f"✅ Updated video group to: {location.display_name} - {group_date}")
+                    
+        except Exception as e:
+            print(f"⚠️ Warning: Could not update video grouping: {e}")
+
+class VideoDeleteAPI(APIView):
+    """
+    DELETE /api/videos/{video_id}/
+    """
+    def delete(self, request, video_id):
+        try:
+            print(f"🗑️ DELETE request for video: {video_id}")
+            
+            # Get the video object
+            video = VideoFile.objects.get(id=video_id)
+            filename = video.filename
+            
+            print(f"📹 Video found: {filename}, status: {video.processing_status}")
+            
+            # Check if video is currently processing
+            if video.processing_status == 'processing':
+                return Response(
+                    {'error': 'Video is currently processing. Stop processing first or wait for it to complete.'},
+                    status=status.HTTP_423_LOCKED
+                )
+            
+            # Delete files from filesystem
+            files_deleted = []
+            if video.file_path and os.path.exists(video.file_path.path):
+                os.remove(video.file_path.path)
+                files_deleted.append('original video')
+                print(f"✓ Deleted original video file")
+            
+            if video.processed_video_path and os.path.exists(video.processed_video_path.path):
+                os.remove(video.processed_video_path.path)
+                files_deleted.append('processed video') 
+                print(f"✓ Deleted processed video file")
+            
+            # Delete from database
+            video.delete()
+            print(f"✅ Database record deleted")
+            
+            return Response({
+                'status': 'success',
+                'message': f'Video "{filename}" deleted successfully',
+                'files_deleted': files_deleted
+            })
+            
+        except VideoFile.DoesNotExist:
+            print(f"❌ Video not found: {video_id}")
+            return Response(
+                {'error': 'Video not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            print(f"❌ Error deleting video {video_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Error deleting video: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+class DebugURLsAPI(APIView):
+    """Debug endpoint to check all registered URLs - FIXED VERSION"""
+    
+    def get(self, request):
+        from django.urls import get_resolver
+        
+        resolver = get_resolver()
+        url_patterns = []
+        
+        def extract_urls(patterns, prefix=''):
+            for pattern in patterns:
+                if hasattr(pattern, 'pattern'):
+                    # This is a URLPattern or URLResolver
+                    current_pattern = str(pattern.pattern)
+                    full_pattern = prefix + current_pattern
+                    
+                    if hasattr(pattern, 'url_patterns'):
+                        # This is an include - recurse
+                        extract_urls(pattern.url_patterns, full_pattern)
+                    else:
+                        # This is a path
+                        url_patterns.append({
+                            'pattern': full_pattern,
+                            'name': getattr(pattern, 'name', 'No name'),
+                            'callback': getattr(pattern.callback, '__name__', str(pattern.callback))
+                        })
+        
+        extract_urls(resolver.url_patterns)
+        
+        # Filter for our API URLs
+        api_urls = [url for url in url_patterns if 'api' in url['pattern']]
+        
+        return Response({
+            'total_api_urls': len(api_urls),
+            'urls': api_urls
+        })
+    
+class SimpleGroupVideosAPI(APIView):
+    """Simple endpoint to get group videos without location verification"""
+    
+    def get(self, request, group_id):
+        try:
+            print(f"🔍 [SimpleGroupVideosAPI] Fetching videos for group {group_id}")
+            
+            group = LocationDateGroup.objects.select_related('location').get(id=group_id)
+            
+            videos = group.videos.filter(processing_status='completed').order_by('video_start_time')
+            
+            videos_data = []
+            for video in videos:
+                video_analysis = TrafficAnalysis.objects.filter(video_file=video).first()
+                videos_data.append({
+                    'id': video.id,
+                    'filename': video.filename,
+                    'title': video.title,
+                    'start_time': video.video_start_time.strftime('%H:%M') if video.video_start_time else 'Unknown',
+                    'end_time': video.video_end_time.strftime('%H:%M') if video.video_end_time else 'Unknown',
+                    'duration': video.duration_seconds,
+                    'vehicle_count': video_analysis.total_vehicles if video_analysis else 0
+                })
+            
+            response_data = {
+                'group': {
+                    'id': group.id,
+                    'date': group.date.isoformat(),
+                    'time_range': group.get_time_range(),
+                    'location': {
+                        'id': group.location.id,
+                        'display_name': group.location.display_name
+                    }
+                },
+                'videos': videos_data
+            }
+            
+            return Response(response_data)
+            
+        except LocationDateGroup.DoesNotExist:
+            return Response({'error': 'Group not found'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)

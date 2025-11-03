@@ -892,3 +892,95 @@ def get_peak_prediction_hours(date=None, location_id=None):
         }
         for hour, count in peak_hours
     ]
+
+def auto_group_all_videos():
+    """Automatically group all ungrouped videos by location and date"""
+    from .models import VideoFile, LocationDateGroup, TrafficAnalysis
+    
+    ungrouped_videos = VideoFile.objects.filter(
+        processing_status='completed',
+        location_date_group__isnull=True
+    ).select_related('traffic_analysis')
+    
+    grouped_count = 0
+    errors = []
+    
+    for video in ungrouped_videos:
+        try:
+            # Get location from traffic analysis
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.location:
+                location = video.traffic_analysis.location
+                
+                # Use video date or fallback to analysis date
+                if video.video_date:
+                    group_date = video.video_date
+                else:
+                    group_date = video.traffic_analysis.analyzed_at.date()
+                
+                # Get or create group for this location and date
+                group, created = LocationDateGroup.objects.get_or_create(
+                    location=location,
+                    date=group_date
+                )
+                
+                # Add video to group
+                video.location_date_group = group
+                video.save()
+                
+                grouped_count += 1
+                print(f"✅ Auto-grouped: {video.filename} → {location.display_name} - {group_date}")
+            else:
+                errors.append(f"Video {video.filename} has no location assigned")
+                
+        except Exception as e:
+            errors.append(f"Error grouping {video.filename}: {str(e)}")
+    
+    return {
+        'grouped_count': grouped_count,
+        'errors': errors,
+        'remaining_ungrouped': VideoFile.objects.filter(
+            processing_status='completed',
+            location_date_group__isnull=True
+        ).count()
+    }
+
+def get_location_groups_with_videos():
+    """Get all location groups with their videos sorted by time"""
+    from .models import LocationDateGroup
+    from django.db.models import Prefetch
+    
+    groups = LocationDateGroup.objects.all().select_related('location').prefetch_related(
+        Prefetch(
+            'videos',
+            queryset=VideoFile.objects.filter(processing_status='completed').order_by('video_start_time')
+        )
+    ).order_by('-date', 'location__display_name')
+    
+    result = []
+    for group in groups:
+        videos_data = []
+        for video in group.videos.all():
+            videos_data.append({
+                'id': video.id,
+                'filename': video.filename,
+                'title': video.title,
+                'start_time': video.video_start_time.strftime('%H:%M') if video.video_start_time else 'Unknown',
+                'end_time': video.video_end_time.strftime('%H:%M') if video.video_end_time else 'Unknown',
+                'duration': video.duration_seconds,
+                'vehicle_count': video.traffic_analysis.total_vehicles if hasattr(video, 'traffic_analysis') else 0
+            })
+        
+        result.append({
+            'id': group.id,
+            'location': {
+                'id': group.location.id,
+                'name': group.location.display_name
+            },
+            'date': group.date,
+            'time_range': group.get_time_range(),
+            'total_vehicles': group.get_total_vehicles(),
+            'video_count': group.videos.count(),
+            'videos': videos_data
+        })
+    
+    return result

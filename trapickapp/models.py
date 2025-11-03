@@ -3,7 +3,10 @@ from django.db import models
 from django.utils import timezone
 import uuid
 import os
+import logging
 from django.contrib.auth.models import User
+
+logger = logging.getLogger(__name__)
 
 # trapickapp/models.py - Update ProcessingProfile model
 class ProcessingProfile(models.Model):
@@ -99,10 +102,47 @@ class LocationDateGroup(models.Model):
     
     class Meta:
         unique_together = ['location', 'date']
-        ordering = ['-date']
+        ordering = ['-date', 'location__display_name']
 
     def __str__(self):
         return f"{self.location.display_name} - {self.date}"
+
+    def get_videos_by_time(self):
+        """Get videos sorted by time"""
+        return self.videos.all().order_by('video_start_time')
+
+    def get_total_vehicles(self):
+        """Calculate total vehicles in this group"""
+        analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=self)
+        return sum(analysis.total_vehicles for analysis in analyses) if analyses else 0
+
+    def get_time_range(self):
+        """Get time range for videos in this group"""
+        videos = self.videos.all()
+        if not videos:
+            return "No time data"
+        
+        times = []
+        for video in videos:
+            if video.video_start_time:
+                times.append(video.video_start_time)
+            if video.video_end_time:
+                times.append(video.video_end_time)
+        
+        if times:
+            return f"{min(times).strftime('%H:%M')} - {max(times).strftime('%H:%M')}"
+        return "Time range not available"
+
+    @classmethod
+    def get_or_create_group(cls, location, date):
+        """Get existing group or create new one"""
+        group, created = cls.objects.get_or_create(
+            location=location,
+            date=date
+        )
+        if created:
+            print(f"✅ Created new group: {location.display_name} - {date}")
+        return group, created
 
 class VideoFile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -505,3 +545,73 @@ def update_traffic_analysis_counts(sender, instance, created, **kwargs):
             analysis.bicycle_count + analysis.other_count
         )
         analysis.save()
+
+@receiver(post_save, sender=TrafficAnalysis)
+def auto_group_video_after_analysis(sender, instance, created, **kwargs):
+    """
+    Auto-group video after analysis is created.
+    ONLY runs if video is not already assigned to a group to prevent conflicts with Celery task.
+    """
+    logger.info(f"🔔 AUTO-GROUP SIGNAL FIRED for analysis {instance.id}")
+    logger.info(f"   Created: {created}")
+    logger.info(f"   Video: {getattr(instance.video_file, 'id', 'None')}")
+    logger.info(f"   Location: {getattr(instance.location, 'id', 'None')}")
+    logger.info(f"   Video's current group: {getattr(instance.video_file, 'location_date_group', 'None')}")
+    
+    # Check if we have required fields
+    if not created or not instance.video_file or not instance.location:
+        logger.warning(f"❌ Cannot auto-group: missing required fields (created={created}, video={bool(instance.video_file)}, location={bool(instance.location)})")
+        return
+
+    # CRITICAL FIX: Check if video is already grouped BEFORE processing
+    if hasattr(instance.video_file, 'location_date_group') and instance.video_file.location_date_group:
+        logger.info(f"ℹ️ Video {instance.video_file.id} is already in group {instance.video_file.location_date_group.id}, skipping signal grouping.")
+        return # Exit early if already grouped - prevents race condition!
+
+    try:
+        video = instance.video_file
+        location = instance.location
+
+        if video.video_date:
+            group_date = video.video_date
+            date_source = "video_date"
+        elif instance.analyzed_at:
+            group_date = instance.analyzed_at.date()
+            date_source = "analysis_date"
+        else:
+            logger.warning(f"❌ Cannot group: no date available for video {video.id}")
+            return
+            
+        logger.info(f"   Using {date_source}: {group_date}")
+        
+        # Get or create the location-date group
+        group, group_created = LocationDateGroup.objects.get_or_create(
+            location=location,
+            date=group_date
+        )
+        
+        logger.info(f"   Group: {group.id} (created={group_created})")
+        
+        # Assign video to the group (this is the critical part that was causing conflicts)
+        if not video.location_date_group: # Double-check before assignment
+            old_group = video.location_date_group
+            video.location_date_group = group
+            video.save(update_fields=['location_date_group']) # Only save the group field to minimize race conditions
+            
+            if old_group:
+                logger.info(f"✅ Video {video.id} moved from group {old_group.id} to {group.id}")
+            else:
+                logger.info(f"✅ Video {video.id} assigned to group {group.id}")
+        else:
+            logger.info(f"ℹ️ Video {video.id} already assigned to group {video.location_date_group.id} during signal execution.")
+        
+        # Update video's date if it was missing (only if we're using analysis date and video_date is empty)
+        if date_source == "analysis_date" and not video.video_date:
+            video.video_date = group_date
+            video.save(update_fields=['video_date'])
+            logger.info(f"📅 Updated video {video.id} date to {group_date}")
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to auto-group video {getattr(instance.video_file, 'id', 'unknown')}: {e}")
+        import traceback
+        traceback.print_exc()

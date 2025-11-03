@@ -38,36 +38,39 @@ class LocationSerializer(serializers.ModelSerializer):
 class VideoFileSerializer(serializers.ModelSerializer):
     video_date_display = serializers.SerializerMethodField()
     time_range = serializers.SerializerMethodField()
-    session_name = serializers.CharField(source='analysis_session.name', read_only=True, allow_null=True) # Add session name
-
+    location_name = serializers.SerializerMethodField()
+    has_analysis = serializers.SerializerMethodField()
+    
     class Meta:
         model = VideoFile
         fields = [
             'id', 'filename', 'processing_status', 'uploaded_at',
             'processed', 'duration_seconds', 'title',
             'video_date', 'video_start_time', 'video_end_time',
-            'video_date_display', 'time_range', 'session_name', # Include session name
-            'analysis_session' # Include session ID for linking
+            'video_date_display', 'time_range', 'location_name',
+            'has_analysis', 'location_date_group'
         ]
     
     def get_video_date_display(self, obj):
-        """FIX: Handle both string and datetime objects"""
         if not obj.video_date:
             return "Unknown"
-        
-        # If it's already a string, return as is
         if isinstance(obj.video_date, str):
             return obj.video_date
-            
-        # If it's a datetime/date object, format it
         try:
             return obj.video_date.strftime("%Y-%m-%d")
         except AttributeError:
-            # If strftime fails, return the string representation
             return str(obj.video_date)
     
     def get_time_range(self, obj):
         return obj.get_video_time_range()
+    
+    def get_location_name(self, obj):
+        if hasattr(obj, 'traffic_analysis') and obj.traffic_analysis.location:
+            return obj.traffic_analysis.location.display_name
+        return "Not assigned"
+    
+    def get_has_analysis(self, obj):
+        return hasattr(obj, 'traffic_analysis')
 
 class TrafficAnalysisSerializer(serializers.ModelSerializer):
     video_file = VideoFileSerializer(read_only=True)
@@ -147,39 +150,4 @@ class LocationDateGroupSerializer(serializers.ModelSerializer):
         analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=obj)
         return sum(analysis.total_vehicles for analysis in analyses)
 
-class VideoFileSerializer(serializers.ModelSerializer):
-    video_date_display = serializers.SerializerMethodField()
-    time_range = serializers.SerializerMethodField()
-    location_name = serializers.SerializerMethodField()
-    has_analysis = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = VideoFile
-        fields = [
-            'id', 'filename', 'processing_status', 'uploaded_at',
-            'processed', 'duration_seconds', 'title',
-            'video_date', 'video_start_time', 'video_end_time',
-            'video_date_display', 'time_range', 'location_name',
-            'has_analysis', 'location_date_group'
-        ]
-    
-    def get_video_date_display(self, obj):
-        if not obj.video_date:
-            return "Unknown"
-        if isinstance(obj.video_date, str):
-            return obj.video_date
-        try:
-            return obj.video_date.strftime("%Y-%m-%d")
-        except AttributeError:
-            return str(obj.video_date)
-    
-    def get_time_range(self, obj):
-        return obj.get_video_time_range()
-    
-    def get_location_name(self, obj):
-        if hasattr(obj, 'traffic_analysis') and obj.traffic_analysis.location:
-            return obj.traffic_analysis.location.display_name
-        return "Not assigned"
-    
-    def get_has_analysis(self, obj):
-        return hasattr(obj, 'traffic_analysis')
+
