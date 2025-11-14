@@ -117,6 +117,3 @@ wcwidth==0.2.13
 zipp==3.23.0
 zope.interface==8.0.1
 
-# Remove problematic packages:
-# - labelImg (causes PyQt5 issues)
-# - triton (large and may cause build issues)

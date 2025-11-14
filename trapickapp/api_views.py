@@ -10,13 +10,15 @@ from .serializers import *
 import threading
 from ml.vehicle_detector import RTXVehicleDetector
 from django.core.files.storage import FileSystemStorage
+from django.core.exceptions import ValidationError
 import os
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from datetime import timedelta
 from .progress import ProgressTracker
 from .models import VideoFile, TrafficAnalysis, Location, ProcessingProfile, VehicleType, Detection, TrafficReport, FrameAnalysis, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction, SystemConfig, LocationDateGroup
 from django.db import models
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q, Sum
 import csv
 import json
 from django.http import HttpResponse
@@ -553,23 +555,51 @@ class DebugDataAPI(APIView):
         return Response(stats)
 
 
+# trapickapp/api_views.py - ENSURE THIS IS CORRECT
 class VideoProgressAPI(APIView):
     def get(self, request, video_id):
         """Get progress for a video processing"""
-        progress_tracker = ProgressTracker(video_id)
-        progress_data = progress_tracker.get_progress()
-        
-        if progress_data:
-            return Response(progress_data)
-        else:
-            return Response({'progress': 0, 'message': 'No progress data available'})
-    
-    # Add this method to handle WebSocket connections
-    def dispatch(self, request, *args, **kwargs):
-        if request.META.get('HTTP_UPGRADE', '').lower() == 'websocket':
-            # Handle WebSocket connection here or return appropriate response
-            return Response({'error': 'WebSocket not supported via HTTP'}, status=400)
-        return super().dispatch(request, *args, **kwargs)
+        try:
+            progress_tracker = ProgressTracker(video_id)
+            progress_data = progress_tracker.get_progress()
+            
+            if progress_data:
+                return Response({
+                    'progress': progress_data['progress'],
+                    'message': progress_data['message'],
+                    'status': 'processing'
+                })
+            else:
+                # Check if video is completed
+                try:
+                    video = VideoFile.objects.get(id=video_id)
+                    if video.processing_status == 'completed':
+                        return Response({
+                            'progress': 100,
+                            'message': 'Processing completed',
+                            'status': 'completed'
+                        })
+                    elif video.processing_status == 'failed':
+                        return Response({
+                            'progress': 0,
+                            'message': 'Processing failed',
+                            'status': 'failed'
+                        })
+                except VideoFile.DoesNotExist:
+                    pass
+                
+                return Response({
+                    'progress': 0, 
+                    'message': 'No progress data available',
+                    'status': 'unknown'
+                })
+                
+        except Exception as e:
+            return Response({
+                'progress': 0,
+                'message': f'Error: {str(e)}',
+                'status': 'error'
+            })
 
 class AnalysisResultsAPI(APIView):
     def get(self, request, upload_id):
@@ -864,7 +894,6 @@ class ProcessedVideoDownloadAPI(APIView):
             print(f"Error serving video download: {e}")
             return Response({'error': 'Error serving video file'}, status=500)
 
-# Simple direct file serving endpoint for development
 class ProcessedVideoDirectAPI(APIView):
     def get(self, request, video_id):
         """
@@ -1508,22 +1537,87 @@ class GroupAnalysisDetailAPI(APIView):
         return 'severe'
     
 class LocationGroupsAPI(APIView):
-    """Get all groups for a specific location - FIXED VERSION"""
+    """Get all groups for a specific location with filtering support"""
     
     def get(self, request, location_id):
         try:
             print(f"🔍 [LocationGroupsAPI] Fetching groups for location: {location_id}")
             
+            # Get query parameters for filtering
+            start_date_str = request.GET.get('start_date')
+            end_date_str = request.GET.get('end_date')
+            search_term = request.GET.get('search', '').strip()
+
+            # Start with the base query for the specific location
             groups = LocationDateGroup.objects.filter(
                 location_id=location_id
-            ).select_related('location').prefetch_related('videos').order_by('-date')
+            ).select_related('location').prefetch_related('videos')
+
+            # Apply date filters
+            if start_date_str:
+                start_date = parse_date(start_date_str)
+                if start_date:
+                    groups = groups.filter(date__gte=start_date)
+                    print(f"   📅 Applying start date filter: >= {start_date}")
+                else:
+                    return Response(
+                        {'error': 'Invalid start_date format. Use YYYY-MM-DD.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            if end_date_str:
+                end_date = parse_date(end_date_str)
+                if end_date:
+                    groups = groups.filter(date__lte=end_date)
+                    print(f"   📅 Applying end date filter: <= {end_date}")
+                else:
+                    return Response(
+                        {'error': 'Invalid end_date format. Use YYYY-MM-DD.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Apply search filter
+            if search_term:
+                # Try to parse as date first
+                search_date = parse_date(search_term)
+                if search_date:
+                    # If it's a valid date, search by exact date
+                    groups = groups.filter(date=search_date)
+                    print(f"   🔍 Applying date search: = {search_date}")
+                else:
+                    # Otherwise search in date string representation and video filenames
+                    groups = groups.filter(
+                        Q(date__icontains=search_term) |
+                        Q(videos__filename__icontains=search_term)
+                    ).distinct()
+                    print(f"   🔍 Applying text search: '{search_term}'")
+
+            # Order by date descending (most recent first)
+            groups = groups.order_by('-date')
             
-            print(f"✅ [LocationGroupsAPI] Found {groups.count()} groups")
+            print(f"✅ [LocationGroupsAPI] Found {groups.count()} groups after filtering")
+            
+            # Prefetch traffic analyses to avoid N+1 queries
+            group_ids = groups.values_list('id', flat=True)
+            
+            # Get total vehicles per group in a single query
+            from django.db.models import Count
+            vehicle_counts = (
+                TrafficAnalysis.objects
+                .filter(video_file__location_date_group_id__in=group_ids)
+                .values('video_file__location_date_group_id')
+                .annotate(total_vehicles_sum=Sum('total_vehicles'))
+            )
+            
+            # Convert to dictionary for easy lookup
+            vehicle_count_dict = {
+                item['video_file__location_date_group_id']: item['total_vehicles_sum'] or 0
+                for item in vehicle_counts
+            }
             
             group_data = []
             for group in groups:
-                analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=group)
-                total_vehicles = sum(analysis.total_vehicles for analysis in analyses)
+                total_vehicles = vehicle_count_dict.get(group.id, 0)
                 
                 group_data.append({
                     'id': group.id,
@@ -1538,7 +1632,9 @@ class LocationGroupsAPI(APIView):
             
         except Exception as e:
             print(f"❌ [LocationGroupsAPI] Error: {e}")
-            return Response({'error': str(e)}, status=500)
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class LocationGroupVideosAPI(APIView):
     """Get all videos for a specific location group - FIXED VERSION"""
@@ -1738,14 +1834,63 @@ class CreateLocationGroupAPI(APIView):
         return Response(serializer.errors, status=400)
     
 class LocationGroupsWithVideosAPI(APIView):
-    """Get location groups with their videos - SIMPLIFIED VERSION"""
+    """Get location groups with their videos - SIMPLIFIED VERSION with filtering"""
     
     def get(self, request):
         try:
             print("🔍 DEBUG: Fetching location groups with videos...")
             
-            # Get all groups with their related data
-            groups = LocationDateGroup.objects.all().select_related('location').prefetch_related('videos').order_by('-date')
+            # Get query parameters for filtering
+            start_date_str = request.GET.get('start_date')
+            end_date_str = request.GET.get('end_date')
+            search_term = request.GET.get('search', '').strip()
+            location_id = request.GET.get('location') # Optional: filter by specific location
+
+            # Start with the base query for all groups
+            groups = LocationDateGroup.objects.all().select_related('location').prefetch_related('videos')
+
+            # Apply location filter if provided
+            if location_id:
+                groups = groups.filter(location_id=location_id)
+                print(f"   📍 Applying location filter: {location_id}")
+
+            # Apply date filters
+            if start_date_str:
+                try:
+                    start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                    groups = groups.filter(date__gte=start_date)
+                    print(f"   📅 Applying start date filter: >= {start_date}")
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid start_date format. Use YYYY-MM-DD.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            if end_date_str:
+                try:
+                    end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+                    groups = groups.filter(date__lte=end_date)
+                    print(f"   📅 Applying end date filter: <= {end_date}")
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid end_date format. Use YYYY-MM-DD.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+            # Apply search filter (similar logic as above)
+            if search_term:
+                groups = groups.filter(
+                    Q(date__icontains=search_term) |
+                    Q(videos__filename__icontains=search_term) |
+                    Q(location__display_name__icontains=search_term) # Also search location name
+                    # Note: Searching total_vehicles calculated later is complex here
+                ).distinct()
+                print(f"   🔍 Applying search filter: '{search_term}'")
+
+            # Order by date descending (most recent first)
+            groups = groups.order_by('-date')
+
+            print(f"🔍 Found {groups.count()} groups after filtering...")
             
             group_data = []
             for group in groups:
@@ -1782,6 +1927,7 @@ class LocationGroupsWithVideosAPI(APIView):
                     'video_count': group.videos.count(),
                     'total_vehicles': total_vehicles,
                     'time_range': group.get_time_range(),
+                    'created_at': group.created_at.isoformat(), # Add this for sorting/filtering context if needed
                     'videos': videos_data
                 })
             
@@ -1793,7 +1939,7 @@ class LocationGroupsWithVideosAPI(APIView):
             import traceback
             traceback.print_exc()
             return Response({'error': str(e)}, status=500)
-
+        
 class AutoGroupVideosAPI(APIView):
     """Automatically group all ungrouped videos"""
     
@@ -2072,6 +2218,37 @@ class DebugURLsAPI(APIView):
             'total_api_urls': len(api_urls),
             'urls': api_urls
         })
+    
+class DebugProgressStoreAPI(APIView):
+    """Debug endpoint to check progress store status"""
+    
+    def get(self, request):
+        from .progress import progress_store
+        return Response({
+            'total_videos_tracked': len(progress_store),
+            'progress_data': progress_store
+        })
+
+class DebugWebSocketTestAPI(APIView):
+    """Test WebSocket connection for a video"""
+    
+    def post(self, request, video_id):
+        from .progress import ProgressTracker
+        
+        try:
+            progress_tracker = ProgressTracker(video_id)
+            progress_tracker.set_progress(50, "Test progress update")
+            
+            return Response({
+                'status': 'success',
+                'message': f'Test progress update sent for video {video_id}',
+                'progress': 50
+            })
+        except Exception as e:
+            return Response({
+                'status': 'error',
+                'message': f'Failed to send test progress: {str(e)}'
+            }, status=500)
     
 class SimpleGroupVideosAPI(APIView):
     """Simple endpoint to get group videos without location verification"""

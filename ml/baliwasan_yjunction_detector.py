@@ -96,10 +96,11 @@ class BaliwasanYJunctionDetector(BaseDetector):
 
         print(f"📊 Video Info: {width}x{height}, {fps:.1f} FPS, {total_frames} frames")
 
-        # Setup counting zone for Baliwasan Y-Junction (SAME AS OLD)
-        OFFSET_Y = -90
-        self.line_start = (0, int(height * 0.45) + OFFSET_Y)
-        self.line_end = (width - 1, int(height * 0.38) + OFFSET_Y)
+        # 🎯 MODIFIED: Counting line moved HIGHER in the frame
+        OFFSET_Y = -120  # Increased negative offset to move line higher
+        # Changed from 0.45/0.38 to 0.40/0.33 - positions line higher in frame
+        self.line_start = (0, int(height * 0.40) + OFFSET_Y)      # ~40% from top (was 45%)
+        self.line_end = (width - 1, int(height * 0.33) + OFFSET_Y)  # ~33% from top (was 38%)
         
         # Create counting zone (buffer area around the line)
         ZONE_BUFFER = 25  # pixels
@@ -177,10 +178,10 @@ class BaliwasanYJunctionDetector(BaseDetector):
             processing_time = time.time() - frame_start
             processing_times.append(processing_time)
             
-            # Update progress (SAME AS OLD)
-            if progress_tracker and self.frame_count % 10 == 0:
+            # Update progress - THIS IS THE CRITICAL PART! ADD THIS EVERY FEW FRAMES
+            if progress_tracker and self.frame_count % 50 == 0:  # Update every 50 frames
                 progress = min(90, 20 + int((self.frame_count / total_frames) * 70))
-                message = f"Processing frame {self.frame_count}/{total_frames} - Enhanced metrics collection"
+                message = f"Processing frame {self.frame_count}/{total_frames} ({progress}%)"
                 progress_tracker.set_progress(progress, message)
 
         # Cleanup
@@ -224,11 +225,7 @@ class BaliwasanYJunctionDetector(BaseDetector):
             classes=self.vehicle_classes, 
             tracker="bytetrack.yaml",
             verbose=False,
-            # NO imgsz parameter (let YOLO use default like old detector)
-            # ONLY ADD GPU SETTINGS FOR PERFORMANCE:
             device=self.device,  # Use GPU if available
-            # NO half precision (might affect accuracy)
-            # NO max_det limit (use default like old detector)
         )
 
         if results[0].boxes is not None and results[0].boxes.id is not None:

@@ -1,94 +1,18 @@
-# data.yaml
+# ml/dataset/my_custom_data.yaml
 
-path: ./dataset  # path to your dataset
+path: ./dataset
+
 train: images/train
 val: images/val
 
-# number of classes
-nc: 82
-
-# class names (80 COCO + 2 custom)
+nc: 9
 names:
-  - person
-  - bicycle
-  - car
-  - motorcycle
-  - airplane
-  - bus
-  - train
-  - truck
-  - boat
-  - traffic light
-  - fire hydrant
-  - stop sign
-  - parking meter
-  - bench
-  - bird
-  - cat
-  - dog
-  - horse
-  - sheep
-  - cow
-  - elephant
-  - bear
-  - zebra
-  - giraffe
-  - backpack
-  - umbrella
-  - handbag
-  - tie
-  - suitcase
-  - frisbee
-  - skis
-  - snowboard
-  - sports ball
-  - kite
-  - baseball bat
-  - baseball glove
-  - skateboard
-  - surfboard
-  - tennis racket
-  - bottle
-  - wine glass
-  - cup
-  - fork
-  - knife
-  - spoon
-  - bowl
-  - banana
-  - apple
-  - sandwich
-  - orange
-  - broccoli
-  - carrot
-  - hot dog
-  - pizza
-  - donut
-  - cake
-  - chair
-  - couch
-  - potted plant
-  - bed
-  - dining table
-  - toilet
-  - tv
-  - laptop
-  - mouse
-  - remote
-  - keyboard
-  - cell phone
-  - microwave
-  - oven
-  - toaster
-  - sink
-  - refrigerator
-  - book
-  - clock
-  - vase
-  - scissors
-  - teddy bear
-  - hair drier
-  - toothbrush
-  - tricycle    # class id 80
-  - jeepney     # class id 81
-
+  - bus       # ID 0
+  - car       # ID 1
+  - minitruck # ID 2
+  - motorcycle # ID 3
+  - pickup    # ID 4
+  - truck     # ID 5
+  - van       # ID 6
+  - jeepney   # ID 7
+  - tricycle  # ID 8

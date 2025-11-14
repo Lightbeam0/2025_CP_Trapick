@@ -39,10 +39,6 @@ const formatVideoTime = (time) => {
     return 'Unknown';
   }
 
-  // If it's a time object with strftime method (from Django) - unlikely for DRF
-  // If it's a time object serialized by DRF, it's usually a string like "HH:MM:SS" or "HH:MM"
-  // The string handling above should cover it.
-
   return 'Unknown';
 };
 

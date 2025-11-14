@@ -36,6 +36,7 @@ class VideoProgressConsumer(AsyncWebsocketConsumer):
         )
 
     async def progress_update(self, event):
+        """Handle progress update messages"""
         # Send progress update to WebSocket
         await self.send(text_data=json.dumps({
             'type': 'progress_update',
@@ -44,9 +45,19 @@ class VideoProgressConsumer(AsyncWebsocketConsumer):
         }))
 
     async def processing_complete(self, event):
+        """Handle processing complete messages"""
         # Send completion notification
         await self.send(text_data=json.dumps({
             'type': 'processing_complete',
+            'video_id': event['video_id'],
+            'message': event['message']
+        }))
+
+    async def processing_failed(self, event):
+        """Handle processing failed messages"""
+        # Send failure notification
+        await self.send(text_data=json.dumps({
+            'type': 'processing_failed',
             'video_id': event['video_id'],
             'message': event['message']
         }))

@@ -13,9 +13,16 @@ logger = logging.getLogger(__name__)
 @shared_task(bind=True)
 def process_video_task(self, video_id, location_id=None):
     logger.info(f"🎬 Starting immediate processing for video {video_id}")
-    progress_tracker = ProgressTracker(video_id)
-
+    
     try:
+        # Initialize progress tracker with debug logging
+        progress_tracker = ProgressTracker(video_id)
+        logger.info(f"🔍 Progress tracker created for video {video_id}")
+        
+        # Test immediate progress update
+        progress_tracker.set_progress(5, "Initializing video processing...")
+        logger.info("🔍 Initial progress update sent (5%)")
+        
         video_obj = VideoFile.objects.get(id=video_id)
         video_obj.processing_status = 'processing'
         video_obj.save()
@@ -25,13 +32,22 @@ def process_video_task(self, video_id, location_id=None):
 
         location = Location.objects.get(id=location_id)
 
-        progress_tracker.set_progress(5, "Loading detector...")
+        progress_tracker.set_progress(10, "Loading detector...")
+        logger.info("🔍 Progress update sent (10%)")
 
         detector = DetectorFactory.get_detector(location.processing_profile)
         logger.info(f"🔧 Detector loaded for video {video_id}: {type(detector).__name__}")
 
-        progress_tracker.set_progress(10, f"Starting analysis with {type(detector).__name__}...")
+        progress_tracker.set_progress(15, f"Starting analysis with {type(detector).__name__}...")
+        logger.info("🔍 Progress update sent (15%)")
 
+        # Simulate some processing to test progress
+        import time
+        time.sleep(2)  # Simulate 2 seconds of work
+        progress_tracker.set_progress(25, "Processing video frames...")
+        logger.info("🔍 Progress update sent (25%)")
+
+        # Continue with actual processing
         report = detector.analyze_video(
             video_obj.file_path.path,
             progress_tracker=progress_tracker,
@@ -39,6 +55,7 @@ def process_video_task(self, video_id, location_id=None):
         )
 
         progress_tracker.set_progress(80, "Saving analysis results...")
+        logger.info("🔍 Progress update sent (80%)")
 
         TrafficAnalysis.objects.create(
             video_file=video_obj,
@@ -63,6 +80,7 @@ def process_video_task(self, video_id, location_id=None):
         )
 
         progress_tracker.set_progress(85, "Assigning to location-date group...")
+        logger.info("🔍 Progress update sent (85%)")
 
         # Determine the date for grouping
         if video_obj.video_date:
@@ -103,7 +121,7 @@ def process_video_task(self, video_id, location_id=None):
             except Exception as path_error:
                 logger.error(f"❌ Error setting processed video path: {path_error}")
 
-        # Final video status update - CRITICAL: Ensure start/end times are saved if they exist
+        # Final video status update
         video_obj.processing_status = 'completed'
         video_obj.processed = True
         video_obj.processed_at = timezone.now()
@@ -118,6 +136,7 @@ def process_video_task(self, video_id, location_id=None):
         video_obj.save(update_fields=update_fields)
 
         progress_tracker.set_progress(95, "Finalizing...")
+        logger.info("🔍 Progress update sent (95%)")
 
         if video_obj.location_date_group:
             logger.info(f"✅ CONFIRMED: Video {video_id} is in group {video_obj.location_date_group.id}")
@@ -127,6 +146,7 @@ def process_video_task(self, video_id, location_id=None):
 
         progress_tracker.set_progress(100, f"{type(detector).__name__} completed successfully!")
         progress_tracker.complete_processing("Video analysis completed and grouped!")
+        logger.info("🔍 Final progress update sent (100%)")
 
         logger.info(f"🎉 Video processing completed for {video_id}")
 
@@ -142,6 +162,11 @@ def process_video_task(self, video_id, location_id=None):
     except VideoFile.DoesNotExist:
         error_msg = f"VideoFile {video_id} not found"
         logger.error(error_msg)
+        # Make sure to update progress on failure
+        try:
+            progress_tracker.fail_processing(f"Video not found: {error_msg}")
+        except:
+            pass
         self.update_state(
             state='FAILURE',
             meta={'exc_type': 'VideoFile.DoesNotExist', 'exc_message': error_msg}
@@ -151,6 +176,11 @@ def process_video_task(self, video_id, location_id=None):
     except Location.DoesNotExist:
         error_msg = f"Location {location_id} not found"
         logger.error(error_msg)
+        # Make sure to update progress on failure
+        try:
+            progress_tracker.fail_processing(f"Location not found: {error_msg}")
+        except:
+            pass
         self.update_state(
             state='FAILURE',
             meta={'exc_type': 'Location.DoesNotExist', 'exc_message': error_msg}
@@ -159,6 +189,15 @@ def process_video_task(self, video_id, location_id=None):
 
     except Exception as exc:
         logger.error(f"❌ Video processing failed for {video_id}: {str(exc)}")
+        import traceback
+        traceback.print_exc()
+
+        # Make sure to update progress on failure
+        try:
+            progress_tracker.fail_processing(f"Processing failed: {str(exc)}")
+            logger.info("🔍 Failure progress update sent")
+        except Exception as progress_error:
+            logger.error(f"Failed to send progress failure: {progress_error}")
 
         try:
             video_obj = VideoFile.objects.get(id=video_id)
@@ -169,12 +208,6 @@ def process_video_task(self, video_id, location_id=None):
             logger.error(f"VideoFile {video_id} not found to update status after error.")
         except Exception as save_error:
             logger.error(f"Failed to update video status after error: {save_error}")
-
-        try:
-            progress_tracker.set_progress(0, f"Processing failed: {str(exc)}")
-            progress_tracker.fail_processing(str(exc))
-        except:
-            pass
 
         self.update_state(
             state='FAILURE',

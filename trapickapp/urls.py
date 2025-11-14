@@ -65,4 +65,6 @@ urlpatterns = [
     path('api/groups/<uuid:group_id>/videos/simple/', 
      api_views.SimpleGroupVideosAPI.as_view(), 
      name='simple_group_videos'),
+    path('api/debug/progress-store/', api_views.DebugProgressStoreAPI.as_view(), name='debug-progress-store'),
+    path('api/debug/websocket-test/<uuid:video_id>/', api_views.DebugWebSocketTestAPI.as_view(), name='debug-websocket-test'),
 ]

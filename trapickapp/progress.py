@@ -57,6 +57,21 @@ class ProgressTracker:
         except Exception as e:
             print(f"WebSocket completion error: {e}")
     
+    def fail_processing(self, error_message="Processing failed!"):
+        """Notify that processing failed"""
+        try:
+            async_to_sync(self.channel_layer.group_send)(
+                self.room_group_name,
+                {
+                    'type': 'processing_failed', 
+                    'video_id': self.video_id,
+                    'message': error_message
+                }
+            )
+            print(f"❌ Processing failed broadcast: {error_message}")
+        except Exception as e:
+            print(f"WebSocket failure error: {e}")
+    
     def get_progress(self):
         """Get current progress"""
         data = progress_store.get(self.video_id)

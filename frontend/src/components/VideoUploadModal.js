@@ -1,6 +1,7 @@
-// src/components/VideoUploadModal.js - SIMPLIFIED FOR NEW APPROACH
-import React, { useState, useEffect } from 'react';
+// src/components/VideoUploadModal.js - UPDATED WITH PROGRESS CONTEXT
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { useProgress } from '../contexts/ProgressContext'; // Add this import
 
 const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   const [formData, setFormData] = useState({
@@ -17,8 +18,72 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   const [progressMessage, setProgressMessage] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadId, setUploadId] = useState(null);
+  const [taskId, setTaskId] = useState(null);
   const [locations, setLocations] = useState([]);
   const [loadingLocations, setLoadingLocations] = useState(false);
+  const wsRef = useRef(null); // WebSocket ref
+
+  // Add this hook
+  const { addVideo } = useProgress();
+
+  // Add WebSocket connection function for processing
+  const connectWebSocket = (videoId) => {
+    // Close any existing connection
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+
+    const wsUrl = `ws://127.0.0.1:8000/ws/video-progress/${videoId}/`;
+    console.log('Connecting to WebSocket:', wsUrl);
+    
+    wsRef.current = new WebSocket(wsUrl);
+
+    wsRef.current.onopen = () => {
+      console.log('WebSocket connected for processing progress');
+    };
+
+    wsRef.current.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      console.log('WebSocket message received:', data);
+      
+      if (data.type === 'progress_update') {
+        setCurrentProgress(data.progress);
+        setProgressMessage(data.message || `Processing: ${data.progress}%`);
+      } else if (data.type === 'processing_complete') {
+        setCurrentProgress(100);
+        setProgressMessage('Processing completed!');
+        // Optionally close modal after completion
+        setTimeout(() => {
+          setUploading(false);
+          setIsProcessing(false);
+          if (onUpload) {
+            onUpload({ 
+              upload_id: videoId, 
+              status: 'completed',
+              message: 'Video processing completed successfully'
+            });
+          }
+        }, 2000);
+      }
+    };
+
+    wsRef.current.onclose = (event) => {
+      console.log('WebSocket disconnected:', event.code, event.reason);
+    };
+
+    wsRef.current.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+  };
+
+  // Add cleanup function for WebSocket
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
 
   const updateFormField = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -132,12 +197,20 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
         }
       });
       
-      setUploadId(response.data.upload_id);
+      const videoId = response.data.upload_id;
+      setUploadId(videoId);
+      setTaskId(response.data.task_id);
       setProgressMessage('Upload complete! Starting video analysis...');
       setCurrentProgress(15);
 
+      // ADD THIS LINE - Add video to global progress tracking
+      addVideo(videoId);
+
+      // Connect WebSocket for processing updates instead of polling
+      connectWebSocket(videoId);
+      
       if (onUpload) {
-        onUpload({ upload_id: response.data.upload_id, status: 'uploaded' });
+        onUpload({ upload_id: videoId, status: 'uploaded' });
       }
       
     } catch (error) {
@@ -150,6 +223,12 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   };
 
   const handleClose = () => {
+    // Close WebSocket connection when closing
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    
     setFormData({
       file: null,
       title: '',
@@ -163,6 +242,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     setCurrentProgress(0);
     setProgressMessage('');
     setUploadId(null);
+    setTaskId(null);
     onClose();
   };
 
