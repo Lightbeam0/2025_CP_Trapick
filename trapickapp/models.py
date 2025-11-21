@@ -173,12 +173,19 @@ class VideoFile(models.Model):
         max_length=50,
         choices=[
             ('pending', 'Pending'),
+            ('uploaded', 'Uploaded'),
             ('processing', 'Processing'),
             ('completed', 'Completed'),
             ('failed', 'Failed'),
         ],
         default='pending'
     )
+    
+    # PROGRESS TRACKING FIELDS (ADD THESE)
+    processing_progress = models.IntegerField(default=0, help_text="Processing progress percentage (0-100)")
+    processing_message = models.CharField(max_length=255, default='Waiting to start...', help_text="Current processing status message")
+    last_progress_update = models.DateTimeField(auto_now=True, help_text="Last time progress was updated")
+    
     duration_seconds = models.FloatField(null=True, blank=True)
     fps = models.FloatField(null=True, blank=True)
     total_frames = models.IntegerField(null=True, blank=True)
@@ -191,6 +198,7 @@ class VideoFile(models.Model):
         indexes = [
             models.Index(fields=['processing_status']),
             models.Index(fields=['location_date_group', 'video_date']),
+            models.Index(fields=['processing_status', 'processing_progress']),  # Add this index
         ]
 
     def __str__(self):
@@ -200,6 +208,14 @@ class VideoFile(models.Model):
         if self.video_start_time and self.video_end_time:
             return f"{self.video_start_time.strftime('%H:%M')} - {self.video_end_time.strftime('%H:%M')}"
         return "Time unknown"
+    
+    # ADD THIS METHOD FOR PROGRESS UPDATES
+    def update_progress(self, progress, message):
+        """Update processing progress and message"""
+        self.processing_progress = max(0, min(100, progress))  # Ensure 0-100 range
+        self.processing_message = message
+        self.save(update_fields=['processing_progress', 'processing_message', 'last_progress_update'])
+        return self
 
 class TrafficAnalysis(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

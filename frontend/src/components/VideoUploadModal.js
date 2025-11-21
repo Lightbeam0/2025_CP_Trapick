@@ -1,7 +1,6 @@
-// src/components/VideoUploadModal.js - UPDATED WITH PROGRESS CONTEXT
-import React, { useState, useEffect, useRef } from 'react';
+// src/components/VideoUploadModal.js
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { useProgress } from '../contexts/ProgressContext'; // Add this import
 
 const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   const [formData, setFormData] = useState({
@@ -21,69 +20,10 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   const [taskId, setTaskId] = useState(null);
   const [locations, setLocations] = useState([]);
   const [loadingLocations, setLoadingLocations] = useState(false);
-  const wsRef = useRef(null); // WebSocket ref
-
-  // Add this hook
-  const { addVideo } = useProgress();
-
-  // Add WebSocket connection function for processing
-  const connectWebSocket = (videoId) => {
-    // Close any existing connection
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
-
-    const wsUrl = `ws://127.0.0.1:8000/ws/video-progress/${videoId}/`;
-    console.log('Connecting to WebSocket:', wsUrl);
-    
-    wsRef.current = new WebSocket(wsUrl);
-
-    wsRef.current.onopen = () => {
-      console.log('WebSocket connected for processing progress');
-    };
-
-    wsRef.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log('WebSocket message received:', data);
-      
-      if (data.type === 'progress_update') {
-        setCurrentProgress(data.progress);
-        setProgressMessage(data.message || `Processing: ${data.progress}%`);
-      } else if (data.type === 'processing_complete') {
-        setCurrentProgress(100);
-        setProgressMessage('Processing completed!');
-        // Optionally close modal after completion
-        setTimeout(() => {
-          setUploading(false);
-          setIsProcessing(false);
-          if (onUpload) {
-            onUpload({ 
-              upload_id: videoId, 
-              status: 'completed',
-              message: 'Video processing completed successfully'
-            });
-          }
-        }, 2000);
-      }
-    };
-
-    wsRef.current.onclose = (event) => {
-      console.log('WebSocket disconnected:', event.code, event.reason);
-    };
-
-    wsRef.current.onerror = (error) => {
-      console.error('WebSocket error:', error);
-    };
-  };
-
-  // Add cleanup function for WebSocket
-  useEffect(() => {
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-  }, []);
+  // Add state for success message and auto-close
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [error, setError] = useState('');
 
   const updateFormField = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -92,6 +32,18 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   useEffect(() => {
     if (isOpen) {
       fetchLocations();
+      // Reset all states when modal opens
+      setUploadSuccess(false);
+      setSuccessMessage('');
+      setError('');
+      setFormData({
+        file: null,
+        title: '',
+        locationId: '',
+        videoDate: '',
+        startTime: '',
+        endTime: ''
+      });
     }
   }, [isOpen]);
 
@@ -102,6 +54,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
       setLocations(response.data);
     } catch (error) {
       console.error('Error fetching locations:', error);
+      setError('Failed to load locations.');
     } finally {
       setLoadingLocations(false);
     }
@@ -110,7 +63,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   useEffect(() => {
     if (formData.file) {
       const filename = formData.file.name.toLowerCase();
-      
+
       if (!formData.videoDate) {
         const dateMatch = filename.match(/(\d{4}[-_]\d{2}[-_]\d{2})|(\d{2}[-_]\d{2}[-_]\d{4})/);
         if (dateMatch) {
@@ -118,7 +71,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           updateFormField('videoDate', dateStr);
         }
       }
-      
+
       if (!formData.title) {
         const cleanName = formData.file.name.replace(/\.[^/.]+$/, "");
         updateFormField('title', cleanName);
@@ -131,16 +84,18 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     if (file) {
       const validTypes = ['video/mp4', 'video/avi', 'video/mov', 'video/webm', 'video/quicktime'];
       if (!validTypes.includes(file.type)) {
-        alert('Please select a valid video file (MP4, AVI, MOV, WebM)');
+        setError('Please select a valid video file (MP4, AVI, MOV, WebM)');
+        setFormData(prev => ({ ...prev, file: null }));
         return;
       }
-      
+
       const maxSize = 2 * 1024 * 1024 * 1024; // 2GB
       if (file.size > maxSize) {
-        alert(`File size must be less than 2GB. Your file is ${(file.size / (1024 * 1024 * 1024)).toFixed(2)}GB`);
+        setError(`File size must be less than 2GB. Your file is ${(file.size / (1024 * 1024 * 1024)).toFixed(2)}GB`);
+        setFormData(prev => ({ ...prev, file: null }));
         return;
       }
-      
+
       setFormData(prev => {
         if (!prev.title) {
           const filename = file.name.replace(/\.[^/.]+$/, "");
@@ -148,6 +103,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
         }
         return { ...prev, file };
       });
+      setError(''); // Clear error when a valid file is selected
     }
   };
 
@@ -155,20 +111,21 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     console.log('🚀 Starting upload process...');
 
     if (!formData.file) {
-      alert('Please select a video file first!');
+      setError('Please select a video file first!');
       return;
     }
 
     if (!formData.videoDate) {
-      alert('Please specify the video recording date');
+      setError('Please specify the video recording date');
       return;
     }
 
     if (!formData.locationId) {
-      alert('Please select a location');
+      setError('Please select a location');
       return;
     }
 
+    setError(''); // Clear any previous errors
     setUploading(true);
     setIsProcessing(true);
     setCurrentProgress(0);
@@ -196,26 +153,37 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           }
         }
       });
-      
+
       const videoId = response.data.upload_id;
+      const taskId = response.data.task_id; // Capture task ID if needed later
       setUploadId(videoId);
-      setTaskId(response.data.task_id);
+      setTaskId(taskId);
       setProgressMessage('Upload complete! Starting video analysis...');
-      setCurrentProgress(15);
+      setCurrentProgress(15); // Or keep at 100% if you consider upload complete here
 
-      // ADD THIS LINE - Add video to global progress tracking
-      addVideo(videoId);
-
-      // Connect WebSocket for processing updates instead of polling
-      connectWebSocket(videoId);
-      
+      // --- CRITICAL: Call the parent's onUpload callback ---
+      // This tells the Sidebar to add the video to its processing list
       if (onUpload) {
-        onUpload({ upload_id: videoId, status: 'uploaded' });
+        onUpload({ upload_id: videoId, task_id: taskId, status: 'uploaded', video_info: response.data.video_info });
       }
-      
+
+      // --- CRITICAL: Set success state and trigger auto-close ---
+      setUploadSuccess(true);
+      setSuccessMessage(response.data.message || 'Video uploaded and processing started successfully!');
+
+      // Auto-close after 2 seconds if successful
+      setTimeout(() => {
+        handleClose(); // This will reset states and call onClose
+      }, 2000); // 2 seconds delay
+
+      // Optionally, poll for final status if needed within the modal,
+      // but the sidebar should handle ongoing progress.
+      // const finalStatus = await pollForFinalStatus(videoId);
+
     } catch (error) {
       console.error('🔴 UPLOAD ERROR:', error);
-      alert(`Upload failed: ${error.response?.data?.error || error.message}`);
+      const errorMessage = error.response?.data?.error || error.message;
+      setError(`Upload failed: ${errorMessage}`);
       setUploading(false);
       setIsProcessing(false);
       setProgressMessage('Upload failed!');
@@ -223,12 +191,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   };
 
   const handleClose = () => {
-    // Close WebSocket connection when closing
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    
+    // Reset all states
     setFormData({
       file: null,
       title: '',
@@ -243,242 +206,177 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     setProgressMessage('');
     setUploadId(null);
     setTaskId(null);
-    onClose();
+    setUploadSuccess(false); // Reset success state
+    setSuccessMessage('');
+    setError('');
+    onClose(); // Call the parent's onClose function
   };
 
   if (!isOpen) return null;
 
   return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: 'rgba(0, 0, 0, 0.5)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 1000
-    }}>
-      <div style={{
-        backgroundColor: 'white',
-        borderRadius: '8px',
-        padding: '24px',
-        width: '90%',
-        maxWidth: '500px',
-        maxHeight: '90vh',
-        overflow: 'auto'
-      }}>
-        <h2 style={{ marginBottom: '16px', fontSize: '24px', fontWeight: '600' }}>
-          Upload Traffic Video
-        </h2>
-        
-        {/* Progress Bar */}
-        {(uploading || isProcessing) && (
-          <div style={{ marginBottom: '16px' }}>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              marginBottom: '8px',
-              fontSize: '14px'
-            }}>
+    <div className="modal-overlay">
+      <div className="modal-content">
+        <div className="modal-header">
+            <h2 className="modal-title">Upload Traffic Video</h2>
+            <button className="modal-close-button" onClick={handleClose}>
+                ×
+            </button>
+        </div>
+
+        {/* Display Success Message */}
+        {uploadSuccess && (
+          <div className="alert-success">
+            <span className="alert-icon">✅</span>
+            <span>{successMessage}</span>
+          </div>
+        )}
+
+        {/* Display Error Message */}
+        {error && !uploadSuccess && (
+          <div className="alert-error">
+            {error}
+          </div>
+        )}
+
+        {/* Progress Bar - Show during upload and initial processing handoff */}
+        {(uploading || isProcessing) && !uploadSuccess && (
+          <div className="upload-progress-section">
+            <div className="progress-info">
               <span>Progress: {currentProgress}%</span>
             </div>
-            <div style={{
-              width: '100%',
-              height: '20px',
-              backgroundColor: '#e5e7eb',
-              borderRadius: '10px',
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                width: `${currentProgress}%`,
-                height: '100%',
-                backgroundColor: currentProgress === 100 ? '#10b981' : '#3b82f6',
-                transition: 'width 0.3s ease',
-                borderRadius: '10px'
-              }}></div>
+            <div className="progress-bar-container">
+              <div
+                className="progress-bar-fill"
+                style={{ width: `${currentProgress}%` }}
+              ></div>
             </div>
             {progressMessage && (
-              <div style={{
-                marginTop: '8px',
-                fontSize: '12px',
-                color: '#6b7280',
-                textAlign: 'center'
-              }}>
+              <div className="progress-message">
                 {progressMessage}
               </div>
             )}
           </div>
         )}
-        
-        {/* File Input */}
-        <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
-            Video File *
-          </label>
-          <input 
-            type="file" 
-            accept="video/*" 
-            onChange={handleFileChange}
-            style={{
-              width: '100%',
-              padding: '8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px'
-            }}
-            disabled={uploading || isProcessing}
-          />
-          {formData.file && (
-            <p style={{ marginTop: '8px', fontSize: '14px', color: '#666' }}>
-              Selected: {formData.file.name} ({(formData.file.size / 1024 / 1024).toFixed(2)} MB)
-            </p>
-          )}
-        </div>
-        
-        {/* Title Input */}
-        <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
-            Video Title
-          </label>
-          <input 
-            type="text" 
-            value={formData.title}
-            onChange={(e) => updateFormField('title', e.target.value)}
-            placeholder="Enter a title for this video"
-            style={{
-              width: '100%',
-              padding: '8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px'
-            }}
-            disabled={uploading || isProcessing}
-          />
-        </div>
-        
-        {/* Date Input */}
-        <div style={{ marginBottom: '16px' }}>
-          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
-            Video Recording Date *
-          </label>
-          <input 
-            type="date" 
-            value={formData.videoDate}
-            onChange={(e) => updateFormField('videoDate', e.target.value)}
-            required
-            style={{
-              width: '100%',
-              padding: '8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px'
-            }}
-            disabled={uploading || isProcessing}
-          />
-        </div>
 
-        {/* Time Inputs */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
-              Start Time
-            </label>
-            <input 
-              type="time" 
-              value={formData.startTime}
-              onChange={(e) => updateFormField('startTime', e.target.value)}
-              style={{
-                width: '100%',
-                padding: '8px',
-                border: '1px solid #ddd',
-                borderRadius: '4px'
-              }}
-              disabled={uploading || isProcessing}
-            />
+        {/* Form Content - Hide if successful */}
+        {!uploadSuccess && (
+          <>
+            {/* File Input */}
+            <div className="form-group">
+              <label className="form-label">Video File *</label>
+              <input
+                type="file"
+                accept="video/*"
+                onChange={handleFileChange}
+                className="form-input"
+                disabled={uploading || isProcessing}
+              />
+              {formData.file && (
+                <p className="file-info">
+                  Selected: {formData.file.name} ({(formData.file.size / 1024 / 1024).toFixed(2)} MB)
+                </p>
+              )}
+            </div>
+
+            {/* Title Input */}
+            <div className="form-group">
+              <label className="form-label">Video Title</label>
+              <input
+                type="text"
+                value={formData.title}
+                onChange={(e) => updateFormField('title', e.target.value)}
+                placeholder="Enter a title for this video"
+                className="form-input"
+                disabled={uploading || isProcessing}
+              />
+            </div>
+
+            {/* Date Input */}
+            <div className="form-group">
+              <label className="form-label">Video Recording Date *</label>
+              <input
+                type="date"
+                value={formData.videoDate}
+                onChange={(e) => updateFormField('videoDate', e.target.value)}
+                required
+                className="form-input"
+                disabled={uploading || isProcessing}
+              />
+            </div>
+
+            {/* Time Inputs */}
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Start Time</label>
+                <input
+                  type="time"
+                  value={formData.startTime}
+                  onChange={(e) => updateFormField('startTime', e.target.value)}
+                  className="form-input"
+                  disabled={uploading || isProcessing}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">End Time</label>
+                <input
+                  type="time"
+                  value={formData.endTime}
+                  onChange={(e) => updateFormField('endTime', e.target.value)}
+                  className="form-input"
+                  disabled={uploading || isProcessing}
+                />
+              </div>
+            </div>
+
+            {/* Location Selection */}
+            <div className="form-group">
+              <label className="form-label">Location *</label>
+              <select
+                value={formData.locationId}
+                onChange={(e) => updateFormField('locationId', e.target.value)}
+                className="form-input"
+                disabled={uploading || isProcessing || loadingLocations}
+              >
+                <option value="">Select a location</option>
+                {loadingLocations ? (
+                  <option disabled>Loading locations...</option>
+                ) : (
+                  locations.map(location => (
+                    <option key={location.id} value={location.id}>
+                      {location.display_name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="modal-actions">
+              <button
+                onClick={handleClose}
+                className="button button-secondary"
+                disabled={uploading || isProcessing}
+              >
+                {isProcessing ? 'Processing...' : 'Cancel'}
+              </button>
+              <button
+                onClick={handleUpload}
+                disabled={!formData.file || uploading || isProcessing || !formData.locationId}
+                className="button button-primary"
+              >
+                {isProcessing ? 'Processing...' : uploading ? 'Uploading...' : 'Upload Video'}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Auto-Close Message */}
+        {uploadSuccess && (
+          <div className="auto-close-message">
+            <p>Modal will close automatically...</p>
           </div>
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
-              End Time
-            </label>
-            <input 
-              type="time" 
-              value={formData.endTime}
-              onChange={(e) => updateFormField('endTime', e.target.value)}
-              style={{
-                width: '100%',
-                padding: '8px',
-                border: '1px solid #ddd',
-                borderRadius: '4px'
-              }}
-              disabled={uploading || isProcessing}
-            />
-          </div>
-        </div>
-        
-        {/* Location Selection */}
-        <div style={{ marginBottom: '24px' }}>
-          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
-            Location *
-          </label>
-          <select 
-            value={formData.locationId}
-            onChange={(e) => updateFormField('locationId', e.target.value)}
-            style={{
-              width: '100%',
-              padding: '8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px'
-            }}
-            disabled={uploading || isProcessing || loadingLocations}
-          >
-            <option value="">Select a location</option>
-            {loadingLocations ? (
-              <option disabled>Loading locations...</option>
-            ) : (
-              locations.map(location => (
-                <option key={location.id} value={location.id}>
-                  {location.display_name}
-                </option>
-              ))
-            )}
-          </select>
-        </div>
-        
-        {/* Action Buttons */}
-        <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-          <button 
-            onClick={handleClose}
-            style={{
-              padding: '10px 20px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              backgroundColor: 'white',
-              color: '#374151',
-              cursor: (uploading || isProcessing) ? 'not-allowed' : 'pointer',
-              fontSize: '14px',
-              opacity: (uploading || isProcessing) ? 0.6 : 1
-            }}
-            disabled={uploading || isProcessing}
-          >
-            {isProcessing ? 'Close' : 'Cancel'}
-          </button>
-          <button 
-            onClick={handleUpload}
-            disabled={!formData.file || uploading || isProcessing || !formData.locationId}
-            style={{
-              padding: '10px 20px',
-              border: 'none',
-              borderRadius: '4px',
-              backgroundColor: (!formData.file || uploading || isProcessing || !formData.locationId) ? '#9ca3af' : '#3b82f6',
-              color: 'white',
-              cursor: (!formData.file || uploading || isProcessing || !formData.locationId) ? 'not-allowed' : 'pointer',
-              fontSize: '14px',
-              opacity: (!formData.file || uploading || isProcessing || !formData.locationId) ? 0.6 : 1
-            }}
-          >
-            {isProcessing ? 'Processing...' : uploading ? 'Uploading...' : 'Upload Video'}
-          </button>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -6,6 +6,7 @@ urlpatterns = [
     # ==================== VIDEO PROCESSING ENDPOINTS ====================
     path('api/upload/video/', api_views.VideoUploadAPI.as_view(), name='upload_video'),
     path('api/progress/<uuid:video_id>/', api_views.VideoProgressAPI.as_view(), name='video_progress'),
+    path('api/progress/active/', api_views.ActiveVideosProgressAPI.as_view(), name='active_progress'),
     path('api/analysis/<uuid:upload_id>/', api_views.AnalysisResultsAPI.as_view(), name='analysis_results'),
 
     # ==================== VIDEO FILE SERVING ====================

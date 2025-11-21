@@ -1,3 +1,4 @@
+# ml/baliwasan_yjunction_detector.py
 import cv2
 import torch
 from ultralytics import YOLO
@@ -7,12 +8,11 @@ import time
 from collections import defaultdict, deque
 import threading
 
-# ADD THIS IMPORT
 from .base_detector import BaseDetector
 
 class BaliwasanYJunctionDetector(BaseDetector):
     def __init__(self, model_path='yolov8x.pt'):
-        # Initialize base class
+        # Initialize base class FIRST
         super().__init__()
         
         print("🚀 Initializing YOLO model for Baliwasan Y-Junction...")
@@ -54,6 +54,9 @@ class BaliwasanYJunctionDetector(BaseDetector):
             7: "truck"
         }
         
+        # CRITICAL: Initialize enhanced metrics in constructor
+        self.setup_enhanced_metrics()
+        
         # Tracking variables (will be reset for each video)
         self.track_history = None
         self.vehicle_status = None
@@ -64,11 +67,11 @@ class BaliwasanYJunctionDetector(BaseDetector):
         
         print("✅ Baliwasan Y-Junction Detector initialized successfully")
 
-    def analyze_video(self, video_path, progress_tracker=None, save_output=True):
-        """EXACT SAME as old detector but with GPU acceleration"""
+    def analyze_video(self, video_path, progress_callback=None, save_output=True):
+        """EXACT SAME as old detector but with GPU acceleration and progress tracking"""
         print(f"🎯 Starting Baliwasan Y-Junction analysis: {video_path}")
         
-        # Initialize tracking for this video (SAME AS OLD)
+        # Initialize tracking for this video
         self.track_history = defaultdict(lambda: deque(maxlen=30))
         self.vehicle_status = {}
         self.vehicle_type_counts = defaultdict(int)
@@ -76,11 +79,8 @@ class BaliwasanYJunctionDetector(BaseDetector):
         self.frame_count = 0
         self.total_count = 0
         
-        # ENHANCED: Initialize enhanced metrics
+        # CRITICAL FIX: Initialize enhanced metrics (includes previous_positions)
         self.setup_enhanced_metrics()
-        
-        if progress_tracker:
-            progress_tracker.set_progress(10, "Opening video file...")
         
         # Open the provided video path
         cap = cv2.VideoCapture(video_path)
@@ -98,16 +98,15 @@ class BaliwasanYJunctionDetector(BaseDetector):
 
         # 🎯 MODIFIED: Counting line moved HIGHER in the frame
         OFFSET_Y = -120  # Increased negative offset to move line higher
-        # Changed from 0.45/0.38 to 0.40/0.33 - positions line higher in frame
-        self.line_start = (0, int(height * 0.40) + OFFSET_Y)      # ~40% from top (was 45%)
-        self.line_end = (width - 1, int(height * 0.33) + OFFSET_Y)  # ~33% from top (was 38%)
+        self.line_start = (0, int(height * 0.40) + OFFSET_Y)
+        self.line_end = (width - 1, int(height * 0.33) + OFFSET_Y)
         
         # Create counting zone (buffer area around the line)
         ZONE_BUFFER = 25  # pixels
         self.counting_zone_top = self.line_start[1] - ZONE_BUFFER
         self.counting_zone_bottom = self.line_start[1] + ZONE_BUFFER
 
-        # Setup output video if requested (SAME AS OLD)
+        # Setup output video if requested
         output_video_path = None
         out = None
         if save_output:
@@ -122,16 +121,13 @@ class BaliwasanYJunctionDetector(BaseDetector):
             out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
             print(f"💾 Saving output to: {output_video_path}")
 
-        if progress_tracker:
-            progress_tracker.set_progress(20, "Starting vehicle detection with enhanced metrics...")
-
         print(f"📏 Counting line: {self.line_start} to {self.line_end}")
-        print("🎯 Starting vehicle counting with enhanced metrics...")
+        print("🎯 Starting vehicle counting...")
 
         processing_times = []
         analysis_start = time.time()
 
-        # Main processing loop - PROCESS EVERY FRAME LIKE OLD DETECTOR
+        # Main processing loop - PROCESS EVERY FRAME
         while cap.isOpened():
             frame_start = time.time()
             ret, frame = cap.read()
@@ -140,20 +136,25 @@ class BaliwasanYJunctionDetector(BaseDetector):
 
             self.frame_count += 1
             
-            # NO FRAME SKIPPING - PROCESS EVERY FRAME LIKE OLD DETECTOR
+            # Update progress every 50 frames
+            if progress_callback and self.frame_count % 50 == 0:
+                message = f"Processing frame {self.frame_count}/{total_frames}"
+                progress_callback(self.frame_count, total_frames, message)
+            
+            # NO FRAME SKIPPING - PROCESS EVERY FRAME
             frame_copy = frame.copy()
             
-            # Draw counting zone background for better visibility (SAME AS OLD)
+            # Draw counting zone background for better visibility
             zone_overlay = frame_copy.copy()
             cv2.rectangle(zone_overlay, (0, self.counting_zone_top), (width, self.counting_zone_bottom), (0, 100, 0), -1)
             cv2.addWeighted(zone_overlay, 0.2, frame_copy, 0.8, 0, frame_copy)
             
-            # Draw counting line with better visibility (SAME AS OLD)
+            # Draw counting line with better visibility
             cv2.line(frame_copy, self.line_start, self.line_end, (0, 0, 255), 4)
             cv2.putText(frame_copy, "COUNTING LINE", (self.line_start[0], self.line_start[1] - 15), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-            # Process frame with EXACT SAME LOGIC as old detector
+            # Process frame
             current_counts, detections = self.process_frame(frame, self.frame_count, fps)
             
             # ENHANCED: UPDATE ALL METRICS
@@ -165,7 +166,7 @@ class BaliwasanYJunctionDetector(BaseDetector):
             # 2. Update quality metrics
             self.update_quality_metrics(detections, current_counts)
             
-            # Draw detection information (SAME AS OLD)
+            # Draw detection information
             annotated_frame = self.draw_detection_info(
                 frame_copy, detections, self.frame_count, fps, sum(current_counts.values())
             )
@@ -177,12 +178,10 @@ class BaliwasanYJunctionDetector(BaseDetector):
             # Calculate processing time
             processing_time = time.time() - frame_start
             processing_times.append(processing_time)
-            
-            # Update progress - THIS IS THE CRITICAL PART! ADD THIS EVERY FEW FRAMES
-            if progress_tracker and self.frame_count % 50 == 0:  # Update every 50 frames
-                progress = min(90, 20 + int((self.frame_count / total_frames) * 70))
-                message = f"Processing frame {self.frame_count}/{total_frames} ({progress}%)"
-                progress_tracker.set_progress(progress, message)
+
+        # Final progress update
+        if progress_callback:
+            progress_callback(total_frames, total_frames, "Finalizing processing...")
 
         # Cleanup
         cap.release()
@@ -192,9 +191,6 @@ class BaliwasanYJunctionDetector(BaseDetector):
 
         total_processing_time = time.time() - analysis_start
         print(f"✅ Baliwasan analysis completed in {total_processing_time:.2f}s")
-        
-        if progress_tracker:
-            progress_tracker.set_progress(95, "Generating enhanced analysis report...")
 
         # GENERATE ENHANCED REPORT
         enhanced_metrics = self.get_enhanced_metrics_report(
@@ -339,7 +335,6 @@ class BaliwasanYJunctionDetector(BaseDetector):
         
         return False
 
-    # Keep the rest of your methods exactly the same as your old detector
     def draw_detection_info(self, frame, detections, frame_number, fps, total_current_vehicles):
         """EXACT SAME as old detector"""
         height, width = frame.shape[:2]
@@ -454,6 +449,106 @@ class BaliwasanYJunctionDetector(BaseDetector):
         }
         
         return report
+    
+    def setup_enhanced_metrics(self):
+        """Initialize enhanced metrics tracking"""
+        self.frame_vehicle_counts = []
+        self.hourly_data = defaultdict(lambda: defaultdict(int))  # {hour: {vehicle_type: count}}
+        self.speed_data = defaultdict(list)  # {vehicle_type: [speeds]}
+        self.detection_confidences = []
+        self.tracking_quality_scores = []
+        self.previous_positions = {}  # Track previous positions for speed calculation
+
+    def update_hourly_data(self, current_counts, current_time_seconds):
+        """Update hourly breakdown of vehicle counts"""
+        current_hour = int((current_time_seconds / 3600) % 24)
+        for vehicle_type, count in current_counts.items():
+            self.hourly_data[current_hour][vehicle_type] += count
+
+    def update_quality_metrics(self, detections, current_counts):
+        """Update quality metrics"""
+        # Update frame vehicle counts
+        self.frame_vehicle_counts.append(sum(current_counts.values()))
+        
+        # Update detection confidences
+        for detection in detections:
+            self.detection_confidences.append(detection['confidence'])
+        
+        # Calculate and store tracking quality score
+        if len(detections) > 0:
+            avg_confidence = sum(d['confidence'] for d in detections) / len(detections)
+            tracking_quality = min(1.0, avg_confidence * 1.2)  # Scaled quality score
+            self.tracking_quality_scores.append(tracking_quality)
+
+    def calculate_speed(self, track_id, current_position, frame_number, fps):
+        """Calculate speed for a tracked vehicle"""
+        if track_id in self.previous_positions:
+            prev_position, prev_frame = self.previous_positions[track_id]
+            if prev_frame != frame_number:  # Only calculate if not same frame
+                dx = current_position[0] - prev_position[0]
+                dy = current_position[1] - prev_position[1]
+                distance_pixels = np.sqrt(dx**2 + dy**2)
+                
+                time_seconds = (frame_number - prev_frame) / fps
+                if time_seconds > 0:
+                    # Convert pixel distance to real-world distance (this is a simplified approximation)
+                    # In a real implementation, you would need calibration data
+                    speed_pixels_per_second = distance_pixels / time_seconds
+                    # Convert to km/h (approximate conversion)
+                    speed_kmh = speed_pixels_per_second * 0.1  # Simplified conversion factor
+                    return speed_kmh
+        
+        # Update previous position for next calculation
+        self.previous_positions[track_id] = (current_position, frame_number)
+        return None
+
+    def get_enhanced_metrics_report(self, total_vehicles, video_duration, fps, frame_width, total_frames):
+        """Generate enhanced metrics report"""
+        # Calculate hourly distribution
+        hourly_distribution = {}
+        for hour, vehicle_counts in self.hourly_data.items():
+            hourly_distribution[f"{hour:02d}:00"] = dict(vehicle_counts)
+        
+        # Calculate speed statistics
+        speed_stats = {}
+        for vehicle_type, speeds in self.speed_data.items():
+            if speeds:
+                speed_stats[vehicle_type] = {
+                    'avg_speed': sum(speeds) / len(speeds),
+                    'max_speed': max(speeds),
+                    'min_speed': min(speeds),
+                    'count': len(speeds)
+                }
+        
+        # Calculate confidence statistics
+        avg_confidence = sum(self.detection_confidences) / len(self.detection_confidences) if self.detection_confidences else 0
+        confidence_stats = {
+            'avg_confidence': avg_confidence,
+            'min_confidence': min(self.detection_confidences) if self.detection_confidences else 0,
+            'max_confidence': max(self.detection_confidences) if self.detection_confidences else 0
+        }
+        
+        # Calculate tracking quality
+        avg_tracking_quality = sum(self.tracking_quality_scores) / len(self.tracking_quality_scores) if self.tracking_quality_scores else 0
+        
+        return {
+            'processing_summary': {
+                'total_frames_processed': total_frames,
+                'average_vehicles_per_frame': sum(self.frame_vehicle_counts) / len(self.frame_vehicle_counts) if self.frame_vehicle_counts else 0,
+                'processing_efficiency_fps': total_frames / video_duration if video_duration > 0 else 0
+            },
+            'hourly_distribution': hourly_distribution,
+            'speed_analysis': speed_stats,
+            'detection_quality': confidence_stats,
+            'tracking_performance': {
+                'average_tracking_quality': avg_tracking_quality,
+                'total_unique_vehicles_tracked': len(self.previous_positions)
+            },
+            'traffic_patterns': {
+                'peak_hour': max(hourly_distribution.keys(), key=lambda h: sum(hourly_distribution[h].values())) if hourly_distribution else 'N/A',
+                'busiest_vehicle_type': max(self.vehicle_type_counts, key=self.vehicle_type_counts.get) if self.vehicle_type_counts else 'N/A'
+            }
+        }
 
 # For standalone testing
 if __name__ == "__main__":

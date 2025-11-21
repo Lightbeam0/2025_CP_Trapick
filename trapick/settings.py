@@ -108,20 +108,18 @@ CORS_ALLOW_HEADERS = [
 ]
 CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 
-# Channels (CRITICAL: Use Redis)
 ASGI_APPLICATION = 'trapick.asgi.application'
 CHANNEL_LAYERS = {
     'default': {
-        'BACKEND': 'channels.layers.InMemoryChannelLayer',  # Use this for development without Redis
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',  # CHANGED FROM RedisChannelLayer
     },
 }
 
 # Cache (for progress tracking)
 CACHES = {
     'default': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/1'),
-        'OPTIONS': {'CLIENT_CLASS': 'django_redis.client.DefaultClient'},
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',  # CHANGED FROM RedisCache
+        'LOCATION': 'unique-snowflake',
         'TIMEOUT': 3600,
     }
 }

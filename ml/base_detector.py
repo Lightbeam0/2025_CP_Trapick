@@ -18,8 +18,12 @@ class BaseDetector:
         self.speed_data = defaultdict(list)
         self.detection_confidences = []
         self.frame_vehicle_counts = []
-        self.previous_positions = {}
-        self.vehicle_timestamps = defaultdict(list)
+        
+        # CRITICAL: Initialize tracking attributes used by calculate_speed
+        if not hasattr(self, 'previous_positions'):
+            self.previous_positions = {}
+        if not hasattr(self, 'vehicle_timestamps'):
+            self.vehicle_timestamps = defaultdict(list)
         
     def calculate_speed(self, track_id, current_position, current_frame, fps):
         """Calculate speed for a tracked vehicle"""

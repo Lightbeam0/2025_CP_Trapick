@@ -134,18 +134,17 @@ class VideoUploadAPI(APIView):
                     print(f"Warning: Error parsing end time '{video_end_time_str}'")
                     # You might want to return an error here instead
 
-            # Create VideoFile record - CRITICAL: Assign start/end time objects
             video_obj = VideoFile.objects.create(
                 filename=video_file.name,
                 file_path=filename,
                 title=title,
                 video_date=video_date,
-                # CRITICAL LINES: Assign the parsed time objects (or None if parsing failed/parsing skipped)
                 video_start_time=video_start_time_obj,
                 video_end_time=video_end_time_obj,
-                processing_status='uploaded', # Or 'uploading' depending on your logic before the task
+                processing_status='uploaded',  # Set to uploaded initially
+                processing_progress=0,  # Initial progress
+                processing_message='Upload complete, starting processing...',
                 uploaded_at=timezone.now()
-                # ... other initial fields if needed ...
             )
 
             print(f"📄 Video record created: {video_obj.id}, Start: {video_obj.video_start_time}, End: {video_obj.video_end_time}")
@@ -555,51 +554,45 @@ class DebugDataAPI(APIView):
         return Response(stats)
 
 
-# trapickapp/api_views.py - ENSURE THIS IS CORRECT
 class VideoProgressAPI(APIView):
+    """Simple progress API that just reads from database"""
+    
     def get(self, request, video_id):
-        """Get progress for a video processing"""
         try:
-            progress_tracker = ProgressTracker(video_id)
-            progress_data = progress_tracker.get_progress()
+            video = VideoFile.objects.get(id=video_id)
             
-            if progress_data:
-                return Response({
-                    'progress': progress_data['progress'],
-                    'message': progress_data['message'],
-                    'status': 'processing'
-                })
-            else:
-                # Check if video is completed
-                try:
-                    video = VideoFile.objects.get(id=video_id)
-                    if video.processing_status == 'completed':
-                        return Response({
-                            'progress': 100,
-                            'message': 'Processing completed',
-                            'status': 'completed'
-                        })
-                    elif video.processing_status == 'failed':
-                        return Response({
-                            'progress': 0,
-                            'message': 'Processing failed',
-                            'status': 'failed'
-                        })
-                except VideoFile.DoesNotExist:
-                    pass
-                
-                return Response({
-                    'progress': 0, 
-                    'message': 'No progress data available',
-                    'status': 'unknown'
-                })
-                
-        except Exception as e:
             return Response({
-                'progress': 0,
-                'message': f'Error: {str(e)}',
-                'status': 'error'
+                'progress': video.processing_progress,
+                'message': video.processing_message,
+                'status': video.processing_status,
+                'filename': video.filename,
+                'title': video.title,
+                'last_update': video.last_progress_update.isoformat()
             })
+            
+        except VideoFile.DoesNotExist:
+            return Response({'error': 'Video not found'}, status=404)
+
+class ActiveVideosProgressAPI(APIView):
+    """Get progress for all active videos"""
+    
+    def get(self, request):
+        # Get videos that are currently processing or uploaded
+        active_videos = VideoFile.objects.filter(
+            processing_status__in=['uploaded', 'processing']
+        ).only('id', 'filename', 'title', 'processing_progress', 'processing_message', 'processing_status')
+        
+        progress_data = {}
+        for video in active_videos:
+            progress_data[str(video.id)] = {
+                'progress': video.processing_progress,
+                'message': video.processing_message,
+                'status': video.processing_status,
+                'filename': video.filename,
+                'title': video.title or video.filename
+            }
+        
+        return Response(progress_data)
 
 class AnalysisResultsAPI(APIView):
     def get(self, request, upload_id):
