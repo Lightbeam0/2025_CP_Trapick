@@ -36,7 +36,7 @@ class VideoUploadAPI(APIView):
     def post(self, request):
         print("🔍 DEBUG: VideoUploadAPI called")
         print(f"🔍 Request FILES: {list(request.FILES.keys())}")
-        print(f"🔍 Request POST data: {request.POST}") # Log the POST data to see start/end times
+        print(f"🔍 Request POST data: {request.POST}")
 
         try:
             if 'video' not in request.FILES:
@@ -68,9 +68,8 @@ class VideoUploadAPI(APIView):
             title = request.POST.get('title', video_file.name)
             location_id = request.POST.get('location_id')
             video_date = request.POST.get('video_date')
-            # CRITICAL LINES: Get start and end time strings from the request
-            video_start_time_str = request.POST.get('start_time') # e.g., "04:59" or "04:59:30"
-            video_end_time_str = request.POST.get('end_time')     # e.g., "05:15" or "05:15:45"
+            video_start_time_str = request.POST.get('start_time')
+            video_end_time_str = request.POST.get('end_time')
 
             # Validate required fields
             if not location_id:
@@ -106,33 +105,25 @@ class VideoUploadAPI(APIView):
 
             if video_start_time_str:
                 try:
-                    # Attempt to parse the time string. Adjust format as needed.
-                    # Common formats: "%H:%M:%S", "%H:%M"
-                    if len(video_start_time_str) == 8: # HH:MM:SS
+                    if len(video_start_time_str) == 8:  # HH:MM:SS
                         video_start_time_obj = datetime.strptime(video_start_time_str, '%H:%M:%S').time()
-                    elif len(video_start_time_str) == 5: # HH:MM
+                    elif len(video_start_time_str) == 5:  # HH:MM
                         video_start_time_obj = datetime.strptime(video_start_time_str, '%H:%M').time()
                     else:
                         print(f"Warning: Could not parse start time format: {video_start_time_str}")
-                        # You might want to return an error here instead
-                        # return Response({'error': f'Invalid start time format: {video_start_time_str}. Use HH:MM or HH:MM:SS.'}, status=status.HTTP_400_BAD_REQUEST)
                 except ValueError:
                     print(f"Warning: Error parsing start time '{video_start_time_str}'")
-                    # You might want to return an error here instead
-                    # return Response({'error': f'Error parsing start time: {video_start_time_str}'}, status=status.HTTP_400_BAD_REQUEST)
 
             if video_end_time_str:
                 try:
-                    if len(video_end_time_str) == 8: # HH:MM:SS
+                    if len(video_end_time_str) == 8:  # HH:MM:SS
                         video_end_time_obj = datetime.strptime(video_end_time_str, '%H:%M:%S').time()
-                    elif len(video_end_time_str) == 5: # HH:MM
+                    elif len(video_end_time_str) == 5:  # HH:MM
                         video_end_time_obj = datetime.strptime(video_end_time_str, '%H:%M').time()
                     else:
                         print(f"Warning: Could not parse end time format: {video_end_time_str}")
-                        # You might want to return an error here instead
                 except ValueError:
                     print(f"Warning: Error parsing end time '{video_end_time_str}'")
-                    # You might want to return an error here instead
 
             video_obj = VideoFile.objects.create(
                 filename=video_file.name,
@@ -141,8 +132,8 @@ class VideoUploadAPI(APIView):
                 video_date=video_date,
                 video_start_time=video_start_time_obj,
                 video_end_time=video_end_time_obj,
-                processing_status='uploaded',  # Set to uploaded initially
-                processing_progress=0,  # Initial progress
+                processing_status='uploaded',
+                processing_progress=0,
                 processing_message='Upload complete, starting processing...',
                 uploaded_at=timezone.now()
             )
@@ -151,13 +142,16 @@ class VideoUploadAPI(APIView):
 
             # Start processing immediately via Celery
             try:
-                task = process_video_task.delay(video_obj.id, location_id=location_id)
+                task = process_video_task.delay(str(video_obj.id), location_id=location_id)
                 print(f"✅ Celery task started: {task.id} for video {video_obj.id}")
 
+                # CRITICAL FIX: Use 'video_id' consistently (not 'upload_id')
                 response_data = {
                     'status': 'success',
                     'message': 'Video uploaded and processing started',
-                    'upload_id': str(video_obj.id),
+                    'video_id': str(video_obj.id),      # ✅ PRIMARY: Use video_id
+                    'upload_id': str(video_obj.id),     # ✅ BACKWARD COMPATIBILITY: Keep upload_id
+                    'id': str(video_obj.id),            # ✅ ADDITIONAL: Add id for flexibility
                     'task_id': task.id,
                     'video_info': {
                         'filename': video_file.name,
@@ -172,6 +166,7 @@ class VideoUploadAPI(APIView):
                 if video_end_time_obj:
                     response_data['video_info']['end_time'] = video_end_time_str
 
+                print(f"📤 Sending response with video_id: {video_obj.id}")
                 return Response(response_data)
 
             except Exception as e:
@@ -184,7 +179,6 @@ class VideoUploadAPI(APIView):
                 )
 
         except ValidationError as ve:
-            # Handle potential validation errors from VideoFile model (e.g., invalid time format if model validates)
             print(f"Validation error: {ve}")
             return Response(
                 {'error': f'Validation error: {str(ve)}'},

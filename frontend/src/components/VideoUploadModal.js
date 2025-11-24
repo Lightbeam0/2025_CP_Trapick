@@ -1,8 +1,11 @@
 // src/components/VideoUploadModal.js
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { useVideoProgress } from '../hooks/useVideoProgress';
 
 const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
+  const { updateVideoProgress } = useVideoProgress();
+  
   const [formData, setFormData] = useState({
     file: null,
     title: '',
@@ -20,7 +23,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   const [taskId, setTaskId] = useState(null);
   const [locations, setLocations] = useState([]);
   const [loadingLocations, setLoadingLocations] = useState(false);
-  // Add state for success message and auto-close
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [error, setError] = useState('');
@@ -32,7 +34,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   useEffect(() => {
     if (isOpen) {
       fetchLocations();
-      // Reset all states when modal opens
       setUploadSuccess(false);
       setSuccessMessage('');
       setError('');
@@ -103,7 +104,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
         }
         return { ...prev, file };
       });
-      setError(''); // Clear error when a valid file is selected
+      setError('');
     }
   };
 
@@ -125,7 +126,7 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
       return;
     }
 
-    setError(''); // Clear any previous errors
+    setError('');
     setUploading(true);
     setIsProcessing(true);
     setCurrentProgress(0);
@@ -154,31 +155,75 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
         }
       });
 
-      const videoId = response.data.upload_id;
-      const taskId = response.data.task_id; // Capture task ID if needed later
+      console.log('✅ Upload response:', response.data);
+
+      // CRITICAL FIX: Extract the correct video ID from response
+      const videoId = response.data.video_id || response.data.upload_id || response.data.id;
+      const taskId = response.data.task_id;
+      
+      if (!videoId) {
+        console.error('❌ No video_id in response:', response.data);
+        setError('Upload succeeded but no video ID returned. Please refresh the page.');
+        setUploading(false);
+        setIsProcessing(false);
+        return;
+      }
+
+      console.log(`📋 Video ID: ${videoId}, Task ID: ${taskId}`);
+      
       setUploadId(videoId);
       setTaskId(taskId);
       setProgressMessage('Upload complete! Starting video analysis...');
-      setCurrentProgress(15); // Or keep at 100% if you consider upload complete here
+      setCurrentProgress(100);
 
-      // --- CRITICAL: Call the parent's onUpload callback ---
-      // This tells the Sidebar to add the video to its processing list
+      // Get location name for display
+      const selectedLocation = locations.find(loc => loc.id === formData.locationId);
+      const locationName = selectedLocation?.display_name || 'Unknown Location';
+
+      // ✅ USE THE CONTEXT TO UPDATE PROGRESS
+      updateVideoProgress(videoId, {
+        progress: 5,
+        message: 'Upload complete, starting processing...',
+        status: 'processing',
+        filename: formData.file.name,
+        video_info: {
+          filename: formData.file.name,
+          location_name: locationName,
+          group_date: formData.videoDate,
+          total_vehicles: 'Processing...'
+        }
+      });
+
+      console.log(`✅ Updated progress for video ${videoId} via context`);
+
+      // Call parent's onUpload callback for compatibility
       if (onUpload) {
-        onUpload({ upload_id: videoId, task_id: taskId, status: 'uploaded', video_info: response.data.video_info });
+        const uploadResultData = {
+          id: videoId,
+          video_id: videoId,
+          upload_id: videoId,
+          task_id: taskId,
+          status: 'uploaded',
+          filename: formData.file.name,
+          video_info: {
+            filename: formData.file.name,
+            location_name: locationName,
+            group_date: formData.videoDate,
+            total_vehicles: 'Processing...'
+          }
+        };
+        console.log('📤 Sending to parent (Sidebar):', uploadResultData);
+        onUpload(uploadResultData);
       }
 
-      // --- CRITICAL: Set success state and trigger auto-close ---
+      // Set success state
       setUploadSuccess(true);
       setSuccessMessage(response.data.message || 'Video uploaded and processing started successfully!');
 
-      // Auto-close after 2 seconds if successful
+      // Auto-close after 2 seconds
       setTimeout(() => {
-        handleClose(); // This will reset states and call onClose
-      }, 2000); // 2 seconds delay
-
-      // Optionally, poll for final status if needed within the modal,
-      // but the sidebar should handle ongoing progress.
-      // const finalStatus = await pollForFinalStatus(videoId);
+        handleClose();
+      }, 2000);
 
     } catch (error) {
       console.error('🔴 UPLOAD ERROR:', error);
@@ -191,7 +236,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
   };
 
   const handleClose = () => {
-    // Reset all states
     setFormData({
       file: null,
       title: '',
@@ -204,12 +248,12 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
     setIsProcessing(false);
     setCurrentProgress(0);
     setProgressMessage('');
-    setUploadId(null);
     setTaskId(null);
-    setUploadSuccess(false); // Reset success state
+    setUploadId(null);
+    setUploadSuccess(false);
     setSuccessMessage('');
     setError('');
-    onClose(); // Call the parent's onClose function
+    onClose();
   };
 
   if (!isOpen) return null;
@@ -224,7 +268,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
             </button>
         </div>
 
-        {/* Display Success Message */}
         {uploadSuccess && (
           <div className="alert-success">
             <span className="alert-icon">✅</span>
@@ -232,14 +275,12 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           </div>
         )}
 
-        {/* Display Error Message */}
         {error && !uploadSuccess && (
           <div className="alert-error">
             {error}
           </div>
         )}
 
-        {/* Progress Bar - Show during upload and initial processing handoff */}
         {(uploading || isProcessing) && !uploadSuccess && (
           <div className="upload-progress-section">
             <div className="progress-info">
@@ -259,10 +300,8 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           </div>
         )}
 
-        {/* Form Content - Hide if successful */}
         {!uploadSuccess && (
           <>
-            {/* File Input */}
             <div className="form-group">
               <label className="form-label">Video File *</label>
               <input
@@ -279,7 +318,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
               )}
             </div>
 
-            {/* Title Input */}
             <div className="form-group">
               <label className="form-label">Video Title</label>
               <input
@@ -292,7 +330,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
               />
             </div>
 
-            {/* Date Input */}
             <div className="form-group">
               <label className="form-label">Video Recording Date *</label>
               <input
@@ -305,7 +342,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
               />
             </div>
 
-            {/* Time Inputs */}
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Start Time</label>
@@ -329,7 +365,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
               </div>
             </div>
 
-            {/* Location Selection */}
             <div className="form-group">
               <label className="form-label">Location *</label>
               <select
@@ -351,7 +386,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
               </select>
             </div>
 
-            {/* Action Buttons */}
             <div className="modal-actions">
               <button
                 onClick={handleClose}
@@ -371,7 +405,6 @@ const VideoUploadModal = ({ isOpen, onClose, onUpload }) => {
           </>
         )}
 
-        {/* Auto-Close Message */}
         {uploadSuccess && (
           <div className="auto-close-message">
             <p>Modal will close automatically...</p>

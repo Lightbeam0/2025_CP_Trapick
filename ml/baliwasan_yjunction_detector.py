@@ -6,7 +6,6 @@ import os
 import numpy as np
 import time
 from collections import defaultdict, deque
-import threading
 
 from .base_detector import BaseDetector
 
@@ -18,7 +17,6 @@ class BaliwasanYJunctionDetector(BaseDetector):
         print("🚀 Initializing YOLO model for Baliwasan Y-Junction...")
         
         # FORCE DEDICATED GPU USAGE
-        import os
         os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # Force GPU 0
         
         # Check GPU availability
@@ -68,7 +66,7 @@ class BaliwasanYJunctionDetector(BaseDetector):
         print("✅ Baliwasan Y-Junction Detector initialized successfully")
 
     def analyze_video(self, video_path, progress_callback=None, save_output=True):
-        """EXACT SAME as old detector but with GPU acceleration and progress tracking"""
+        """EXACT SAME as old detector but with GPU acceleration and FIXED progress tracking"""
         print(f"🎯 Starting Baliwasan Y-Junction analysis: {video_path}")
         
         # Initialize tracking for this video
@@ -91,7 +89,7 @@ class BaliwasanYJunctionDetector(BaseDetector):
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         print(f"📊 Video Info: {width}x{height}, {fps:.1f} FPS, {total_frames} frames")
@@ -136,10 +134,10 @@ class BaliwasanYJunctionDetector(BaseDetector):
 
             self.frame_count += 1
             
-            # Update progress every 50 frames
-            if progress_callback and self.frame_count % 50 == 0:
-                message = f"Processing frame {self.frame_count}/{total_frames}"
-                progress_callback(self.frame_count, total_frames, message)
+            # FIXED PROGRESS UPDATE: Every 30 frames → smooth 10% to 90%
+            if progress_callback and self.frame_count % 30 == 0 and total_frames > 0:
+                progress = int((self.frame_count / total_frames) * 80) + 10
+                progress_callback(progress, f"Analyzing frame {self.frame_count}/{total_frames}")
             
             # NO FRAME SKIPPING - PROCESS EVERY FRAME
             frame_copy = frame.copy()
@@ -179,9 +177,9 @@ class BaliwasanYJunctionDetector(BaseDetector):
             processing_time = time.time() - frame_start
             processing_times.append(processing_time)
 
-        # Final progress update
+        # FINAL PROGRESS: 95%
         if progress_callback:
-            progress_callback(total_frames, total_frames, "Finalizing processing...")
+            progress_callback(95, "Finalizing analysis...")
 
         # Cleanup
         cap.release()

@@ -1,75 +1,101 @@
 # trapickapp/tasks.py
 import os
+import traceback
+import logging
 from celery import shared_task
 import cv2
-from django.conf import settings
 from django.utils import timezone
+from django.conf import settings
+
 from .models import VideoFile, TrafficAnalysis, Location, LocationDateGroup
 from .progress import ProgressTracker
 from ml.detector_factory import DetectorFactory
-import logging
 
 logger = logging.getLogger(__name__)
 
+
 @shared_task(bind=True)
 def process_video_task(self, video_id, location_id=None):
-    logger.info(f"🎬 Starting processing for video {video_id}")
+    logger.info(f"Starting processing for video {video_id}")
+
+    # CRITICAL: Clear any old stuck progress (this fixes "stuck at 5%" forever)
+    ProgressTracker.clear_progress(video_id)
 
     try:
-        # Get video and location objects
         video_obj = VideoFile.objects.get(id=video_id)
         location = Location.objects.get(id=location_id)
 
-        # Update status and initial progress
         video_obj.processing_status = 'processing'
         video_obj.save(update_fields=['processing_status'])
 
-        # --- CRITICAL: Initialize ProgressTracker ---
+        # Initialize fresh tracker
         progress_tracker = ProgressTracker(video_id)
-        progress_tracker.set_progress(5, "Initializing video processing...")
+        progress_tracker.set_progress(5, "Initializing...")
 
         # Get detector
         detector = DetectorFactory.get_detector(location.processing_profile)
-
-        video_obj.update_progress(10, "Loading detector and video...") # Update DB too, if needed
-        progress_tracker.set_progress(10, "Loading detector and video...") # Also broadcast
+        progress_tracker.set_progress(10, "Loading detector...")
 
         # Get video info
         cap = cv2.VideoCapture(video_obj.file_path.path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
         cap.release()
 
-        logger.info(f"📊 Video info: {total_frames} frames, {fps:.1f} FPS")
-
-        # Store video info
         video_obj.total_frames = total_frames
         video_obj.fps = fps
         video_obj.save(update_fields=['total_frames', 'fps'])
 
-        # Process video with progress callback
+        # FIXED PROGRESS CALLBACK
         def progress_callback(frame_number, total_frames, message=""):
-            # Calculate progress based on frame number
-            # Ensure progress doesn't exceed 80% until saving results
-            calculated_progress = min(80, 20 + int((frame_number / total_frames) * 60))
-            # Update database for polling (optional, but good for fallback)
-            video_obj.update_progress(calculated_progress, message)
-            # --- CRITICAL: Use ProgressTracker to broadcast ---
-            progress_tracker.set_progress(calculated_progress, message)
-            logger.info(f"📈 Progress: {calculated_progress}% - {message}")
+            
+            # Case 1: total_frames is actually a message string
+            if isinstance(total_frames, str) and ("Analyzing" in total_frames or "frame" in total_frames.lower()):
+                actual_progress = frame_number  # First arg is the progress percentage
+                actual_message = total_frames    # Second arg is the message
+                
+                # Ensure progress is in valid range
+                try:
+                    actual_progress = int(actual_progress)
+                    actual_progress = max(10, min(88, actual_progress))  # Clamp between 10-88%
+                except (ValueError, TypeError):
+                    logger.warning(f"⚠️ Invalid progress value: {frame_number}")
+                    return
+                
+                video_obj.update_progress(actual_progress, actual_message)
+                progress_tracker.set_progress(actual_progress, actual_message)
+                return
+            
+            # Case 2: Normal call with frame numbers
+            try:
+                frame_number = int(frame_number)
+                total_frames = int(total_frames)
+            except (ValueError, TypeError):
+                logger.warning(f"⚠️ Invalid frame numbers: {frame_number}/{total_frames}")
+                return
+            
+            if total_frames <= 0:
+                return
+            
+            # Calculate progress: 10% → 88% based on frame progress
+            progress = min(88, 10 + int((frame_number / total_frames) * 78))
+            msg = message or f"Processing frame {frame_number}/{total_frames}"
+            
+            video_obj.update_progress(progress, msg)
+            progress_tracker.set_progress(progress, msg)
 
-        # Call detector with progress callback
+        progress_tracker.set_progress(15, "Starting analysis...")
+
+        # MAIN ANALYSIS
         report = detector.analyze_video(
             video_obj.file_path.path,
             progress_callback=progress_callback,
             save_output=True
         )
 
-        # Update progress before saving analysis
-        progress_tracker.set_progress(85, "Saving analysis results...")
-        video_obj.update_progress(85, "Saving analysis results...")
+        progress_tracker.set_progress(90, "Saving results...")
 
-        # Create analysis record
+        # Create analysis
         analysis = TrafficAnalysis.objects.create(
             video_file=video_obj,
             location=location,
@@ -80,96 +106,75 @@ def process_video_task(self, video_id, location_id=None):
             motorcycle_count=report['summary']['vehicle_breakdown'].get('motorcycle', 0),
             bus_count=report['summary']['vehicle_breakdown'].get('bus', 0),
             bicycle_count=report['summary']['vehicle_breakdown'].get('bicycle', 0),
-            peak_traffic=report['summary']['peak_traffic'],
-            average_traffic=report['summary']['average_traffic_density'],
+            peak_traffic=report['summary'].get('peak_traffic', 0),
+            average_traffic=report['summary'].get('average_traffic_density', 0),
             congestion_level=report['metrics']['congestion_level'],
             traffic_pattern=report['metrics']['traffic_pattern'],
             analysis_data=report
         )
 
-        progress_tracker.set_progress(90, "Assigning to location-date group...")
-        video_obj.update_progress(90, "Assigning to location-date group...")
-
-        # Grouping logic
-        if video_obj.video_date:
-            group_date = video_obj.video_date
-        else:
-            group_date = timezone.now().date()
-
-        group, created = LocationDateGroup.objects.get_or_create(
-            location=location,
-            date=group_date
-        )
-
+        # Grouping
+        group_date = video_obj.video_date or timezone.now().date()
+        group, _ = LocationDateGroup.objects.get_or_create(location=location, date=group_date)
         video_obj.location_date_group = group
+
+        # Final video updates
+        if report.get('output_video_path'):
+            try:
+                video_obj.processed_video_path = os.path.relpath(
+                    report['output_video_path'],
+                    settings.MEDIA_ROOT
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Could not set processed video path: {e}")
+
         video_obj.processing_status = 'completed'
         video_obj.processed = True
         video_obj.processed_at = timezone.now()
-
-        # Update processed video path if available
-        if 'output_video_path' in report and report['output_video_path']:
-            try:
-                video_obj.processed_video_path = report['output_video_path']
-            except Exception as path_error:
-                logger.error(f"❌ Error setting processed video path: {path_error}")
-
         video_obj.save()
 
-        # --- ENHANCEMENT: Gather info for the modal ---
-        video_info_for_modal = {
+        # FINAL: Send 100% + modal info
+        video_info = {
             'filename': video_obj.filename,
             'location_name': location.display_name,
-            'group_date': group.date.isoformat(), # Use isoformat for consistency
-            'group_id': str(group.id), # String ID for URL construction
-            'video_id': str(video_obj.id), # String ID for URL construction
+            'group_date': group.date.isoformat(),
+            'group_id': str(group.id),
+            'video_id': str(video_obj.id),
             'total_vehicles': analysis.total_vehicles
         }
 
-        print(f"🎯 TASK: About to send completion with video_info: {video_info_for_modal}")
+        progress_tracker.set_progress(100, "Complete!")
+        progress_tracker.complete_processing(
+            message="Processing completed successfully!",
+            video_info=video_info
+        )
 
-        # --- CRITICAL: Use ProgressTracker to signal completion WITH INFO ---
-        progress_tracker.complete_processing("Processing completed successfully!", video_info=video_info_for_modal)
-
-        print(f"🎯 TASK: Completion message sent for video {video_id}")
-
-        logger.info(f"🎉 Video processing completed for {video_id}")
-
-        return {
-            'status': 'success',
-            'message': f'Video {video_id} processed successfully',
-            'video_id': str(video_id),
-            'total_vehicles': report['summary']['total_vehicles_counted'],
-            'video_info': video_info_for_modal # Include info for potential frontend use
-        }
+        logger.info(f"✅ Video {video_id} processed successfully")
+        logger.info(f"📋 Video info for modal: {video_info}")
+        
+        return {'status': 'success', 'video_info': video_info}
 
     except Exception as exc:
-        logger.error(f"❌ Video processing failed for {video_id}: {str(exc)}")
-        import traceback
+        logger.error(f"❌ Processing failed for video {video_id}: {exc}", exc_info=True)
         traceback.print_exc()
 
-        # --- ENHANCEMENT: Gather error details for the modal ---
-        error_details_for_modal = {
-            'error_message': str(exc),
-            'traceback': traceback.format_exc() # Be careful with exposing full tracebacks in production
-        }
-
-        # Update progress on failure using ProgressTracker WITH DETAILS
-        try:
-            progress_tracker = ProgressTracker(video_id)
-            progress_tracker.fail_processing(f"Processing failed: {str(exc)}", error_details=error_details_for_modal)
-        except Exception as tracker_error:
-            logger.error(f"❌ Error updating progress via tracker on failure: {tracker_error}")
-
-        # Update video status to failed
         try:
             video_obj = VideoFile.objects.get(id=video_id)
             video_obj.processing_status = 'failed'
-            video_obj.save()
-        except VideoFile.DoesNotExist:
-            logger.error(f"❌ Video object {video_id} not found to update status on failure.")
+            video_obj.save(update_fields=['processing_status'])
+        except Exception as e:
+            logger.error(f"❌ Could not update video status to failed: {e}")
 
-        # Re-raise the exception to mark the task as failed
-        raise exc 
+        try:
+            tracker = ProgressTracker(video_id)
+            tracker.fail_processing(
+                message="Processing failed",
+                error_details={'error_message': str(exc)}
+            )
+        except Exception as e:
+            logger.error(f"❌ Could not send failure notification: {e}")
+
+        raise exc
 
 
 @shared_task

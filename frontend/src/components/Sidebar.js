@@ -1,382 +1,190 @@
-// src/components/Sidebar.js
-import React, { useState, useEffect, useRef } from "react";
-import { FaChartLine, FaCarSide, FaTrafficLight, FaCog, FaUpload, FaMagic, FaMapMarkerAlt, FaSpinner, FaCheck, FaTimes } from "react-icons/fa";
-import { useLocation } from 'react-router-dom'; // Import useLocation
+// src/components/Sidebar.js - UPDATED VERSION
+import React from "react";
+import { FaChartLine, FaCarSide, FaTrafficLight, FaCog, FaUpload, FaMagic, FaMapMarkerAlt } from "react-icons/fa";
+import { useLocation } from 'react-router-dom';
 import VideoUploadModal from "./VideoUploadModal";
 import ProcessingResultModal from "./ProcessingResultModal";
+import { useVideoProgress } from '../hooks/useVideoProgress';
 
 function Sidebar() {
-  const location = useLocation(); // Get the current location
+  const location = useLocation();
+  const { progressStats, connectionStatus, isConnected } = useVideoProgress();
+  
+  const [isUploadModalOpen, setIsUploadModalOpen] = React.useState(false);
+  const [processingResult, setProcessingResult] = React.useState(null);
 
-  const [processingVideos, setProcessingVideos] = useState({});
-  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
-  const [wsConnected, setWsConnected] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState('Connecting...');
-  const [processingResult, setProcessingResult] = useState(null);
-  const wsRef = useRef(null);
+  const isActiveLink = (href) => location.pathname === href;
 
-  // Function to determine if a link should be active
-  const isActiveLink = (href) => {
-    return location.pathname === href;
-  };
+  // CRITICAL: Listen for completion events and show modal
+  React.useEffect(() => {
+    if (!progressStats.details) return;
 
-  const connectToGeneralProgressWS = () => {
-    if (wsRef.current) {
-        wsRef.current.close();
-    }
-
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//127.0.0.1:8000/ws/progress/`;
-
-    console.log("🔌 Attempting to connect to general progress WebSocket:", wsUrl);
-    setConnectionStatus('Connecting...');
-
-    try {
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        console.log("✅ General Progress WebSocket connected");
-        setWsConnected(true);
-        setConnectionStatus('Live');
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          console.log("📨 Sidebar received WebSocket message:", data);
-
-          if (data.type === 'progress_update') {
-            console.log(`📊 Updating progress for ${data.video_id}: ${data.progress}% - ${data.message}`);
-            setProcessingVideos(prev => ({
-              ...prev,
-              [data.video_id]: {
-                ...prev[data.video_id],
-                progress: data.progress,
-                message: data.message,
-                status: 'processing',
-                id: data.video_id,
-                filename: prev[data.video_id]?.filename || 'Unknown'
-              }
-            }));
-          } 
-          else if (data.type === 'processing_complete') {
-            console.log(`✅ Processing complete for ${data.video_id}:`, data);
-            
-            setProcessingVideos(prev => ({
-              ...prev,
-              [data.video_id]: {
-                ...prev[data.video_id],
-                progress: 100,
-                message: data.message,
-                status: 'completed',
-                id: data.video_id,
-                filename: prev[data.video_id]?.filename || 'Unknown'
-              }
-            }));
-
-            const modalData = {
-              status: 'completed',
-              message: data.message || 'Processing completed successfully!',
-              video_id: data.video_id,
-              video_info: data.video_info || {}
-            };
-            
-            console.log("🎯 Setting modal data:", modalData);
-            setProcessingResult(modalData);
-
-          } 
-          else if (data.type === 'processing_failed') {
-            console.log(`❌ Processing failed for ${data.video_id}:`, data);
-            
-            setProcessingVideos(prev => ({
-              ...prev,
-              [data.video_id]: {
-                ...prev[data.video_id],
-                progress: 0,
-                message: data.message,
-                status: 'failed',
-                id: data.video_id,
-                filename: prev[data.video_id]?.filename || 'Unknown'
-              }
-            }));
-
-            const modalData = {
-              status: 'failed',
-              message: data.message || 'Processing failed!',
-              video_id: data.video_id,
-              error_details: data.error_details || {}
-            };
-            
-            console.log("🎯 Setting modal data:", modalData);
-            setProcessingResult(modalData);
-          } 
-          else if (data.type === 'all_progress') {
-            console.log("📊 Received initial progress data:", data.progress_data);
-            setProcessingVideos(data.progress_data);
-          } 
-          else {
-            console.warn("⚠️ Sidebar received unknown message type:", data.type, data);
-          }
-        } catch (error) {
-          console.error("❌ Error parsing WebSocket message in Sidebar:", error, event.data);
-        }
-      };
-
-      ws.onclose = (event) => {
-        console.log(`❌ WebSocket closed: Code ${event.code}, Reason: ${event.reason}`);
-        setWsConnected(false);
-        setConnectionStatus(`Disconnected (${event.code})`);
+    Object.keys(progressStats.details).forEach(videoId => {
+      const video = progressStats.details[videoId];
+      
+      console.log(`🔍 Checking video ${videoId}:`, {
+        status: video.status,
+        hasVideoInfo: !!video.video_info,
+        modalShown: video.modalShown
+      });
+      
+      // Only trigger modal once when status becomes 'completed'
+      if (video.status === 'completed' && video.video_info && !video.modalShown) {
+        console.log('🎉 TRIGGERING SUCCESS MODAL for:', videoId);
         
-        setTimeout(() => {
-          console.log("🔄 Attempting to reconnect WebSocket...");
-          connectToGeneralProgressWS();
-        }, 3000);
-      };
-
-      ws.onerror = (error) => {
-        console.error("❌ WebSocket error:", error);
-        setWsConnected(false);
-        setConnectionStatus('Connection Error');
-      };
-    } catch (error) {
-      console.error("❌ Error creating WebSocket connection:", error);
-      setWsConnected(false);
-      setConnectionStatus('Connection Failed');
-    }
-  };
-
-  useEffect(() => {
-    connectToGeneralProgressWS();
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
+        setProcessingResult({
+          status: 'completed',  // ✅ CHANGED: Use 'status' instead of 'type'
+          message: 'Video processed successfully!',
+          video_info: video.video_info
+        });
+        
+        // Mark as shown to prevent duplicate modals
+        progressStats.details[videoId].modalShown = true;
       }
-    };
-  }, []);
-
-  useEffect(() => {
-    const pollProgress = async () => {
-      if (wsConnected) {
-        return;
+      
+      // Handle failures
+      if (video.status === 'failed' && video.error_details && !video.modalShown) {
+        console.log('❌ TRIGGERING ERROR MODAL for:', videoId);
+        
+        setProcessingResult({
+          status: 'failed',  // ✅ CHANGED: Use 'status' instead of 'type'
+          message: 'Processing failed',
+          error_details: video.error_details  // ✅ CHANGED: Use 'error_details' not 'error'
+        });
+        
+        progressStats.details[videoId].modalShown = true;
       }
-      console.log("🔄 Polling for progress (fallback)...");
-      try {
-        const response = await fetch('http://127.0.0.1:8000/api/progress/active/');
-        if (response.ok) {
-          const progressData = await response.json();
-          setProcessingVideos(progressData);
-        }
-      } catch (error) {
-        console.error('Error polling progress:', error);
-      }
-    };
-
-    const interval = setInterval(pollProgress, wsConnected ? 30000 : 10000);
-    pollProgress();
-
-    return () => clearInterval(interval);
-  }, [wsConnected]);
+    });
+  }, [progressStats.details]);
 
   const handleUploadSuccess = (result) => {
     console.log("Upload successful:", result);
     setIsUploadModalOpen(false);
-
-    const uploadId = result.upload_id || result.id;
-    const filename = result.video_info?.filename || result.filename || 'Uploading...';
-
-    if (uploadId) {
-      setProcessingVideos(prev => ({
-        ...prev,
-        [uploadId]: {
-          progress: 0,
-          message: 'Upload complete, starting processing...',
-          status: 'uploaded',
-          filename: filename,
-          id: uploadId
-        }
-      }));
-    }
   };
-
-  const allProcessingVideos = Object.values(processingVideos);
-  const activeProcessing = allProcessingVideos.filter(v =>
-    v.status === 'uploaded' || v.status === 'processing'
-  );
-  const completedVideos = allProcessingVideos.filter(v => v.status === 'completed');
-  const failedVideos = allProcessingVideos.filter(v => v.status === 'failed');
-
-  useEffect(() => {
-    const videosToRemove = [...completedVideos, ...failedVideos];
-    if (videosToRemove.length > 0) {
-      const timer = setTimeout(() => {
-        setProcessingVideos(prev => {
-          const updated = { ...prev };
-          videosToRemove.forEach(video => {
-            delete updated[video.id];
-          });
-          return updated;
-        });
-      }, 10000);
-      return () => clearTimeout(timer);
-    }
-  }, [completedVideos, failedVideos]);
 
   return (
     <div className="sidebar">
       <div className="sidebar-header">
         <h1>Traffic Monitor</h1>
         <p>Zamboanga City</p>
+        <small style={{
+          color: isConnected ? '#10b981' : '#ef4444',
+          fontSize: '11px',
+          display: 'block',
+          marginTop: '4px'
+        }}>
+          {isConnected ? 'Live' : 'Offline'}
+        </small>
       </div>
 
       <nav className="sidebar-nav">
         <ul className="sidebar-nav-list">
-          <li>
-            {/* Use the isActiveLink function */}
-            <a href="/" className={`sidebar-nav-link ${isActiveLink('/') ? 'active' : ''}`}>
-              <span className="sidebar-nav-icon"><FaChartLine /></span>
-              <span>Overview</span>
-              {/* The active indicator is now correctly associated with the active link */}
-              {isActiveLink('/') && <span className="active-indicator"></span>}
-            </a>
-          </li>
-          <li>
-            {/* Use the isActiveLink function */}
-            <a href="/vehicles" className={`sidebar-nav-link ${isActiveLink('/vehicles') ? 'active' : ''}`}>
-              <span className="sidebar-nav-icon"><FaCarSide /></span>
-              <span>Vehicles Passing</span>
-              {isActiveLink('/vehicles') && <span className="active-indicator"></span>}
-            </a>
-          </li>
-          <li>
-            {/* Use the isActiveLink function */}
-            <a href="/congested" className={`sidebar-nav-link ${isActiveLink('/congested') ? 'active' : ''}`}>
-              <span className="sidebar-nav-icon"><FaTrafficLight /></span>
-              <span>Congested Roads</span>
-              {isActiveLink('/congested') && <span className="active-indicator"></span>}
-            </a>
-          </li>
-          <li>
-            {/* Use the isActiveLink function */}
-            <a href="/locations" className={`sidebar-nav-link ${isActiveLink('/locations') ? 'active' : ''}`}>
-              <span className="sidebar-nav-icon"><FaMapMarkerAlt /></span>
-              <span>Locations</span>
-              {isActiveLink('/locations') && <span className="active-indicator"></span>}
-            </a>
-          </li>
-          <li>
-            {/* Use the isActiveLink function */}
-            <a href="/predictions" className={`sidebar-nav-link ${isActiveLink('/predictions') ? 'active' : ''}`}>
-              <span className="sidebar-nav-icon"><FaMagic /></span>
-              <span>Traffic Predictions</span>
-              {isActiveLink('/predictions') && <span className="active-indicator"></span>}
-            </a>
-          </li>
-          <li>
-            {/* Use the isActiveLink function */}
-            <a href="/settings" className={`sidebar-nav-link ${isActiveLink('/settings') ? 'active' : ''}`}>
-              <span className="sidebar-nav-icon"><FaCog /></span>
-              <span>Settings</span>
-              {isActiveLink('/settings') && <span className="active-indicator"></span>}
-            </a>
-          </li>
+          <li><a href="/" className={`sidebar-nav-link ${isActiveLink('/') ? 'active' : ''}`}><FaChartLine /> <span>Overview</span></a></li>
+          <li><a href="/vehicles" className={`sidebar-nav-link ${isActiveLink('/vehicles') ? 'active' : ''}`}><FaCarSide /> <span>Vehicles Passing</span></a></li>
+          <li><a href="/congested" className={`sidebar-nav-link ${isActiveLink('/congested') ? 'active' : ''}`}><FaTrafficLight /> <span>Congested Roads</span></a></li>
+          <li><a href="/locations" className={`sidebar-nav-link ${isActiveLink('/locations') ? 'active' : ''}`}><FaMapMarkerAlt /> <span>Locations</span></a></li>
+          <li><a href="/predictions" className={`sidebar-nav-link ${isActiveLink('/predictions') ? 'active' : ''}`}><FaMagic /> <span>Traffic Predictions</span></a></li>
+          <li><a href="/settings" className={`sidebar-nav-link ${isActiveLink('/settings') ? 'active' : ''}`}><FaCog /> <span>Settings</span></a></li>
         </ul>
       </nav>
 
-      {(activeProcessing.length > 0 || completedVideos.length > 0 || failedVideos.length > 0) && (
+      {/* PROGRESS SECTION */}
+      {progressStats.total > 0 && (
         <div className="progress-section">
-
-          {activeProcessing.length > 0 && (
+          {/* PROCESSING */}
+          {progressStats.active > 0 && (
             <>
               <div className="progress-header">
-                <FaSpinner className="progress-spinner" />
-                <span className="progress-title">
-                  Processing ({activeProcessing.length})
-                </span>
+                <span className="progress-spinner">⏳</span>
+                <span className="progress-title">Processing ({progressStats.active})</span>
               </div>
-
               <div className="progress-list">
-                {activeProcessing.map((video) => (
-                  <div key={video.id} className="progress-item">
-                    <div className="progress-item-header">
-                      <span className="progress-filename" title={video.filename}>
-                        {video.filename.length > 20
-                          ? video.filename.substring(0, 20) + '...'
-                          : video.filename}
-                      </span>
-                      <span className="progress-percentage">
-                        {video.progress}%
-                      </span>
+                {progressStats.videoIds.map(videoId => {
+                  const video = progressStats.details[videoId];
+                  if (video.status !== 'processing') return null;
+
+                  return (
+                    <div key={videoId} className="progress-item">
+                      <div className="progress-item-header">
+                        <span className="progress-filename" title={video.filename}>
+                          {video.filename?.length > 20 
+                            ? video.filename.substring(0, 20) + '...' 
+                            : video.filename || videoId.substring(0, 8)}
+                        </span>
+                        <span className="progress-percentage">{video.progress}%</span>
+                      </div>
+                      <div className="progress-bar-container">
+                        <div 
+                          className="progress-bar"
+                          style={{ 
+                            width: `${video.progress}%`,
+                            backgroundColor: video.progress >= 100 ? '#10b981' : '#3b82f6'
+                          }}
+                        ></div>
+                      </div>
+                      <div className="progress-message">{video.message}</div>
                     </div>
-                    <div className="progress-bar-container">
-                      <div
-                        className="progress-bar"
-                        style={{ width: `${video.progress}%` }}
-                      ></div>
-                    </div>
-                    <div className="progress-message">
-                      {video.message}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </>
           )}
 
-          {completedVideos.length > 0 && (
+          {/* COMPLETED */}
+          {progressStats.completed > 0 && (
             <div className="completed-section">
               <div className="completed-header">
-                <FaCheck className="completed-icon" />
-                <span>Completed ({completedVideos.length})</span>
+                <span className="completed-icon">✅</span>
+                <span>Completed ({progressStats.completed})</span>
               </div>
-              {completedVideos.map((video) => (
-                <div key={video.id} className="completed-item">
-                  ✓ {video.filename}
-                </div>
-              ))}
+              {progressStats.videoIds.map(videoId => {
+                const video = progressStats.details[videoId];
+                if (video.status !== 'completed') return null;
+                return (
+                  <div key={videoId} className="completed-item">
+                    {video.filename || videoId.substring(0, 8)}
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          {failedVideos.length > 0 && (
+          {/* FAILED */}
+          {progressStats.failed > 0 && (
             <div className="failed-section">
               <div className="failed-header">
-                <FaTimes className="failed-icon" />
-                <span>Failed ({failedVideos.length})</span>
+                <span className="failed-icon">❌</span>
+                <span>Failed ({progressStats.failed})</span>
               </div>
-              {failedVideos.map((video) => (
-                <div key={video.id} className="failed-item">
-                  ✗ {video.filename}
-                </div>
-              ))}
+              {progressStats.videoIds.map(videoId => {
+                const video = progressStats.details[videoId];
+                if (video.status !== 'failed') return null;
+                return (
+                  <div key={videoId} className="failed-item">
+                    {video.filename || videoId.substring(0, 8)}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
       )}
 
-      <button
-        onClick={() => setIsUploadModalOpen(true)}
-        className="upload-button"
-      >
+      <button onClick={() => setIsUploadModalOpen(true)} className="upload-button">
         <FaUpload className="upload-icon" />
         <span>Upload Video</span>
       </button>
 
+      {/* MODALS */}
       <ProcessingResultModal
         result={processingResult}
         onClose={() => setProcessingResult(null)}
       />
-
       <VideoUploadModal
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}
         onUpload={handleUploadSuccess}
       />
-
-      <div className="sidebar-footer">
-        <p></p>
-        <p></p>
-      </div>
     </div>
   );
 }

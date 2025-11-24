@@ -29,8 +29,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'trapickapp',
     'corsheaders',
-    'rest_framework',
     'channels',
+    'rest_framework',
 ]
 
 MIDDLEWARE = [
@@ -110,8 +110,11 @@ CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 
 ASGI_APPLICATION = 'trapick.asgi.application'
 CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels.layers.InMemoryChannelLayer',  # CHANGED FROM RedisChannelLayer
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
     },
 }
 
