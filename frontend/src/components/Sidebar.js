@@ -67,19 +67,11 @@ function Sidebar() {
       <div className="sidebar-header">
         <h1>Traffic Monitor</h1>
         <p>Zamboanga City</p>
-        <small style={{
-          color: isConnected ? '#10b981' : '#ef4444',
-          fontSize: '11px',
-          display: 'block',
-          marginTop: '4px'
-        }}>
-          {isConnected ? 'Live' : 'Offline'}
-        </small>
       </div>
 
       <nav className="sidebar-nav">
         <ul className="sidebar-nav-list">
-          <li><a href="/" className={`sidebar-nav-link ${isActiveLink('/') ? 'active' : ''}`}><FaChartLine /> <span>Overview</span></a></li>
+          <li><a href="/home" className={`sidebar-nav-link ${isActiveLink('/') ? 'active' : ''}`}><FaChartLine /> <span>Overview</span></a></li>
           <li><a href="/vehicles" className={`sidebar-nav-link ${isActiveLink('/vehicles') ? 'active' : ''}`}><FaCarSide /> <span>Vehicles Passing</span></a></li>
           <li><a href="/congested" className={`sidebar-nav-link ${isActiveLink('/congested') ? 'active' : ''}`}><FaTrafficLight /> <span>Congested Roads</span></a></li>
           <li><a href="/locations" className={`sidebar-nav-link ${isActiveLink('/locations') ? 'active' : ''}`}><FaMapMarkerAlt /> <span>Locations</span></a></li>

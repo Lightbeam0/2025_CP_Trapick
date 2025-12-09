@@ -1,5 +1,9 @@
+# ml/detector_factory.py (ENSURE THIS EXISTS)
 from .vehicle_detector import RTXVehicleDetector
 from .baliwasan_yjunction_detector import BaliwasanYJunctionDetector
+from .congestion_aware_detector import CongestionAwareDetector
+from .roi_based_congestion_detector import ROIBasedCongestionDetector
+from .congestion_time_detector import CongestionTimeDetector  # ADD THIS LINE
 
 class DetectorFactory:
     @staticmethod
@@ -16,13 +20,16 @@ class DetectorFactory:
             print(f"❌ Error loading {processing_profile.detector_class}: {e}")
             print("🔄 Using fallback RTXVehicleDetector...")
             return RTXVehicleDetector()
-
+    
     @staticmethod
     def get_detector_by_name(detector_name):
         """Get detector by name for simple cases"""
         detectors = {
             'RTXVehicleDetector': RTXVehicleDetector,
             'BaliwasanYJunctionDetector': BaliwasanYJunctionDetector,
+            'CongestionAwareDetector': CongestionAwareDetector,
+            'ROIBasedCongestionDetector': ROIBasedCongestionDetector,
+            'CongestionTimeDetector': CongestionTimeDetector,  # ADD THIS LINE
         }
         detector_class = detectors.get(detector_name, RTXVehicleDetector)
         return detector_class()

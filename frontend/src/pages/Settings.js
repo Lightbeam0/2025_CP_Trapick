@@ -53,11 +53,15 @@ function Settings() {
   ];
 
   // Available detector classes (you can expand this list)
-  const detectorClasses = [
-    { value: 'RTXVehicleDetector', label: 'Standard Vehicle Detector' },
-    { value: 'BaliwasanYJunctionDetector', label: 'Baliwasan Y-Junction Detector' }
-    // Add more detector classes as you create them
-  ];
+// Available detector classes (update this to match your factory)
+const detectorClasses = [
+  { value: 'RTXVehicleDetector', label: 'Standard Vehicle Detector' },
+  { value: 'BaliwasanYJunctionDetector', label: 'Baliwasan Y-Junction Detector' },
+  { value: 'CongestionAwareDetector', label: 'Congestion Aware Detector' },
+  { value: 'ROIBasedCongestionDetector', label: 'ROI Based Congestion Detector' },
+  { value: 'CongestionTimeDetector', label: 'Congestion Time Detector' }
+  // Add more detector classes as you create them
+];
 
   useEffect(() => {
     if (activeTab === "locations") {

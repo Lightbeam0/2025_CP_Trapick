@@ -11,6 +11,53 @@ class BaseDetector:
     def __init__(self):
         self.vehicle_classes = {}
         self.track_history = defaultdict(lambda: deque(maxlen=30))
+    
+    def analyze_video(self, video_path, progress_callback=None, save_output=False, roi_normalized=None, **kwargs):
+        """
+        Analyze a video file and return traffic analysis report.
+        
+        This is the main entry point that ALL detector subclasses must implement
+        with this EXACT signature for compatibility with the Celery task system.
+        
+        Args:
+            video_path (str): Path to the video file
+            progress_callback (callable, optional): Progress update callback
+                Should accept (progress_percent, total_frames, message_string)
+            save_output (bool): Whether to save annotated video
+            roi_normalized (list, optional): Normalized ROI coordinates [(x,y), ...]
+                where x,y are in range [0, 1]. Some detectors may ignore this.
+            **kwargs: Additional detector-specific parameters
+            
+        Returns:
+            dict: Analysis report with structure:
+                {
+                    'summary': {
+                        'total_vehicles_counted': int,
+                        'vehicle_breakdown': dict,
+                        'peak_traffic': int,
+                        'average_traffic_density': float
+                    },
+                    'metadata': {
+                        'processing_time': float,
+                        'model_used': str,
+                        ...
+                    },
+                    'metrics': {
+                        'congestion_level': str,
+                        'traffic_pattern': str,
+                        ...
+                    },
+                    'output_video_path': str (optional, if save_output=True)
+                }
+                
+        Raises:
+            NotImplementedError: If subclass doesn't implement this method
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement analyze_video() with this signature:\n"
+            "def analyze_video(self, video_path, progress_callback=None, save_output=False, "
+            "roi_normalized=None, **kwargs)"
+        )
         
     def setup_enhanced_metrics(self):
         """Initialize data structures for enhanced metrics"""

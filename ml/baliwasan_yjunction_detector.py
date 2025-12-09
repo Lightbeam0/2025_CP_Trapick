@@ -1,554 +1,588 @@
 # ml/baliwasan_yjunction_detector.py
 import cv2
 import torch
-from ultralytics import YOLO
-import os
 import numpy as np
 import time
+import os
+from pathlib import Path
 from collections import defaultdict, deque
-
+from datetime import datetime
+from ultralytics import YOLO
 from .base_detector import BaseDetector
 
 class BaliwasanYJunctionDetector(BaseDetector):
-    def __init__(self, model_path='yolov8x.pt'):
-        # Initialize base class FIRST
+    def __init__(self, model_path=None, top_zone_threshold=0.40):
         super().__init__()
-        
-        print("🚀 Initializing YOLO model for Baliwasan Y-Junction...")
-        
-        # FORCE DEDICATED GPU USAGE
-        os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # Force GPU 0
-        
-        # Check GPU availability
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        print(f"🖥️  Using device: {self.device}")
-        
-        if self.device == 'cuda':
-            print(f"🎮 GPU: {torch.cuda.get_device_name()}")
-            print(f"🎮 GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
-        
-        # Load model with EXACT SAME SETTINGS as old detector
-        self.model = YOLO(model_path)
-        
-        # Move model to GPU (ONLY performance change)
-        if self.device == 'cuda':
-            self.model.model.to(self.device)
-            print("✅ Model moved to GPU")
-        
-        self.vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
-        
-        # Vehicle type colors and names
-        self.vehicle_colors = {
-            2: (0, 255, 0),    # car - green
-            3: (255, 255, 0),  # motorcycle - yellow
-            5: (0, 0, 255),    # bus - red
-            7: (255, 0, 0)     # truck - blue
-        }
-        
-        self.vehicle_names = {
-            2: "car",
-            3: "motorcycle", 
-            5: "bus",
-            7: "truck"
-        }
-        
-        # CRITICAL: Initialize enhanced metrics in constructor
-        self.setup_enhanced_metrics()
-        
-        # Tracking variables (will be reset for each video)
-        self.track_history = None
-        self.vehicle_status = None
-        self.vehicle_type_counts = None
-        self.vehicle_crossed = None
-        self.frame_count = 0
-        self.total_count = 0
-        
-        print("✅ Baliwasan Y-Junction Detector initialized successfully")
 
-    def analyze_video(self, video_path, progress_callback=None, save_output=True):
-        """EXACT SAME as old detector but with GPU acceleration and FIXED progress tracking"""
-        print(f"🎯 Starting Baliwasan Y-Junction analysis: {video_path}")
+        print("\n" + "="*70)
+        print("🚦 BALIWASAN Y-JUNCTION DETECTOR - COLLISION4 MODEL")
+        print("="*70)
+
+        # AUTO-LOAD COLLISION4 MODEL
+        if model_path is None:
+            current_file = Path(__file__).resolve()
+            project_root = current_file.parents[2]  # TRAPICK/
+
+            # UPDATED: Use collision4_model path
+            model_path = project_root / "runs" / "detect" / "collision4_model" / "weights" / "best.pt"
+            
+            if not model_path.exists():
+                raise FileNotFoundError(
+                    f"❌ Collision4 model not found at: {model_path}\n"
+                    f"   Expected: runs/detect/collision4_model/weights/best.pt"
+                )
+                
+            print(f"📂 AUTO-LOADED COLLISION4 MODEL:")
+            print(f"   → {model_path.relative_to(project_root)}")
+        else:
+            model_path = Path(model_path)
+            print(f"📂 MANUAL MODEL PATH:")
+            print(f"   → {model_path}")
+
+        # LOAD COLLISION4 MODEL (YOLOv8s)
+        print(f"\n⏳ Loading collision4 model: {model_path.name}")
+        self.model = YOLO(str(model_path))
+
+        # FORCE GPU
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.model.to(self.device)
+        print(f"✅ Device: {self.device.upper()}")
+
+        # UPDATED: COLLISION4 MODEL CLASSES (excluding VehicleCrash=0 and person=4)
+        self.class_names = {
+            1: 'car',
+            2: 'jeep', 
+            3: 'motorcycle',
+            5: 'tricycle',
+            6: 'truck'
+        }
+
+        # Which ones to count (all vehicle classes)
+        self.counted_classes = list(self.class_names.values())
+
+        # CONFIGURABLE TOP ZONE THRESHOLD (percentage of frame height)
+        self.top_zone_threshold = top_zone_threshold
+
+        print(f"\n🎯 COLLISION4 MODEL CONFIGURATION:")
+        print(f"   Architecture: YOLOv8s")
+        print(f"   Vehicle classes ({len(self.class_names)} types):")
+        for i, name in self.class_names.items():
+            print(f"      [{i}] {name.upper()}")
         
-        # Initialize tracking for this video
+        print(f"\n   EXCLUDED from tracking:")
+        print(f"      [0] VehicleCrash")
+        print(f"      [4] person")
+        print(f"\n   DIRECTIONAL COUNTING:")
+        print(f"      Top zone threshold: {self.top_zone_threshold*100}% of frame height")
+        print(f"      Counting: Vehicles from TOP → BOTTOM only")
+
+        # UPDATED: Colors for collision4 model vehicle classes
+        self.colors = {
+            "car": (100, 100, 255),       # Purple
+            "jeep": (255, 165, 0),        # Orange
+            "motorcycle": (255, 255, 0),  # Yellow
+            "tricycle": (255, 0, 255),    # Magenta
+            "truck": (0, 0, 255),         # Red
+        }
+
+        self.reset_tracking_state()
+        print("\n" + "="*70)
+        print("✅ BALIWASAN Y-JUNCTION DETECTOR WITH COLLISION4 MODEL READY!")
+        print("="*70 + "\n")
+
+    def reset_tracking_state(self):
+        """Reset all tracking state variables"""
         self.track_history = defaultdict(lambda: deque(maxlen=30))
         self.vehicle_status = {}
         self.vehicle_type_counts = defaultdict(int)
         self.vehicle_crossed = set()
         self.frame_count = 0
         self.total_count = 0
-        
-        # CRITICAL FIX: Initialize enhanced metrics (includes previous_positions)
         self.setup_enhanced_metrics()
+
+    def setup_counting_zone(self, frame_height, frame_width):
+        """Setup counting zone with configurable top threshold"""
+        # Top zone - where vehicles must originate from
+        self.origin_top = 0
+        self.origin_bottom = int(frame_height * self.top_zone_threshold)
         
-        # Open the provided video path
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            error_msg = f"❌ Error: Could not open video file: {video_path}"
-            print(error_msg)
-            raise Exception(error_msg)
-
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        print(f"📊 Video Info: {width}x{height}, {fps:.1f} FPS, {total_frames} frames")
-
-        # 🎯 MODIFIED: Counting line moved HIGHER in the frame
-        OFFSET_Y = -120  # Increased negative offset to move line higher
-        self.line_start = (0, int(height * 0.40) + OFFSET_Y)
-        self.line_end = (width - 1, int(height * 0.33) + OFFSET_Y)
+        # Counting zone - where we detect crossings
+        self.zone_top = int(frame_height * 0.40)
+        self.zone_bottom = int(frame_height * 0.80)
         
-        # Create counting zone (buffer area around the line)
-        ZONE_BUFFER = 25  # pixels
-        self.counting_zone_top = self.line_start[1] - ZONE_BUFFER
-        self.counting_zone_bottom = self.line_start[1] + ZONE_BUFFER
+        # Counting line in the middle of the zone
+        self.line_start = (int(frame_width * 0.1), int(frame_height * 0.60))
+        self.line_end = (int(frame_width * 0.9), int(frame_height * 0.60))
+        
+        print(f"🎯 DIRECTIONAL COUNTING ZONE CONFIGURED:")
+        print(f"   Origin zone (TOP): Y={self.origin_top}-{self.origin_bottom}")
+        print(f"   Counting zone: Y={self.zone_top}-{self.zone_bottom}")
+        print(f"   Counting line: {self.line_start} → {self.line_end}")
 
-        # Setup output video if requested
-        output_video_path = None
-        out = None
-        if save_output:
-            os.makedirs('media/processed_videos', exist_ok=True)
-            original_filename = os.path.basename(video_path)
-            name_without_ext = os.path.splitext(original_filename)[0]
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            output_filename = f"baliwasan_processed_{name_without_ext}_{timestamp}.mp4"
-            output_video_path = os.path.join('media/processed_videos', output_filename)
+    def is_coming_from_top(self, track_history):
+        """Check if vehicle originated from the top zone"""
+        if len(track_history) < 5:
+            return False
             
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-            print(f"💾 Saving output to: {output_video_path}")
+        # Check early positions in tracking history
+        early_points = list(track_history)[:5]
+        early_ys = [point[1] for point in early_points]
+        
+        # Vehicle must have started in the top origin zone
+        avg_early_y = sum(early_ys) / len(early_ys)
+        return avg_early_y <= self.origin_bottom
 
-        print(f"📏 Counting line: {self.line_start} to {self.line_end}")
-        print("🎯 Starting vehicle counting...")
-
-        processing_times = []
-        analysis_start = time.time()
-
-        # Main processing loop - PROCESS EVERY FRAME
-        while cap.isOpened():
-            frame_start = time.time()
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            self.frame_count += 1
+    def is_moving_downward(self, track_history):
+        """Check if vehicle is consistently moving downward"""
+        if len(track_history) < 3:
+            return False
             
-            # FIXED PROGRESS UPDATE: Every 30 frames → smooth 10% to 90%
-            if progress_callback and self.frame_count % 30 == 0 and total_frames > 0:
-                progress = int((self.frame_count / total_frames) * 80) + 10
-                progress_callback(progress, f"Analyzing frame {self.frame_count}/{total_frames}")
+        recent_points = list(track_history)[-5:]  # Last 5 points
+        if len(recent_points) < 3:
+            return True  # Not enough data, assume valid
             
-            # NO FRAME SKIPPING - PROCESS EVERY FRAME
-            frame_copy = frame.copy()
-            
-            # Draw counting zone background for better visibility
-            zone_overlay = frame_copy.copy()
-            cv2.rectangle(zone_overlay, (0, self.counting_zone_top), (width, self.counting_zone_bottom), (0, 100, 0), -1)
-            cv2.addWeighted(zone_overlay, 0.2, frame_copy, 0.8, 0, frame_copy)
-            
-            # Draw counting line with better visibility
-            cv2.line(frame_copy, self.line_start, self.line_end, (0, 0, 255), 4)
-            cv2.putText(frame_copy, "COUNTING LINE", (self.line_start[0], self.line_start[1] - 15), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-
-            # Process frame
-            current_counts, detections = self.process_frame(frame, self.frame_count, fps)
-            
-            # ENHANCED: UPDATE ALL METRICS
-            current_time_seconds = self.frame_count / fps if fps > 0 else 0
-            
-            # 1. Update hourly breakdown
-            self.update_hourly_data(current_counts, current_time_seconds)
-            
-            # 2. Update quality metrics
-            self.update_quality_metrics(detections, current_counts)
-            
-            # Draw detection information
-            annotated_frame = self.draw_detection_info(
-                frame_copy, detections, self.frame_count, fps, sum(current_counts.values())
-            )
-            
-            # Write to output video
-            if out is not None:
-                out.write(annotated_frame)
-
-            # Calculate processing time
-            processing_time = time.time() - frame_start
-            processing_times.append(processing_time)
-
-        # FINAL PROGRESS: 95%
-        if progress_callback:
-            progress_callback(95, "Finalizing analysis...")
-
-        # Cleanup
-        cap.release()
-        if out is not None:
-            out.release()
-            print(f"✅ Processed video saved: {output_video_path}")
-
-        total_processing_time = time.time() - analysis_start
-        print(f"✅ Baliwasan analysis completed in {total_processing_time:.2f}s")
-
-        # GENERATE ENHANCED REPORT
-        enhanced_metrics = self.get_enhanced_metrics_report(
-            total_vehicles=self.total_count,
-            video_duration=total_frames / fps if fps > 0 else 0,
-            fps=fps,
-            frame_width=width,
-            total_frames=self.frame_count
-        )
-
-        # Generate comprehensive report
-        report = self.generate_comprehensive_report(total_frames, total_processing_time, fps, enhanced_metrics)
-        if output_video_path:
-            report['output_video_path'] = output_video_path
-            
-        return report
+        ys = [point[1] for point in recent_points]
+        
+        # Calculate movement trend
+        y_changes = [ys[i+1] - ys[i] for i in range(len(ys)-1)]
+        downward_movements = [change for change in y_changes if change > 2]  # Moving down
+        
+        return len(downward_movements) >= len(y_changes) * 0.6  # At least 60% downward movement
 
     def process_frame(self, frame, frame_number, fps):
-        """EXACT SAME LOGIC as old detector process_frame method"""
-        current_counts = defaultdict(int)
-        active_detections = []
+        """Process a single frame for vehicle detection and counting"""
+        counts = defaultdict(int)
+        detections = []
 
-        # USE EXACT SAME SETTINGS AS OLD DETECTOR
+        # Run YOLO tracking with collision4 model
         results = self.model.track(
             frame, 
             persist=True, 
-            conf=0.4,  # SAME AS OLD: 0.4 confidence
-            classes=self.vehicle_classes, 
-            tracker="bytetrack.yaml",
-            verbose=False,
-            device=self.device,  # Use GPU if available
+            conf=0.4, 
+            classes=list(self.class_names.keys()),  # Only track vehicle classes
+            tracker="bytetrack.yaml", 
+            verbose=False, 
+            device=self.device
         )
 
-        if results[0].boxes is not None and results[0].boxes.id is not None:
-            # Move tensors to CPU for processing
+        if results[0].boxes and results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy()
-            track_ids = results[0].boxes.id.int().cpu().numpy()
-            class_ids = results[0].boxes.cls.int().cpu().numpy()
-            confidences = results[0].boxes.conf.float().cpu().numpy()
+            ids = results[0].boxes.id.int().cpu().numpy()
+            cls = results[0].boxes.cls.int().cpu().numpy()
+            confs = results[0].boxes.conf.float().cpu().numpy()
 
-            for i, (box, track_id, class_id, conf) in enumerate(zip(boxes, track_ids, class_ids, confidences)):
+            for box, tid, cid, conf in zip(boxes, ids, cls, confs):
+                # Only process vehicle classes we're tracking
+                if cid not in self.class_names:
+                    continue
+                    
                 x1, y1, x2, y2 = map(int, box)
-                track_id = int(track_id)
-                class_id = int(class_id)
-                confidence = float(conf)
+                name = self.class_names[int(cid)]
 
-                # Calculate center point (SAME AS OLD)
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
+                color = self.colors.get(name, (255, 255, 255))
+                speed = self.calculate_speed(tid, (cx, cy), frame_number, fps)
 
-                # Get vehicle color and name (SAME AS OLD)
-                vehicle_name = self.vehicle_names.get(class_id, "unknown")
-                vehicle_color = self.vehicle_colors.get(class_id, (255, 255, 255))
-
-                # Initialize tracking for new vehicles (SAME AS OLD)
-                if track_id not in self.vehicle_status:
-                    self.vehicle_status[track_id] = {
-                        'class_id': class_id,
-                        'class_name': vehicle_name,
-                        'crossed': False,
-                        'last_y': cy,
-                        'first_seen': frame_number,
-                        'confidence': confidence
+                if tid not in self.vehicle_status:
+                    self.vehicle_status[tid] = {
+                        "name": name, 
+                        "crossed": False, 
+                        "last_y": cy,
+                        "from_top": False,
+                        "valid_direction": False
                     }
 
-                # Update track history (SAME AS OLD)
-                self.track_history[track_id].append((cx, cy))
-                current_status = self.vehicle_status[track_id]
+                self.track_history[tid].append((cx, cy))
+                status = self.vehicle_status[tid]
+                
+                # Check if vehicle originated from top zone
+                if not status["from_top"]:
+                    status["from_top"] = self.is_coming_from_top(self.track_history[tid])
+                
+                # Check if moving in valid downward direction
+                status["valid_direction"] = self.is_moving_downward(self.track_history[tid])
+                
+                in_zone = self.zone_top <= cy <= self.zone_bottom
+                line_y = self.get_line_y(cx)
 
-                # Calculate line Y position at current X (SAME AS OLD)
-                line_y_at_cx = self.get_line_y_at_x(cx)
-
-                # Check if vehicle is in counting zone (SAME AS OLD)
-                in_counting_zone = self.counting_zone_top <= cy <= self.counting_zone_bottom
-
-                # ENHANCED: CALCULATE SPEED (optional addition)
-                speed = self.calculate_speed(track_id, (cx, cy), frame_number, fps)
-
-                # COUNTING LOGIC - EXACT SAME AS OLD DETECTOR
-                if in_counting_zone and not current_status['crossed']:
-                    prev_y = current_status['last_y']
-                    current_y = cy
-
-                    # EXACT SAME CROSSING DETECTION AS OLD
-                    if (prev_y < line_y_at_cx and current_y >= line_y_at_cx and 
-                        self.is_valid_trajectory(self.track_history[track_id], current_y, line_y_at_cx)):
-                        
-                        # Vehicle crossed the line top → bottom
-                        current_status['crossed'] = True
-                        self.vehicle_crossed.add(track_id)
+                # Crossing detection logic - ONLY COUNT IF FROM TOP AND MOVING DOWN
+                if (in_zone and not status["crossed"] and 
+                    status["from_top"] and status["valid_direction"]):
+                    
+                    if status["last_y"] < line_y <= cy:
+                        status["crossed"] = True
                         self.total_count += 1
-                        self.vehicle_type_counts[class_id] += 1
+                        self.vehicle_type_counts[name] += 1
+                        print(f"✓ #{self.total_count:03d} {name.upper()} ID:{tid} COUNTED (TOP→BOTTOM)")
 
-                        print(f"✅ #{self.total_count:03d} {vehicle_name} ID:{track_id} "
-                              f"crossed at ({cx},{cy}) - Conf: {confidence:.2f}")
+                    status["last_y"] = cy
 
-                    # Update last position
-                    current_status['last_y'] = current_y
+                if in_zone:
+                    counts[name] += 1
 
-                # Count current vehicles in zone (SAME AS OLD)
-                if in_counting_zone:
-                    current_counts[vehicle_name] += 1
-
-                active_detections.append({
-                    'track_id': track_id,
-                    'class_name': vehicle_name,
-                    'bbox': [x1, y1, x2-x1, y2-y1],  # SAME FORMAT AS OLD
-                    'confidence': confidence,
-                    'center': (cx, cy),
-                    'in_zone': in_counting_zone,
-                    'speed': speed  # Optional enhancement
+                detections.append({
+                    "track_id": int(tid),
+                    "class_name": name,
+                    "bbox": [x1, y1, x2-x1, y2-y1],
+                    "confidence": float(conf),
+                    "center": (cx, cy),
+                    "in_zone": in_zone,
+                    "speed": speed,
+                    "color": color,
+                    "from_top": status["from_top"],
+                    "valid_direction": status["valid_direction"]
                 })
 
-                # ENHANCED: STORE SPEED DATA (optional)
-                if speed is not None:
-                    self.speed_data[vehicle_name].append(speed)
+                if speed:
+                    self.speed_data[name].append(speed)
 
-        return current_counts, active_detections
+        return counts, detections
 
-    def get_line_y_at_x(self, cx):
-        """Calculate line Y position at given X coordinate (SAME AS OLD)"""
-        x1_l, y1_l = self.line_start
-        x2_l, y2_l = self.line_end
-        if x2_l != x1_l:
-            slope = (y2_l - y1_l) / (x2_l - x1_l)
-            return y1_l + slope * (cx - x1_l)
-        return y1_l
+    def get_line_y(self, x):
+        """Calculate Y coordinate of counting line at given X position"""
+        x1, y1 = self.line_start
+        x2, y2 = self.line_end
+        if x2 == x1: 
+            return y1
+        return int(y1 + (y2 - y1) * (x - x1) / (x2 - x1))
 
-    def is_valid_trajectory(self, positions, current_y, line_y):
-        """EXACT SAME as old detector trajectory validation"""
-        if len(positions) < 3:
-            return True  # Not enough data yet
+    def draw_detections(self, frame, detections, fps):
+        """Draw detection boxes and information on frame"""
+        h, w = frame.shape[:2]
+
+        # Header with model info
+        cv2.putText(frame, "BALIWASAN Y-JUNCTION | COLLISION4 MODEL (YOLOv8s)", (20, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+        cv2.putText(frame, f"TOTAL COUNT: {self.total_count}", (20, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+
+        # Draw counting zones
+        # Origin zone (top) - semi-transparent
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, self.origin_top), (w, self.origin_bottom), (0, 100, 255), -1)
+        cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+        cv2.rectangle(frame, (0, self.origin_top), (w, self.origin_bottom), (0, 100, 255), 2)
+        cv2.putText(frame, "ORIGIN ZONE", (10, self.origin_bottom - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 100, 255), 2)
         
-        # Check if vehicle is consistently moving downward
-        recent_positions = list(positions)[-5:]  # Last 5 positions
-        if len(recent_positions) < 2:
-            return True
+        # Counting zone - semi-transparent
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, self.zone_top), (w, self.zone_bottom), (255, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+        cv2.rectangle(frame, (0, self.zone_top), (w, self.zone_bottom), (255, 0, 0), 2)
+        cv2.putText(frame, "COUNTING ZONE", (10, self.zone_bottom - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        
+        # HIGHLY VISIBLE COUNTING LINE - THICK WITH ARROWS AND LABELS
+        # Draw thick main line
+        cv2.line(frame, self.line_start, self.line_end, (0, 255, 0), 6)
+        
+        # Draw dashed effect for better visibility
+        line_length = np.sqrt((self.line_end[0]-self.line_start[0])**2 + (self.line_end[1]-self.line_start[1])**2)
+        dash_length = 20
+        gap_length = 10
+        if line_length > 0:
+            direction = ((self.line_end[0]-self.line_start[0])/line_length, 
+                        (self.line_end[1]-self.line_start[1])/line_length)
             
-        y_values = [pos[1] for pos in recent_positions]
-        if all(y2 >= y1 for y1, y2 in zip(y_values[:-1], y_values[1:])):
-            return True  # Consistently moving downward
+            current_pos = 0
+            while current_pos < line_length:
+                start_pos = (int(self.line_start[0] + direction[0] * current_pos),
+                           int(self.line_start[1] + direction[1] * current_pos))
+                end_pos = (int(self.line_start[0] + direction[0] * min(current_pos + dash_length, line_length)),
+                         int(self.line_start[1] + direction[1] * min(current_pos + dash_length, line_length)))
+                cv2.line(frame, start_pos, end_pos, (0, 255, 255), 3)  # Yellow dashes
+                current_pos += dash_length + gap_length
         
-        return False
-
-    def draw_detection_info(self, frame, detections, frame_number, fps, total_current_vehicles):
-        """EXACT SAME as old detector"""
-        height, width = frame.shape[:2]
+        # Draw directional arrows along the line
+        arrow_spacing = 100
+        num_arrows = max(1, int(line_length / arrow_spacing))
         
-        # Enhanced statistics panel
-        stats = [
-            f"BALIWASAN Y-JUNCTION ANALYSIS",
-            f"Total Count: {self.total_count}",
-            f"Frame: {frame_number}",
-            f"Current in zone: {total_current_vehicles}",
-            f"Active tracks: {len(self.track_history)}"
-        ]
-        
-        # Draw statistics
-        for i, text in enumerate(stats):
-            color = (255, 255, 255)
-            if "BALIWASAN" in text:
-                color = (0, 255, 255)  # Yellow for title
-            elif "Total Count" in text:
-                color = (0, 255, 0)    # Green for count
-            cv2.putText(frame, text, (20, 30 + i * 25), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-        # Draw detections
-        for detection in detections:
-            x1, y1, w, h = detection['bbox']
-            class_name = detection['class_name']
-            confidence = detection['confidence']
-            track_id = detection['track_id']
-            in_zone = detection['in_zone']
-            speed = detection.get('speed')
-
-            color = self.vehicle_colors.get(
-                list(self.vehicle_names.keys())[list(self.vehicle_names.values()).index(class_name)], 
-                (255, 255, 255)
-            )
-
-            # Draw bounding box
-            thickness = 3 if in_zone else 2
-            cv2.rectangle(frame, (x1, y1), (x1 + w, y1 + h), color, thickness)
+        for i in range(num_arrows + 1):
+            t = i / (num_arrows + 1)
+            arrow_x = int(self.line_start[0] + t * (self.line_end[0] - self.line_start[0]))
+            arrow_y = int(self.line_start[1] + t * (self.line_end[1] - self.line_start[1]))
             
-            # Draw label with speed information
-            label = f"{class_name} {confidence:.2f}"
-            if speed:
-                label += f" {speed:.1f}km/h"
-            if in_zone:
-                label += " ✓IN ZONE"
+            # Draw downward pointing arrows
+            arrow_size = 15
+            cv2.arrowedLine(frame, 
+                          (arrow_x, arrow_y - arrow_size), 
+                          (arrow_x, arrow_y + arrow_size), 
+                          (0, 255, 0), 4, tipLength=0.5)
+        
+        # Add prominent COUNTING LINE label
+        label_bg_size = cv2.getTextSize("COUNTING LINE", cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
+        label_bg_x = (self.line_start[0] + self.line_end[0] - label_bg_size[0]) // 2
+        label_bg_y = self.line_start[1] - 20
+        
+        # Label background
+        cv2.rectangle(frame, 
+                     (label_bg_x - 10, label_bg_y - label_bg_size[1] - 10),
+                     (label_bg_x + label_bg_size[0] + 10, label_bg_y + 10),
+                     (0, 0, 0), -1)
+        cv2.rectangle(frame, 
+                     (label_bg_x - 10, label_bg_y - label_bg_size[1] - 10),
+                     (label_bg_x + label_bg_size[0] + 10, label_bg_y + 10),
+                     (0, 255, 0), 2)
+        
+        # Label text
+        cv2.putText(frame, "COUNTING LINE", (label_bg_x, label_bg_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+        # Draw each detection
+        for d in detections:
+            x, y, wb, hb = d["bbox"]
+            name = d["class_name"]
+            color = d["color"]
+            speed = d.get("speed")
             
-            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
-            cv2.rectangle(frame, (x1, y1 - label_size[1] - 10),
-                        (x1 + label_size[0], y1), color, -1)
-            cv2.putText(frame, label, (x1, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            # Build label with directional info
+            label = f"{name.upper()} {d['confidence']:.2f}"
+            if speed: 
+                label += f" {speed:.0f}kmh"
+            
+            # Add directional status
+            if d["from_top"] and d["valid_direction"]:
+                label += " ✓TOP"
+            elif not d["from_top"]:
+                label += " ✗ORIGIN"
+            else:
+                label += " ✗DIR"
+                
+            if d["in_zone"]: 
+                label += " IN ZONE"
+
+            # Draw bounding box with color coding
+            if d["from_top"] and d["valid_direction"]:
+                thickness = 4  # Thick for valid vehicles
+                box_color = (0, 255, 0)  # Green for valid
+            else:
+                thickness = 2  # Thin for invalid
+                box_color = color  # Regular color for invalid
+                
+            cv2.rectangle(frame, (x, y), (x + wb, y + hb), box_color, thickness)
+            
+            # Draw label background
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.rectangle(frame, (x, y - th - 10), (x + tw + 10, y), box_color, -1)
+            
+            # Draw label text
+            cv2.putText(frame, label, (x + 5, y - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        # Display directional counting info
+        info_y = 130
+        cv2.putText(frame, f"DIRECTIONAL COUNTING: TOP→BOTTOM ONLY", (20, info_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(frame, f"Top zone threshold: {self.top_zone_threshold*100}%", (20, info_y + 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         return frame
 
-    def generate_comprehensive_report(self, total_frames, processing_time, fps, enhanced_metrics):
-        """EXACT SAME as old detector"""
-        total_vehicles = self.total_count
-        video_duration = total_frames / fps if fps > 0 else 0
-        
-        # Calculate vehicle breakdown
-        vehicle_breakdown = {}
-        for class_id, count in self.vehicle_type_counts.items():
-            vehicle_name = self.vehicle_names.get(class_id, "unknown")
-            vehicle_breakdown[vehicle_name.lower()] = count
+    def analyze_video(self, video_path, progress_callback=None, save_output=True, roi_normalized=None, **kwargs):
+            """
+            Main video analysis method for BaliwasanYJunctionDetector
+            Compatible with task.py expectations
+            
+            Args:
+                video_path: Path to video file
+                progress_callback: Optional callback for progress updates
+                save_output: Whether to save annotated video
+                roi_normalized: Not used by this detector (uses predefined Y-junction zones)
+                **kwargs: Additional parameters (ignored)
+            """
+            # Note: This detector uses predefined Y-junction zones, not custom ROI
+            if roi_normalized:
+                print(f"⚠️  ROI parameter provided but not used by BaliwasanYJunctionDetector")
+                print(f"    This detector uses predefined directional counting zones")
+            
+            print("\n" + "="*70)
+            print(f"🎬 STARTING BALIWASAN Y-JUNCTION ANALYSIS WITH COLLISION4")
+            print("="*70)
+            print(f"📹 Video: {video_path}")
+            
+            import cv2
+            from datetime import datetime
+            
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                raise Exception(f"❌ Cannot open video file: {video_path}")
 
-        # Ensure all vehicle types are present
-        for vehicle_name in ['car', 'truck', 'bus', 'motorcycle']:
-            if vehicle_name not in vehicle_breakdown:
-                vehicle_breakdown[vehicle_name] = 0
+            # Get video properties
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            duration = total_frames / fps if fps > 0 else 0
 
-        # Calculate metrics
-        avg_vehicles_per_minute = (total_vehicles / video_duration) * 60 if video_duration > 0 else 0
-        
-        # Determine congestion level
-        if avg_vehicles_per_minute > 100:
-            congestion_level = 'high'
-        elif avg_vehicles_per_minute > 50:
-            congestion_level = 'medium'
-        else:
-            congestion_level = 'low'
+            print(f"📊 Video Properties:")
+            print(f"   Resolution: {width}x{height}")
+            print(f"   FPS: {fps:.2f}")
+            print(f"   Total frames: {total_frames}")
+            print(f"   Duration: {duration:.2f} seconds")
 
-        report = {
-            'metadata': {
-                'video_duration': video_duration,
-                'processing_time': processing_time,
-                'total_frames_processed': total_frames,
-                'analysis_date': time.strftime("%Y-%m-%d %H:%M:%S"),
-                'detector_type': 'BaliwasanYJunctionDetector',
-                'location_specific': True
-            },
-            'summary': {
-                'total_vehicles_counted': total_vehicles,
-                'vehicle_breakdown': vehicle_breakdown,
-                'peak_traffic': max(self.vehicle_type_counts.values()) if self.vehicle_type_counts else 0,
-                'average_traffic_density': total_vehicles / video_duration if video_duration > 0 else 0
-            },
-            'metrics': {
-                'vehicles_per_minute': round(avg_vehicles_per_minute, 2),
-                'congestion_level': congestion_level,
-                'traffic_pattern': 'stable',
-                'processing_efficiency': round(total_frames / processing_time, 2) if processing_time > 0 else 0
-            },
-            'baliwasan_specific': {
-                'counting_zone_top': self.counting_zone_top,
-                'counting_zone_bottom': self.counting_zone_bottom,
-                'unique_tracks_counted': len(self.vehicle_crossed),
-                'y_junction_optimized': True
-            },
-            'enhanced_metrics': enhanced_metrics
-        }
-        
-        return report
-    
-    def setup_enhanced_metrics(self):
-        """Initialize enhanced metrics tracking"""
-        self.frame_vehicle_counts = []
-        self.hourly_data = defaultdict(lambda: defaultdict(int))  # {hour: {vehicle_type: count}}
-        self.speed_data = defaultdict(list)  # {vehicle_type: [speeds]}
-        self.detection_confidences = []
-        self.tracking_quality_scores = []
-        self.previous_positions = {}  # Track previous positions for speed calculation
+            # Reset tracking state for new video
+            self.reset_tracking_state()
+            
+            # Setup counting zone with configurable top threshold
+            ret, first_frame = cap.read()
+            if not ret:
+                raise Exception("❌ Cannot read video frame")
+            
+            self.setup_counting_zone(height, width)
+            
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to start
 
-    def update_hourly_data(self, current_counts, current_time_seconds):
-        """Update hourly breakdown of vehicle counts"""
-        current_hour = int((current_time_seconds / 3600) % 24)
-        for vehicle_type, count in current_counts.items():
-            self.hourly_data[current_hour][vehicle_type] += count
-
-    def update_quality_metrics(self, detections, current_counts):
-        """Update quality metrics"""
-        # Update frame vehicle counts
-        self.frame_vehicle_counts.append(sum(current_counts.values()))
-        
-        # Update detection confidences
-        for detection in detections:
-            self.detection_confidences.append(detection['confidence'])
-        
-        # Calculate and store tracking quality score
-        if len(detections) > 0:
-            avg_confidence = sum(d['confidence'] for d in detections) / len(detections)
-            tracking_quality = min(1.0, avg_confidence * 1.2)  # Scaled quality score
-            self.tracking_quality_scores.append(tracking_quality)
-
-    def calculate_speed(self, track_id, current_position, frame_number, fps):
-        """Calculate speed for a tracked vehicle"""
-        if track_id in self.previous_positions:
-            prev_position, prev_frame = self.previous_positions[track_id]
-            if prev_frame != frame_number:  # Only calculate if not same frame
-                dx = current_position[0] - prev_position[0]
-                dy = current_position[1] - prev_position[1]
-                distance_pixels = np.sqrt(dx**2 + dy**2)
+            # Setup video writer if saving output
+            output_path = None
+            out = None
+            if save_output:
+                import os
+                os.makedirs('media/processed_videos', exist_ok=True)
+                original_filename = os.path.basename(str(video_path))
+                name_without_ext = os.path.splitext(original_filename)[0]
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_filename = f"collision4_{name_without_ext}_{timestamp}.mp4"
+                output_path = os.path.join('media/processed_videos', output_filename)
                 
-                time_seconds = (frame_number - prev_frame) / fps
-                if time_seconds > 0:
-                    # Convert pixel distance to real-world distance (this is a simplified approximation)
-                    # In a real implementation, you would need calibration data
-                    speed_pixels_per_second = distance_pixels / time_seconds
-                    # Convert to km/h (approximate conversion)
-                    speed_kmh = speed_pixels_per_second * 0.1  # Simplified conversion factor
-                    return speed_kmh
-        
-        # Update previous position for next calculation
-        self.previous_positions[track_id] = (current_position, frame_number)
-        return None
+                print(f"💾 Output will be saved to: {output_path}")
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+                
+                if not out.isOpened():
+                    print("⚠️ Failed to initialize video writer")
+                    output_path = None
+                else:
+                    print("✅ Video writer initialized")
 
-    def get_enhanced_metrics_report(self, total_vehicles, video_duration, fps, frame_width, total_frames):
-        """Generate enhanced metrics report"""
-        # Calculate hourly distribution
-        hourly_distribution = {}
-        for hour, vehicle_counts in self.hourly_data.items():
-            hourly_distribution[f"{hour:02d}:00"] = dict(vehicle_counts)
+            # Start processing
+            frame_number = 0
+            analysis_start = time.time()
+            frames_written = 0
+
+            print(f"\n⏳ Processing {total_frames} frames...")
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                # Process frame
+                counts, detections = self.process_frame(frame, frame_number, fps)
+                
+                # Draw detections on frame
+                annotated_frame = self.draw_detections(frame.copy(), detections, fps)
+                
+                # Write to output video
+                if out is not None:
+                    out.write(annotated_frame)
+                    frames_written += 1
+                
+                # FIXED: Progress callback that matches task expectations
+                if progress_callback and frame_number % 50 == 0:
+                    # Calculate actual progress percentage (15% to 88% range)
+                    progress_percent = min(88, 15 + int((frame_number / total_frames) * 73))
+                    message = f"Processing frame {frame_number}/{total_frames}"
+                    
+                    # Call with THREE parameters as expected by task
+                    progress_callback(progress_percent, total_frames, message)
+
+                frame_number += 1
+
+            # Cleanup
+            total_processing_time = time.time() - analysis_start
+            cap.release()
+            
+            if out is not None:
+                out.release()
+                print(f"✅ Processed video saved: {output_path}")
+
+            print(f"\n✅ Analysis completed in {total_processing_time:.2f} seconds")
+            print(f"📈 Total vehicles counted: {self.total_count}")
+            print(f"📊 Breakdown: {dict(self.vehicle_type_counts)}")
+            
+            # Generate report
+            report = self.generate_report(total_frames, total_processing_time, fps, {})
+            
+            # Add output path if video was saved
+            if output_path:
+                report['output_video_path'] = output_path
+                report['frames_written'] = frames_written
+                
+            return report
+
+    def generate_report(self, total_frames, proc_time, fps, enhanced):
+        """Generate comprehensive analysis report"""
+        duration = total_frames / fps if fps > 0 else 0
+        vpm = (self.total_count / duration) * 60 if duration > 0 else 0
         
-        # Calculate speed statistics
-        speed_stats = {}
-        for vehicle_type, speeds in self.speed_data.items():
-            if speeds:
-                speed_stats[vehicle_type] = {
-                    'avg_speed': sum(speeds) / len(speeds),
-                    'max_speed': max(speeds),
-                    'min_speed': min(speeds),
-                    'count': len(speeds)
-                }
-        
-        # Calculate confidence statistics
-        avg_confidence = sum(self.detection_confidences) / len(self.detection_confidences) if self.detection_confidences else 0
-        confidence_stats = {
-            'avg_confidence': avg_confidence,
-            'min_confidence': min(self.detection_confidences) if self.detection_confidences else 0,
-            'max_confidence': max(self.detection_confidences) if self.detection_confidences else 0
+        # Assess congestion level
+        if vpm > 100:
+            level = "High Congestion"
+        elif vpm > 50:
+            level = "Moderate Congestion"
+        else:
+            level = "Light Traffic"
+
+        # Assess traffic pattern
+        if len(self.track_history) > 0:
+            pattern = "Stable"  # Can be enhanced with more logic
+        else:
+            pattern = "Stable"
+
+        # Vehicle breakdown - COLLISION4 FORMAT
+        breakdown = {
+            'total_vehicles_counted': self.total_count,
+            'vehicle_breakdown': {c: self.vehicle_type_counts.get(c, 0) for c in self.counted_classes}
         }
-        
-        # Calculate tracking quality
-        avg_tracking_quality = sum(self.tracking_quality_scores) / len(self.tracking_quality_scores) if self.tracking_quality_scores else 0
-        
+
         return {
-            'processing_summary': {
-                'total_frames_processed': total_frames,
-                'average_vehicles_per_frame': sum(self.frame_vehicle_counts) / len(self.frame_vehicle_counts) if self.frame_vehicle_counts else 0,
-                'processing_efficiency_fps': total_frames / video_duration if video_duration > 0 else 0
+            "metadata": {
+                "duration": duration,
+                "processing_time": proc_time,
+                "date": time.strftime("%Y-%m-%d %H:%M"),
+                "model_used": "collision4_model (YOLOv8s)",
+                "model_architecture": "YOLOv8s",
+                "tracked_classes": self.counted_classes,
+                "excluded_classes": ["VehicleCrash", "person"],
+                "confidence_threshold": 0.4,
+                "iou_threshold": 0.7,
+                "top_zone_threshold": f"{self.top_zone_threshold*100}%",
+                "counting_direction": "TOP→BOTTOM only"
             },
-            'hourly_distribution': hourly_distribution,
-            'speed_analysis': speed_stats,
-            'detection_quality': confidence_stats,
-            'tracking_performance': {
-                'average_tracking_quality': avg_tracking_quality,
-                'total_unique_vehicles_tracked': len(self.previous_positions)
+            "summary": {
+                "total_vehicles_counted": self.total_count,
+                "vehicle_breakdown": {c: self.vehicle_type_counts.get(c, 0) for c in self.counted_classes},
+                "peak_traffic": max([len(self.track_history.get(tid, [])) for tid in self.track_history.keys()]) if self.track_history else 0,
+                "average_traffic_density": self.total_count / duration if duration > 0 else 0
             },
-            'traffic_patterns': {
-                'peak_hour': max(hourly_distribution.keys(), key=lambda h: sum(hourly_distribution[h].values())) if hourly_distribution else 'N/A',
-                'busiest_vehicle_type': max(self.vehicle_type_counts, key=self.vehicle_type_counts.get) if self.vehicle_type_counts else 'N/A'
-            }
+            "metrics": {
+                "vehicles_per_minute": round(vpm, 1),
+                "congestion_level": level,
+                "traffic_pattern": pattern
+            },
+            "enhanced": enhanced
         }
 
-# For standalone testing
+
+# TEST FUNCTION
 if __name__ == "__main__":
-    detector = BaliwasanYJunctionDetector()
-    detector.analyze_video("test_video.mp4")
+    print("\n" + "="*70)
+    print("🧪 TESTING BALIWASAN Y-JUNCTION DETECTOR WITH COLLISION4 MODEL")
+    print("="*70)
+    
+    # Test with different top zone thresholds
+    for threshold in [0.30, 0.40, 0.50]:
+        print(f"\n🔧 Testing with top_zone_threshold={threshold}")
+        detector = BaliwasanYJunctionDetector(top_zone_threshold=threshold)
+        
+        test_video = "test_video.mp4"
+        if os.path.exists(test_video):
+            report = detector.analyze_video(test_video, save_output=True)
+            print(f"\n📊 RESULT (threshold={threshold}):")
+            print(f"   Total: {report['summary']['total_vehicles_counted']}")
+            print(f"   Breakdown: {report['summary']['vehicle_breakdown']}")
+        else:
+            print(f"⚠️  Test video not found: {test_video}")
+            break

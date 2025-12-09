@@ -273,15 +273,172 @@ class TrafficAnalysis(models.Model):
         ordering = ['-analyzed_at']
 
     def get_vehicle_breakdown(self):
+        """
+        Get vehicle breakdown with collision4_model support
+        Maps internal DB fields to actual collision4 classes
+        """
+        # Check if we have collision4_model metadata
+        metrics = self.metrics_summary or {}
+        tracked_classes = metrics.get('tracked_classes', [])
+        
+        if 'collision4' in metrics.get('model_used', '').lower():
+            # COLLISION4 MODEL BREAKDOWN
+            # We stored: jeep→bus_count, tricycle→bicycle_count
+            return {
+                'car': self.car_count,
+                'jeep': self.bus_count,  # Unmapped from bus_count
+                'motorcycle': self.motorcycle_count,
+                'tricycle': self.bicycle_count,  # Unmapped from bicycle_count
+                'truck': self.truck_count,
+                'total': self.total_vehicles
+            }
+        else:
+            # LEGACY MODEL BREAKDOWN (7-class model)
+            return {
+                'cars': self.car_count,
+                'trucks': self.truck_count,
+                'motorcycles': self.motorcycle_count,
+                'buses': self.bus_count,
+                'bicycles': self.bicycle_count,
+                'others': self.other_count,
+                'total': self.total_vehicles
+            }
+    
+    def get_detailed_breakdown(self):
+        """
+        Get detailed breakdown with model information
+        """
+        metrics = self.metrics_summary or {}
+        model_used = metrics.get('model_used', 'Unknown')
+        
+        breakdown = self.get_vehicle_breakdown()
+        
         return {
-            'cars': self.car_count,
-            'trucks': self.truck_count,
-            'motorcycles': self.motorcycle_count,
-            'buses': self.bus_count,
-            'bicycles': self.bicycle_count,
-            'others': self.other_count,
-            'total': self.total_vehicles
+            'model_used': model_used,
+            'model_architecture': metrics.get('model_architecture', 'Unknown'),
+            'tracked_classes': metrics.get('tracked_classes', []),
+            'excluded_classes': metrics.get('excluded_classes', []),
+            'vehicle_counts': breakdown,
+            'total_vehicles': self.total_vehicles,
+            'confidence_threshold': metrics.get('confidence_threshold'),
+            'iou_threshold': metrics.get('iou_threshold')
         }
+    
+    def get_collision4_specific_data(self):
+        """
+        Get collision4-specific vehicle data if available
+        Returns None if not a collision4 analysis
+        """
+        metrics = self.metrics_summary or {}
+        
+        if 'collision4' not in metrics.get('model_used', '').lower():
+            return None
+        
+        # Extract collision4-specific information
+        return {
+            'model': 'collision4_model (YOLOv8s)',
+            'vehicle_types': {
+                'car': {
+                    'count': self.car_count,
+                    'class_id': 1,
+                    'mAP50': 0.958  # From training results
+                },
+                'jeep': {
+                    'count': self.bus_count,  # Stored in bus_count field
+                    'class_id': 2,
+                    'mAP50': 0.847
+                },
+                'motorcycle': {
+                    'count': self.motorcycle_count,
+                    'class_id': 3,
+                    'mAP50': 0.868
+                },
+                'tricycle': {
+                    'count': self.bicycle_count,  # Stored in bicycle_count field
+                    'class_id': 5,
+                    'mAP50': 0.853
+                },
+                'truck': {
+                    'count': self.truck_count,
+                    'class_id': 6,
+                    'mAP50': 0.874
+                }
+            },
+            'excluded_types': ['VehicleCrash', 'person'],
+            'model_performance': {
+                'overall_mAP50': 0.880,
+                'overall_mAP50_95': 0.645,
+                'confidence_threshold': 0.4,
+                'iou_threshold': 0.7
+            }
+        }
+    
+    def is_collision4_analysis(self):
+        """Check if this analysis was created using collision4_model"""
+        metrics = self.metrics_summary or {}
+        return 'collision4' in metrics.get('model_used', '').lower()
+    
+    def get_model_info(self):
+        """Get information about which model was used"""
+        metrics = self.metrics_summary or {}
+        return {
+            'model_name': metrics.get('model_used', 'Unknown'),
+            'architecture': metrics.get('model_architecture', 'Unknown'),
+            'tracked_classes': metrics.get('tracked_classes', []),
+            'excluded_classes': metrics.get('excluded_classes', []),
+            'is_collision4': self.is_collision4_analysis()
+        }
+
+    class Meta:
+        verbose_name_plural = "Traffic Analyses"
+        ordering = ['-analyzed_at']
+        indexes = [
+            models.Index(fields=['location', 'analyzed_at']),
+            models.Index(fields=['video_file']),
+            models.Index(fields=['congestion_level']),
+        ]
+
+    def __str__(self):
+        model_info = self.get_model_info()
+        model_name = model_info['model_name']
+        return f"{self.video_file.filename} - {self.total_vehicles} vehicles ({model_name})"
+
+
+# ADDITIONAL: Add this helper function outside the class
+def get_collision4_class_mapping():
+    """
+    Get mapping between collision4_model classes and database fields
+    Useful for data migration or reporting
+    """
+    return {
+        'car': {
+            'db_field': 'car_count',
+            'class_id': 1,
+            'display_name': 'Car'
+        },
+        'jeep': {
+            'db_field': 'bus_count',  # MAPPED to bus_count
+            'class_id': 2,
+            'display_name': 'Jeep',
+            'note': 'Stored in bus_count field for compatibility'
+        },
+        'motorcycle': {
+            'db_field': 'motorcycle_count',
+            'class_id': 3,
+            'display_name': 'Motorcycle'
+        },
+        'tricycle': {
+            'db_field': 'bicycle_count',  # MAPPED to bicycle_count
+            'class_id': 5,
+            'display_name': 'Tricycle',
+            'note': 'Stored in bicycle_count field for compatibility'
+        },
+        'truck': {
+            'db_field': 'truck_count',
+            'class_id': 6,
+            'display_name': 'Truck'
+        }
+    }
 
 class VehicleType(models.Model):
     name = models.CharField(max_length=50, unique=True)
