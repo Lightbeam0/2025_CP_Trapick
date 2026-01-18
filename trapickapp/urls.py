@@ -68,4 +68,11 @@ urlpatterns = [
      name='simple_group_videos'),
     path('api/debug/progress-store/', api_views.DebugProgressStoreAPI.as_view(), name='debug-progress-store'),
     path('api/debug/websocket-test/<uuid:video_id>/', api_views.DebugWebSocketTestAPI.as_view(), name='debug-websocket-test'),
+    path('api/sessions/<uuid:group_id>/video-analyses/', api_views.SessionVideoAnalysesAPI.as_view(), name='session-video-analyses'),
+    # ==================== AUTHENTICATION ENDPOINTS ====================
+    path('api/auth/login/', api_views.LoginAPI.as_view(), name='login'),
+    path('api/auth/logout/', api_views.LogoutAPI.as_view(), name='logout'),
+    path('api/auth/current-user/', api_views.CurrentUserAPI.as_view(), name='current_user'),
+    path('api/auth/register/', api_views.RegisterAPI.as_view(), name='register'),
+    path('api/auth/check-auth/', api_views.CheckAuthAPI.as_view(), name='check_auth'),
 ]

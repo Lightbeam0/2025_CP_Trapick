@@ -1,4 +1,3 @@
-# trapickapp/models.py
 from django.db import models
 from django.utils import timezone
 import uuid
@@ -8,69 +7,97 @@ from django.contrib.auth.models import User
 
 logger = logging.getLogger(__name__)
 
-# trapickapp/models.py - Update ProcessingProfile model
+
 class ProcessingProfile(models.Model):
-    """Customizable processing profiles"""
+    """Simple processing profiles for directional detectors"""
     name = models.CharField(max_length=100, unique=True)
     display_name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
     
-    # Detector configuration
-    detector_class = models.CharField(
-        max_length=100,
-        default='RTXVehicleDetector',
-        help_text="Python class name of the detector to use"
-    )
-    detector_module = models.CharField(
-        max_length=200,
-        default='ml.vehicle_detector',
-        help_text="Python module path where detector class is located"
+    # Just the detector type - no complex configuration
+    DETECTOR_TYPES = [
+        ('vertical_top_bottom', 'Vertical Top→Bottom'),
+        ('vertical_bottom_top', 'Vertical Bottom→Top'),
+        ('horizontal_left_right', 'Horizontal Left→Right'),
+        ('horizontal_right_left', 'Horizontal Right→Left'),
+        ('diagonal_ne_sw', 'Diagonal NE→SW'),
+        ('diagonal_nw_se', 'Diagonal NW→SE'),
+        ('diagonal_se_nw', 'Diagonal SE→NW'),
+        ('diagonal_sw_ne', 'Diagonal SW→NE'),
+        ('congestion_time', 'Congestion Time Detector'),
+        ('baliwasan_yjunction', 'Baliwasan Y-Junction'),
+    ]
+    
+    detector_type = models.CharField(
+        max_length=50,
+        choices=DETECTOR_TYPES,
+        default='vertical_top_bottom',
+        help_text="Type of detector to use"
     )
     
-    # Configuration parameters
-    config_parameters = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="JSON configuration for this processing profile"
-    )
+    # Simple congestion settings
+    enable_congestion_detection = models.BooleanField(default=True)
+    congestion_threshold = models.IntegerField(default=5)
     
-    # Road type categorization
+    # Road type for organization
     ROAD_TYPES = [
         ('highway', 'Highway'),
         ('intersection', 'Intersection'),
-        ('y_junction', 'Y-Junction'),
-        ('t_intersection', 'T-Intersection'),
-        ('roundabout', 'Roundabout'),
         ('urban', 'Urban Street'),
         ('generic', 'Generic'),
-        ('custom', 'Custom'),
     ]
+    
     road_type = models.CharField(
         max_length=50,
         choices=ROAD_TYPES,
         default='generic'
     )
     
+    # ✅ ADD THIS FIELD - CONFIGURATION PARAMETERS
+    config_parameters = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="JSON configuration parameters for this processing profile"
+    )
+    
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(default=timezone.now)
-    updated_at = models.DateTimeField(auto_now=True)  # ADD THIS LINE
     
     class Meta:
         ordering = ['road_type', 'display_name']
+        verbose_name = "Processing Profile"
+        verbose_name_plural = "Processing Profiles"
     
     def __str__(self):
         return f"{self.display_name} ({self.get_road_type_display()})"
     
     def get_detector_instance(self):
-        """Dynamically import and return the detector instance"""
+        """Get detector instance - simple approach"""
+        from ml.directional_detectors import get_detector
+        
         try:
-            module = __import__(self.detector_module, fromlist=[self.detector_class])
-            detector_class = getattr(module, self.detector_class)
-            return detector_class(**self.config_parameters)
-        except (ImportError, AttributeError) as e:
-            print(f"❌ [DETECTOR] Error loading detector {self.detector_class}: {e}")
-            from ml.vehicle_detector import RTXVehicleDetector
-            return RTXVehicleDetector()
+            # Get the detector
+            detector = get_detector(self.detector_type)
+            
+            # Apply simple congestion settings if supported
+            if hasattr(detector, 'enable_congestion_detection'):
+                detector.enable_congestion_detection = self.enable_congestion_detection
+            
+            if hasattr(detector, 'congestion_threshold'):
+                detector.congestion_threshold = self.congestion_threshold
+            
+            # ✅ APPLY CONFIGURATION PARAMETERS IF AVAILABLE
+            if self.config_parameters:
+                for key, value in self.config_parameters.items():
+                    if hasattr(detector, key):
+                        setattr(detector, key, value)
+            
+            return detector
+                
+        except Exception as e:
+            logger.error(f"Error creating detector {self.detector_type}: {e}")
+            raise RuntimeError(f"Failed to create detector: {e}")
+
 
 class Location(models.Model):
     name = models.CharField(max_length=100)
@@ -81,16 +108,38 @@ class Location(models.Model):
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(default=timezone.now)
     
+    # Updated to support directional detectors
     processing_profile = models.ForeignKey(
         ProcessingProfile,
         on_delete=models.PROTECT,
-        related_name='locations'
+        related_name='locations',
+        help_text="Processing profile with directional settings"
     )
     
-    detection_config = models.JSONField(default=dict, blank=True)
-
+    # Directional counting configuration for this location
+    counting_config = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Location-specific counting configuration"
+    )
+    
+    class Meta:
+        ordering = ['display_name']
+        verbose_name_plural = "Locations"
+    
     def __str__(self):
         return f"{self.display_name}"
+    
+    def get_counting_direction(self):
+        """Get counting direction for this location"""
+        profile = self.processing_profile
+        if profile.detector_type in ['vertical_top_bottom', 'vertical_bottom_top', 
+                                    'horizontal_left_right', 'horizontal_right_left',
+                                    'diagonal_ne_sw', 'diagonal_nw_se', 
+                                    'diagonal_se_nw', 'diagonal_sw_ne']:
+            return profile.get_detector_type_display()
+        return "Unknown"
+
 
 class LocationDateGroup(models.Model):
     """Groups processed videos by location and date"""
@@ -100,9 +149,16 @@ class LocationDateGroup(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
     
+    # Directional statistics
+    total_directional_count = models.IntegerField(default=0, help_text="Total vehicles counted in specific direction")
+    average_directional_flow = models.FloatField(default=0.0, help_text="Average vehicles per hour in counting direction")
+    peak_directional_flow = models.IntegerField(default=0, help_text="Peak vehicles in counting direction")
+    
     class Meta:
         unique_together = ['location', 'date']
         ordering = ['-date', 'location__display_name']
+        verbose_name = "Location Date Group"
+        verbose_name_plural = "Location Date Groups"
 
     def __str__(self):
         return f"{self.location.display_name} - {self.date}"
@@ -111,38 +167,60 @@ class LocationDateGroup(models.Model):
         """Get videos sorted by time"""
         return self.videos.all().order_by('video_start_time')
 
-    def get_total_vehicles(self):
-        """Calculate total vehicles in this group"""
-        analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=self)
-        return sum(analysis.total_vehicles for analysis in analyses) if analyses else 0
-
+    # ✅ ADD THIS METHOD - IT'S MISSING!
     def get_time_range(self):
-        """Get time range for videos in this group"""
-        videos = self.videos.all()
-        if not videos:
+        """
+        Calculate time range for videos in this group.
+        Returns a formatted string showing start time to end time.
+        """
+        videos = self.videos.filter(processing_status='completed').order_by('video_start_time')
+        
+        if not videos.exists():
             return "No time data"
         
+        # Get earliest start time and latest end time
         times = []
+        
         for video in videos:
             if video.video_start_time:
                 times.append(video.video_start_time)
             if video.video_end_time:
                 times.append(video.video_end_time)
         
-        if times:
-            return f"{min(times).strftime('%H:%M')} - {max(times).strftime('%H:%M')}"
-        return "Time range not available"
+        if not times:
+            return "No time data"
+        
+        earliest = min(times)
+        latest = max(times)
+        
+        # Format as "HH:MM - HH:MM"
+        return f"{earliest.strftime('%H:%M')} - {latest.strftime('%H:%M')}"
 
-    @classmethod
-    def get_or_create_group(cls, location, date):
-        """Get existing group or create new one"""
-        group, created = cls.objects.get_or_create(
-            location=location,
-            date=date
-        )
-        if created:
-            print(f"✅ Created new group: {location.display_name} - {date}")
-        return group, created
+    def get_total_vehicles(self):
+        """Calculate total vehicles in this group"""
+        analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=self)
+        return sum(analysis.total_vehicles for analysis in analyses) if analyses else 0
+
+    def get_directional_count(self):
+        """Get vehicles counted in specific direction"""
+        analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=self)
+        return sum(analysis.directional_count for analysis in analyses) if analyses else 0
+
+    def update_statistics(self):
+        """Update directional statistics for this group"""
+        analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=self)
+        
+        if analyses:
+            self.total_directional_count = sum(a.directional_count for a in analyses)
+            
+            # Calculate average flow (vehicles per hour)
+            total_duration = sum(a.duration_seconds for a in analyses if a.duration_seconds)
+            if total_duration > 0:
+                self.average_directional_flow = (self.total_directional_count / total_duration) * 3600
+            
+            self.peak_directional_flow = max((a.peak_directional_flow for a in analyses), default=0)
+            self.save()
+
 
 class VideoFile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -181,24 +259,35 @@ class VideoFile(models.Model):
         default='pending'
     )
     
-    # PROGRESS TRACKING FIELDS (ADD THESE)
+    # PROGRESS TRACKING FIELDS
     processing_progress = models.IntegerField(default=0, help_text="Processing progress percentage (0-100)")
     processing_message = models.CharField(max_length=255, default='Waiting to start...', help_text="Current processing status message")
     last_progress_update = models.DateTimeField(auto_now=True, help_text="Last time progress was updated")
     
+    # Video properties
     duration_seconds = models.FloatField(null=True, blank=True)
     fps = models.FloatField(null=True, blank=True)
     total_frames = models.IntegerField(null=True, blank=True)
     processed_at = models.DateTimeField(null=True, blank=True)
     title = models.CharField(max_length=200, null=True, blank=True)
     resolution = models.CharField(max_length=20, null=True, blank=True)
+    
+    # Directional processing info
+    processing_profile = models.ForeignKey(
+        ProcessingProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Processing profile used for this video"
+    )
 
     class Meta:
         ordering = ['-uploaded_at']
         indexes = [
             models.Index(fields=['processing_status']),
             models.Index(fields=['location_date_group', 'video_date']),
-            models.Index(fields=['processing_status', 'processing_progress']),  # Add this index
+            models.Index(fields=['processing_status', 'processing_progress']),
+            models.Index(fields=['processing_profile']),
         ]
 
     def __str__(self):
@@ -209,13 +298,24 @@ class VideoFile(models.Model):
             return f"{self.video_start_time.strftime('%H:%M')} - {self.video_end_time.strftime('%H:%M')}"
         return "Time unknown"
     
-    # ADD THIS METHOD FOR PROGRESS UPDATES
     def update_progress(self, progress, message):
         """Update processing progress and message"""
-        self.processing_progress = max(0, min(100, progress))  # Ensure 0-100 range
+        self.processing_progress = max(0, min(100, progress))
         self.processing_message = message
         self.save(update_fields=['processing_progress', 'processing_message', 'last_progress_update'])
         return self
+    
+    def get_processing_profile_info(self):
+        """Get processing profile information"""
+        if self.processing_profile:
+            return {
+                'name': self.processing_profile.display_name,
+                'detector_type': self.processing_profile.get_detector_type_display(),
+                'direction': self.processing_profile.get_direction_info(),
+                'congestion_detection': self.processing_profile.enable_congestion_detection,
+            }
+        return None
+
 
 class TrafficAnalysis(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -224,9 +324,9 @@ class TrafficAnalysis(models.Model):
         on_delete=models.CASCADE, 
         related_name='traffic_analysis'
     )
-    location = models.ForeignKey(Location, on_delete=models.SET_NULL, null=True, blank=True)
+    location = models.ForeignKey(Location, on_delete=models.CASCADE, null=True, blank=True)
     
-    # VEHICLE COUNTS
+    # VEHICLE COUNTS - KEEP EXISTING FOR COMPATIBILITY
     total_vehicles = models.IntegerField(default=0)
     processing_time_seconds = models.FloatField(default=0)
     analyzed_at = models.DateTimeField(default=timezone.now)
@@ -239,20 +339,44 @@ class TrafficAnalysis(models.Model):
     bicycle_count = models.IntegerField(default=0)
     other_count = models.IntegerField(default=0)
     
+    # DIRECTIONAL COUNTING RESULTS - NEW FIELDS
+    directional_count = models.IntegerField(default=0, help_text="Vehicles counted in specific direction")
+    directional_vehicles_per_minute = models.FloatField(default=0.0, help_text="Vehicles per minute in counting direction")
+    peak_directional_flow = models.IntegerField(default=0, help_text="Peak directional flow in 5-minute window")
+    
+    # CONGESTION DETECTION RESULTS - NEW FIELDS
+    congestion_events_count = models.IntegerField(default=0, help_text="Number of congestion events detected")
+    total_congestion_time = models.FloatField(default=0.0, help_text="Total congestion time in seconds")
+    congestion_percentage = models.FloatField(default=0.0, help_text="Percentage of video with congestion")
+    
+    # Congestion levels breakdown
+    congestion_none_time = models.FloatField(default=0.0, help_text="Time with no congestion")
+    congestion_light_time = models.FloatField(default=0.0, help_text="Time with light congestion")
+    congestion_moderate_time = models.FloatField(default=0.0, help_text="Time with moderate congestion")
+    congestion_heavy_time = models.FloatField(default=0.0, help_text="Time with heavy congestion")
+    congestion_severe_time = models.FloatField(default=0.0, help_text="Time with severe congestion")
+    
+    # Video properties
+    duration_seconds = models.FloatField(default=0.0, help_text="Video duration in seconds")
+    fps = models.FloatField(default=0.0, help_text="Video frames per second")
+    total_frames = models.IntegerField(default=0, help_text="Total frames processed")
+    
     # TRAFFIC METRICS
     peak_traffic = models.IntegerField(default=0)
     average_traffic = models.FloatField(default=0)
     congestion_level = models.CharField(
         max_length=20,
         choices=[
+            ('none', 'None'),
             ('very_low', 'Very Low'),
             ('low', 'Low'),
             ('medium', 'Medium'),
             ('high', 'High'),
             ('severe', 'Severe')
         ],
-        default='low'
+        default='none'
     )
+    
     traffic_pattern = models.CharField(
         max_length=20,
         choices=[
@@ -267,33 +391,55 @@ class TrafficAnalysis(models.Model):
     # ANALYSIS DATA
     analysis_data = models.JSONField(default=dict)
     metrics_summary = models.JSONField(default=dict)
+    frame_data = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Per-frame data for dashboard visualization"
+    )
+    congestion_events = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Detailed congestion events data"
+    )
 
     class Meta:
+        verbose_name = "Traffic Analysis"
         verbose_name_plural = "Traffic Analyses"
         ordering = ['-analyzed_at']
+        indexes = [
+            models.Index(fields=['location', 'analyzed_at']),
+            models.Index(fields=['video_file']),
+            models.Index(fields=['congestion_level']),
+            models.Index(fields=['directional_count']),
+        ]
+
+    def __str__(self):
+        model_info = self.get_model_info()
+        model_name = model_info['model_name']
+        direction = self.get_direction_info()
+        return f"{self.video_file.filename} - {self.directional_count} vehicles {direction} ({model_name})"
 
     def get_vehicle_breakdown(self):
         """
-        Get vehicle breakdown with collision4_model support
-        Maps internal DB fields to actual collision4 classes
+        Get vehicle breakdown with directional detector support
         """
-        # Check if we have collision4_model metadata
         metrics = self.metrics_summary or {}
-        tracked_classes = metrics.get('tracked_classes', [])
+        detector_type = metrics.get('detector_type', '')
         
-        if 'collision4' in metrics.get('model_used', '').lower():
-            # COLLISION4 MODEL BREAKDOWN
-            # We stored: jeep→bus_count, tricycle→bicycle_count
+        if 'directional' in detector_type.lower() or 'congestion' in detector_type.lower():
+            # Directional detector breakdown
             return {
                 'car': self.car_count,
-                'jeep': self.bus_count,  # Unmapped from bus_count
-                'motorcycle': self.motorcycle_count,
-                'tricycle': self.bicycle_count,  # Unmapped from bicycle_count
                 'truck': self.truck_count,
-                'total': self.total_vehicles
+                'motorcycle': self.motorcycle_count,
+                'bus': self.bus_count,
+                'bicycle': self.bicycle_count,
+                'other': self.other_count,
+                'total': self.total_vehicles,
+                'directional_total': self.directional_count,
             }
         else:
-            # LEGACY MODEL BREAKDOWN (7-class model)
+            # Legacy model breakdown
             return {
                 'cars': self.car_count,
                 'trucks': self.truck_count,
@@ -301,145 +447,151 @@ class TrafficAnalysis(models.Model):
                 'buses': self.bus_count,
                 'bicycles': self.bicycle_count,
                 'others': self.other_count,
-                'total': self.total_vehicles
+                'total': self.total_vehicles,
             }
     
-    def get_detailed_breakdown(self):
-        """
-        Get detailed breakdown with model information
-        """
+    def get_direction_info(self):
+        """Get counting direction information"""
         metrics = self.metrics_summary or {}
-        model_used = metrics.get('model_used', 'Unknown')
-        
-        breakdown = self.get_vehicle_breakdown()
-        
-        return {
-            'model_used': model_used,
-            'model_architecture': metrics.get('model_architecture', 'Unknown'),
-            'tracked_classes': metrics.get('tracked_classes', []),
-            'excluded_classes': metrics.get('excluded_classes', []),
-            'vehicle_counts': breakdown,
-            'total_vehicles': self.total_vehicles,
-            'confidence_threshold': metrics.get('confidence_threshold'),
-            'iou_threshold': metrics.get('iou_threshold')
-        }
+        return metrics.get('counting_direction', 'Unknown direction')
     
-    def get_collision4_specific_data(self):
-        """
-        Get collision4-specific vehicle data if available
-        Returns None if not a collision4 analysis
-        """
-        metrics = self.metrics_summary or {}
-        
-        if 'collision4' not in metrics.get('model_used', '').lower():
-            return None
-        
-        # Extract collision4-specific information
+    def get_congestion_summary(self):
+        """Get congestion summary"""
         return {
-            'model': 'collision4_model (YOLOv8s)',
-            'vehicle_types': {
-                'car': {
-                    'count': self.car_count,
-                    'class_id': 1,
-                    'mAP50': 0.958  # From training results
-                },
-                'jeep': {
-                    'count': self.bus_count,  # Stored in bus_count field
-                    'class_id': 2,
-                    'mAP50': 0.847
-                },
-                'motorcycle': {
-                    'count': self.motorcycle_count,
-                    'class_id': 3,
-                    'mAP50': 0.868
-                },
-                'tricycle': {
-                    'count': self.bicycle_count,  # Stored in bicycle_count field
-                    'class_id': 5,
-                    'mAP50': 0.853
-                },
-                'truck': {
-                    'count': self.truck_count,
-                    'class_id': 6,
-                    'mAP50': 0.874
-                }
+            'total_events': self.congestion_events_count,
+            'total_time': self.total_congestion_time,
+            'percentage': self.congestion_percentage,
+            'level_breakdown': {
+                'none': self.congestion_none_time,
+                'light': self.congestion_light_time,
+                'moderate': self.congestion_moderate_time,
+                'heavy': self.congestion_heavy_time,
+                'severe': self.congestion_severe_time,
             },
-            'excluded_types': ['VehicleCrash', 'person'],
-            'model_performance': {
-                'overall_mAP50': 0.880,
-                'overall_mAP50_95': 0.645,
-                'confidence_threshold': 0.4,
-                'iou_threshold': 0.7
-            }
+            'dominant_level': self.congestion_level,
         }
     
-    def is_collision4_analysis(self):
-        """Check if this analysis was created using collision4_model"""
+    def get_analysis_type(self):
+        """Get analysis type (directional/congestion)"""
         metrics = self.metrics_summary or {}
-        return 'collision4' in metrics.get('model_used', '').lower()
+        detector_type = metrics.get('detector_type', '')
+        
+        if 'directional' in detector_type.lower():
+            return 'directional'
+        elif 'congestion' in detector_type.lower():
+            return 'congestion'
+        else:
+            return 'standard'
     
     def get_model_info(self):
         """Get information about which model was used"""
         metrics = self.metrics_summary or {}
         return {
             'model_name': metrics.get('model_used', 'Unknown'),
-            'architecture': metrics.get('model_architecture', 'Unknown'),
+            'model_architecture': metrics.get('model_architecture', 'Unknown'),
+            'detector_type': metrics.get('detector_type', 'Unknown'),
+            'counting_direction': metrics.get('counting_direction', 'Unknown'),
+            'congestion_enabled': metrics.get('congestion_enabled', False),
             'tracked_classes': metrics.get('tracked_classes', []),
-            'excluded_classes': metrics.get('excluded_classes', []),
-            'is_collision4': self.is_collision4_analysis()
+            'is_directional': 'directional' in metrics.get('detector_type', '').lower(),
+            'is_congestion': 'congestion' in metrics.get('detector_type', '').lower(),
         }
 
+
+class DirectionalAnalysis(models.Model):
+    """Detailed directional analysis data"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    traffic_analysis = models.ForeignKey(
+        TrafficAnalysis, 
+        on_delete=models.CASCADE, 
+        related_name='directional_analyses'
+    )
+    
+    # Direction information
+    direction_name = models.CharField(max_length=50, help_text="Name of counting direction")
+    direction_angle = models.IntegerField(default=0, help_text="Counting angle in degrees")
+    
+    # Counting line information
+    line_start_x = models.FloatField(default=0.0)
+    line_start_y = models.FloatField(default=0.0)
+    line_end_x = models.FloatField(default=0.0)
+    line_end_y = models.FloatField(default=0.0)
+    
+    # Vehicle counts by type in this direction
+    directional_car_count = models.IntegerField(default=0)
+    directional_truck_count = models.IntegerField(default=0)
+    directional_motorcycle_count = models.IntegerField(default=0)
+    directional_bus_count = models.IntegerField(default=0)
+    directional_bicycle_count = models.IntegerField(default=0)
+    
+    # Temporal data
+    analyzed_at = models.DateTimeField(auto_now_add=True)
+    
     class Meta:
-        verbose_name_plural = "Traffic Analyses"
+        verbose_name = "Directional Analysis"
+        verbose_name_plural = "Directional Analyses"
         ordering = ['-analyzed_at']
-        indexes = [
-            models.Index(fields=['location', 'analyzed_at']),
-            models.Index(fields=['video_file']),
-            models.Index(fields=['congestion_level']),
-        ]
-
+    
     def __str__(self):
-        model_info = self.get_model_info()
-        model_name = model_info['model_name']
-        return f"{self.video_file.filename} - {self.total_vehicles} vehicles ({model_name})"
+        return f"{self.direction_name} - {self.get_total_count()} vehicles"
+
+    def get_total_count(self):
+        """Get total directional count"""
+        return (
+            self.directional_car_count + 
+            self.directional_truck_count + 
+            self.directional_motorcycle_count + 
+            self.directional_bus_count + 
+            self.directional_bicycle_count
+        )
 
 
-# ADDITIONAL: Add this helper function outside the class
-def get_collision4_class_mapping():
-    """
-    Get mapping between collision4_model classes and database fields
-    Useful for data migration or reporting
-    """
-    return {
-        'car': {
-            'db_field': 'car_count',
-            'class_id': 1,
-            'display_name': 'Car'
-        },
-        'jeep': {
-            'db_field': 'bus_count',  # MAPPED to bus_count
-            'class_id': 2,
-            'display_name': 'Jeep',
-            'note': 'Stored in bus_count field for compatibility'
-        },
-        'motorcycle': {
-            'db_field': 'motorcycle_count',
-            'class_id': 3,
-            'display_name': 'Motorcycle'
-        },
-        'tricycle': {
-            'db_field': 'bicycle_count',  # MAPPED to bicycle_count
-            'class_id': 5,
-            'display_name': 'Tricycle',
-            'note': 'Stored in bicycle_count field for compatibility'
-        },
-        'truck': {
-            'db_field': 'truck_count',
-            'class_id': 6,
-            'display_name': 'Truck'
-        }
-    }
+class CongestionEvent(models.Model):
+    """Detailed congestion event data"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    traffic_analysis = models.ForeignKey(
+        TrafficAnalysis, 
+        on_delete=models.CASCADE, 
+        related_name='detailed_congestion_events'
+    )
+    
+    # Event timing
+    start_frame = models.IntegerField()
+    end_frame = models.IntegerField()
+    start_time_seconds = models.FloatField()
+    end_time_seconds = models.FloatField()
+    duration_seconds = models.FloatField()
+    
+    # Congestion details
+    level = models.CharField(
+        max_length=20,
+        choices=[
+            ('light', 'Light'),
+            ('moderate', 'Moderate'),
+            ('heavy', 'Heavy'),
+            ('severe', 'Severe')
+        ]
+    )
+    
+    # Vehicle counts during congestion
+    peak_vehicles = models.IntegerField(default=0)
+    average_vehicles = models.FloatField(default=0.0)
+    stationary_vehicles = models.IntegerField(default=0)
+    
+    # Additional data
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        verbose_name = "Congestion Event"
+        verbose_name_plural = "Congestion Events"
+        ordering = ['start_time_seconds']
+    
+    def __str__(self):
+        return f"{self.level.capitalize()} congestion: {self.duration_seconds:.1f}s"
 
+
+# Keep the existing models below, they should work with the new system
 class VehicleType(models.Model):
     name = models.CharField(max_length=50, unique=True)
     display_name = models.CharField(max_length=50, blank=True)
@@ -455,6 +607,7 @@ class VehicleType(models.Model):
 
     class Meta:
         ordering = ['display_name']
+
 
 class Detection(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -477,7 +630,11 @@ class Detection(models.Model):
     bbox_height = models.FloatField()
     track_id = models.IntegerField(null=True, blank=True)
     
+    # Directional fields
     in_counting_zone = models.BooleanField(default=True)
+    counted_directionally = models.BooleanField(default=False, help_text="Whether vehicle was counted in specific direction")
+    direction_valid = models.BooleanField(default=False, help_text="Whether vehicle was moving in valid direction")
+    
     speed_estimate = models.FloatField(null=True, blank=True)
     direction = models.CharField(
         max_length=10,
@@ -497,11 +654,13 @@ class Detection(models.Model):
             models.Index(fields=['location', 'timestamp']),
             models.Index(fields=['traffic_analysis', 'frame_number']),
             models.Index(fields=['video_file', 'frame_number']),
+            models.Index(fields=['counted_directionally']),
         ]
         ordering = ['timestamp', 'frame_number']
 
     def __str__(self):
-        return f"{self.vehicle_type.name} at frame {self.frame_number} (conf: {self.confidence:.2f})"
+        direction_marker = "✓" if self.counted_directionally else "✗"
+        return f"{direction_marker} {self.vehicle_type.name} at frame {self.frame_number}"
 
 
 class FrameAnalysis(models.Model):
@@ -510,6 +669,7 @@ class FrameAnalysis(models.Model):
     frame_number = models.IntegerField()
     timestamp_seconds = models.FloatField()
     
+    # Vehicle counts
     car_count = models.IntegerField(default=0)
     truck_count = models.IntegerField(default=0)
     motorcycle_count = models.IntegerField(default=0)
@@ -517,20 +677,28 @@ class FrameAnalysis(models.Model):
     bicycle_count = models.IntegerField(default=0)
     total_vehicles = models.IntegerField(default=0)
     
-    congestion_level = models.CharField(max_length=20, default='low')
+    # Directional counts
+    directional_count = models.IntegerField(default=0, help_text="Vehicles counted in specific direction this frame")
+    
+    # Congestion data
+    congestion_level = models.CharField(max_length=20, default='none')
+    stationary_vehicles = models.IntegerField(default=0)
+    
     detection_data = models.JSONField(default=dict)
     
     class Meta:
         unique_together = ['traffic_analysis', 'frame_number']
         indexes = [
             models.Index(fields=['traffic_analysis', 'timestamp_seconds']),
+            models.Index(fields=['traffic_analysis', 'congestion_level']),
         ]
         ordering = ['frame_number']
 
     def __str__(self):
-        return f"Frame {self.frame_number} - {self.total_vehicles} vehicles"
+        return f"Frame {self.frame_number} - {self.total_vehicles} vehicles ({self.directional_count} directional)"
 
 
+# Keep existing models below (unchanged except for minor updates)
 class TrafficReport(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     traffic_analysis = models.ForeignKey(TrafficAnalysis, on_delete=models.CASCADE, related_name='reports')
@@ -542,6 +710,8 @@ class TrafficReport(models.Model):
         ('detailed', 'Detailed Analysis'),
         ('predictive', 'Predictive Report'),
         ('comparative', 'Comparative Report'),
+        ('directional', 'Directional Analysis Report'),
+        ('congestion', 'Congestion Analysis Report'),
     ]
     report_type = models.CharField(max_length=20, choices=REPORT_TYPES, default='detailed')
     
@@ -552,10 +722,9 @@ class TrafficReport(models.Model):
     predictions = models.JSONField(default=dict)
     recommendations = models.TextField(blank=True)
     
-    total_vehicles_period = models.IntegerField(default=0)
-    average_daily_traffic = models.FloatField(default=0)
-    peak_hours = models.JSONField(default=list)
-    congestion_trends = models.JSONField(default=dict)
+    # Directional data
+    directional_analysis = models.JSONField(default=dict, blank=True)
+    congestion_analysis = models.JSONField(default=dict, blank=True)
     
     class Meta:
         indexes = [
@@ -574,6 +743,10 @@ class HourlyTrafficSummary(models.Model):
     vehicle_type = models.ForeignKey(VehicleType, on_delete=models.CASCADE)
     location = models.ForeignKey(Location, on_delete=models.CASCADE, null=True, blank=True)
     count = models.IntegerField()
+    
+    # Directional counts
+    directional_count = models.IntegerField(default=0, help_text="Vehicles counted in specific direction")
+    
     average_confidence = models.FloatField(default=0)
     peak_5min_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(default=timezone.now)
@@ -587,7 +760,7 @@ class HourlyTrafficSummary(models.Model):
         ordering = ['date', 'hour']
 
     def __str__(self):
-        return f"{self.date} {self.hour:02d}:00 - {self.vehicle_type}: {self.count}"
+        return f"{self.date} {self.hour:02d}:00 - {self.vehicle_type}: {self.count} ({self.directional_count} directional)"
 
 
 class DailyTrafficSummary(models.Model):
@@ -595,9 +768,13 @@ class DailyTrafficSummary(models.Model):
     vehicle_type = models.ForeignKey(VehicleType, on_delete=models.CASCADE)
     location = models.ForeignKey(Location, on_delete=models.CASCADE, null=True, blank=True)
     total_count = models.IntegerField()
+    
+    # Directional totals
+    directional_total = models.IntegerField(default=0, help_text="Total directional count for the day")
+    
     peak_hour = models.IntegerField()
     peak_hour_count = models.IntegerField()
-    average_daily_congestion = models.CharField(max_length=20, default='low')
+    average_daily_congestion = models.CharField(max_length=20, default='none')
     created_at = models.DateTimeField(default=timezone.now)
     
     class Meta:
@@ -609,7 +786,7 @@ class DailyTrafficSummary(models.Model):
         ordering = ['-date']
 
     def __str__(self):
-        return f"{self.date} - {self.vehicle_type}: {self.total_count}"
+        return f"{self.date} - {self.vehicle_type}: {self.total_count} ({self.directional_total} directional)"
 
 
 class TrafficPrediction(models.Model):
@@ -620,7 +797,10 @@ class TrafficPrediction(models.Model):
     hour_of_day = models.IntegerField()
     
     predicted_vehicle_count = models.FloatField(default=0.0)
-    predicted_congestion = models.CharField(max_length=20, default='low')
+    
+    # Directional predictions
+    predicted_directional_count = models.FloatField(default=0.0, help_text="Predicted count in specific direction")
+    predicted_congestion = models.CharField(max_length=20, default='none')
     confidence_score = models.FloatField(default=0.0)
     
     confidence_interval_lower = models.FloatField(default=0.0)
@@ -676,10 +856,16 @@ def update_traffic_analysis_counts(sender, instance, created, **kwargs):
     if created and instance.traffic_analysis:
         analysis = instance.traffic_analysis
         
-        # Use the vehicle type name to update the appropriate count
+        # Update directional count if vehicle was counted
+        if instance.counted_directionally:
+            analysis.directional_count = Detection.objects.filter(
+                traffic_analysis=analysis, 
+                counted_directionally=True
+            ).count()
+        
+        # Update vehicle type counts
         vehicle_type_name = instance.vehicle_type.name.lower()
         
-        # Update counts based on vehicle type
         if vehicle_type_name == 'car':
             analysis.car_count = Detection.objects.filter(
                 traffic_analysis=analysis, 
@@ -719,11 +905,12 @@ def update_traffic_analysis_counts(sender, instance, created, **kwargs):
         )
         analysis.save()
 
+
 @receiver(post_save, sender=TrafficAnalysis)
 def auto_group_video_after_analysis(sender, instance, created, **kwargs):
     """
     Auto-group video after analysis is created.
-    ONLY runs if video is not already assigned to a group to prevent conflicts with Celery task.
+    ONLY runs if video is not already assigned to a group to prevent conflicts.
     """
     logger.info(f"🔔 AUTO-GROUP SIGNAL FIRED for analysis {instance.id}")
     logger.info(f"   Created: {created}")
@@ -736,10 +923,10 @@ def auto_group_video_after_analysis(sender, instance, created, **kwargs):
         logger.warning(f"❌ Cannot auto-group: missing required fields (created={created}, video={bool(instance.video_file)}, location={bool(instance.location)})")
         return
 
-    # CRITICAL FIX: Check if video is already grouped BEFORE processing
+    # Check if video is already grouped
     if hasattr(instance.video_file, 'location_date_group') and instance.video_file.location_date_group:
         logger.info(f"ℹ️ Video {instance.video_file.id} is already in group {instance.video_file.location_date_group.id}, skipping signal grouping.")
-        return # Exit early if already grouped - prevents race condition!
+        return
 
     try:
         video = instance.video_file
@@ -765,11 +952,11 @@ def auto_group_video_after_analysis(sender, instance, created, **kwargs):
         
         logger.info(f"   Group: {group.id} (created={group_created})")
         
-        # Assign video to the group (this is the critical part that was causing conflicts)
-        if not video.location_date_group: # Double-check before assignment
+        # Assign video to the group
+        if not video.location_date_group:
             old_group = video.location_date_group
             video.location_date_group = group
-            video.save(update_fields=['location_date_group']) # Only save the group field to minimize race conditions
+            video.save(update_fields=['location_date_group'])
             
             if old_group:
                 logger.info(f"✅ Video {video.id} moved from group {old_group.id} to {group.id}")
@@ -778,7 +965,7 @@ def auto_group_video_after_analysis(sender, instance, created, **kwargs):
         else:
             logger.info(f"ℹ️ Video {video.id} already assigned to group {video.location_date_group.id} during signal execution.")
         
-        # Update video's date if it was missing (only if we're using analysis date and video_date is empty)
+        # Update video's date if it was missing
         if date_source == "analysis_date" and not video.video_date:
             video.video_date = group_date
             video.save(update_fields=['video_date'])

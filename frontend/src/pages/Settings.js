@@ -29,13 +29,15 @@ function Settings() {
   const [profileLoading, setProfileLoading] = useState(true);
   const [editingProfile, setEditingProfile] = useState(null);
   const [showProfileForm, setShowProfileForm] = useState(false);
+  
+  // SIMPLIFIED VERSION - Basic form without JSON configuration
   const [profileFormData, setProfileFormData] = useState({
     name: '',
     display_name: '',
     description: '',
-    detector_class: 'RTXVehicleDetector',
-    detector_module: 'ml.vehicle_detector',
-    config_parameters: {},
+    detector_type: 'vertical_top_bottom', // Changed from detector_class
+    enable_congestion_detection: true,    // New field
+    congestion_threshold: 5,               // New field
     road_type: 'generic',
     active: true
   });
@@ -49,19 +51,24 @@ function Settings() {
     { value: 'roundabout', label: 'Roundabout' },
     { value: 'urban', label: 'Urban Street' },
     { value: 'generic', label: 'Generic' },
-    { value: 'custom', label: 'Custom' }
+    { value: 'diagonal', label: 'Diagonal Road' },
+    { value: 'vertical', label: 'Vertical Road' },
+    { value: 'horizontal', label: 'Horizontal Road' }
   ];
 
-  // Available detector classes (you can expand this list)
-// Available detector classes (update this to match your factory)
-const detectorClasses = [
-  { value: 'RTXVehicleDetector', label: 'Standard Vehicle Detector' },
-  { value: 'BaliwasanYJunctionDetector', label: 'Baliwasan Y-Junction Detector' },
-  { value: 'CongestionAwareDetector', label: 'Congestion Aware Detector' },
-  { value: 'ROIBasedCongestionDetector', label: 'ROI Based Congestion Detector' },
-  { value: 'CongestionTimeDetector', label: 'Congestion Time Detector' }
-  // Add more detector classes as you create them
-];
+  // Available detector types (your directional detectors)
+  const detectorTypes = [
+    { value: 'vertical_top_bottom', label: 'Vertical Top→Bottom' },
+    { value: 'vertical_bottom_top', label: 'Vertical Bottom→Top' },
+    { value: 'horizontal_left_right', label: 'Horizontal Left→Right' },
+    { value: 'horizontal_right_left', label: 'Horizontal Right→Left' },
+    { value: 'diagonal_ne_sw', label: 'Diagonal NE→SW' },
+    { value: 'diagonal_nw_se', label: 'Diagonal NW→SE' },
+    { value: 'diagonal_se_nw', label: 'Diagonal SE→NW' },
+    { value: 'diagonal_sw_ne', label: 'Diagonal SW→NE' },
+    { value: 'congestion_time', label: 'Congestion Time Detector' },
+    { value: 'baliwasan_yjunction', label: 'Baliwasan Y-Junction' }
+  ];
 
   useEffect(() => {
     if (activeTab === "locations") {
@@ -171,14 +178,24 @@ const detectorClasses = [
     try {
       let response;
       
-      console.log("🔄 Submitting profile data:", profileFormData);
+      // Prepare data for API - include config_parameters if needed
+      const profileData = {
+        ...profileFormData,
+        config_parameters: {
+          // You can add any default config parameters here if needed
+          enable_congestion_detection: profileFormData.enable_congestion_detection,
+          congestion_threshold: profileFormData.congestion_threshold
+        }
+      };
+      
+      console.log("🔄 Submitting profile data:", profileData);
       console.log("📝 Editing profile:", editingProfile);
 
       if (editingProfile) {
-        response = await axios.put(`http://127.0.0.1:8000/api/processing-profiles/${editingProfile.id}/`, profileFormData);
+        response = await axios.put(`http://127.0.0.1:8000/api/processing-profiles/${editingProfile.id}/`, profileData);
         console.log("✅ Profile update response:", response.data);
       } else {
-        response = await axios.post('http://127.0.0.1:8000/api/processing-profiles/', profileFormData);
+        response = await axios.post('http://127.0.0.1:8000/api/processing-profiles/', profileData);
         console.log("✅ Profile create response:", response.data);
       }
       
@@ -188,9 +205,9 @@ const detectorClasses = [
         name: '',
         display_name: '',
         description: '',
-        detector_class: 'RTXVehicleDetector',
-        detector_module: 'ml.vehicle_detector',
-        config_parameters: {},
+        detector_type: 'vertical_top_bottom',
+        enable_congestion_detection: true,
+        congestion_threshold: 5,
         road_type: 'generic',
         active: true
       });
@@ -236,9 +253,11 @@ const detectorClasses = [
       name: profile.name || '',
       display_name: profile.display_name || '',
       description: profile.description || '',
-      detector_class: profile.detector_class || 'RTXVehicleDetector',
-      detector_module: profile.detector_module || 'ml.vehicle_detector',
-      config_parameters: profile.config_parameters || {},
+      detector_type: profile.detector_type || 'vertical_top_bottom',
+      enable_congestion_detection: profile.config_parameters?.enable_congestion_detection !== undefined 
+        ? profile.config_parameters.enable_congestion_detection 
+        : true,
+      congestion_threshold: profile.config_parameters?.congestion_threshold || 5,
       road_type: profile.road_type || 'generic',
       active: profile.active !== undefined ? profile.active : true
     });
@@ -299,9 +318,9 @@ const detectorClasses = [
       name: '',
       display_name: '',
       description: '',
-      detector_class: 'RTXVehicleDetector',
-      detector_module: 'ml.vehicle_detector',
-      config_parameters: {},
+      detector_type: 'vertical_top_bottom',
+      enable_congestion_detection: true,
+      congestion_threshold: 5,
       road_type: 'generic',
       active: true
     });
@@ -312,9 +331,9 @@ const detectorClasses = [
     return roadType ? roadType.label : roadTypeValue;
   };
 
-  const getDetectorClassLabel = (detectorClassValue) => {
-    const detectorClass = detectorClasses.find(dc => dc.value === detectorClassValue);
-    return detectorClass ? detectorClass.label : detectorClassValue;
+  const getDetectorTypeLabel = (detectorTypeValue) => {
+    const detectorType = detectorTypes.find(dt => dt.value === detectorTypeValue);
+    return detectorType ? detectorType.label : detectorTypeValue;
   };
 
   return (
@@ -777,7 +796,7 @@ const detectorClasses = [
                             </div>
                             <div style={{ fontSize: '12px', color: '#666' }}>
                               {getRoadTypeLabel(location.processing_profile_details?.road_type)} • 
-                              {getDetectorClassLabel(location.processing_profile_details?.detector_class)}
+                              {getDetectorTypeLabel(location.processing_profile_details?.detector_type)}
                             </div>
                           </div>
                         </td>
@@ -884,7 +903,7 @@ const detectorClasses = [
             </button>
           </div>
 
-          {/* Profile Form - THIS IS THE MISSING PART */}
+          {/* Profile Form */}
           {showProfileForm && (
             <div className="dashboard-card" style={{ marginBottom: '24px' }}>
               <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '16px' }}>
@@ -957,70 +976,15 @@ const detectorClasses = [
                   />
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
-                      Road Type *
-                    </label>
-                    <select
-                      name="road_type"
-                      value={profileFormData.road_type}
-                      onChange={handleProfileInputChange}
-                      required
-                      style={{
-                        width: '100%',
-                        padding: '8px 12px',
-                        border: '1px solid #d1d5db',
-                        borderRadius: '4px',
-                        fontSize: '14px',
-                        backgroundColor: 'white'
-                      }}
-                    >
-                      {roadTypes.map(roadType => (
-                        <option key={roadType.value} value={roadType.value}>
-                          {roadType.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
-                      Detector Class *
-                    </label>
-                    <select
-                      name="detector_class"
-                      value={profileFormData.detector_class}
-                      onChange={handleProfileInputChange}
-                      required
-                      style={{
-                        width: '100%',
-                        padding: '8px 12px',
-                        border: '1px solid #d1d5db',
-                        borderRadius: '4px',
-                        fontSize: '14px',
-                        backgroundColor: 'white'
-                      }}
-                    >
-                      {detectorClasses.map(detectorClass => (
-                        <option key={detectorClass.value} value={detectorClass.value}>
-                          {detectorClass.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* THIS PART WAS MISSING IN THE SNIPPET */}
                 <div style={{ marginBottom: '16px' }}>
                   <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
-                    Detector Module
+                    Detector Type
                   </label>
-                  <input
-                    type="text"
-                    name="detector_module"
-                    value={profileFormData.detector_module}
+                  <select
+                    name="detector_type"
+                    value={profileFormData.detector_type}
                     onChange={handleProfileInputChange}
+                    required
                     style={{
                       width: '100%',
                       padding: '8px 12px',
@@ -1028,11 +992,79 @@ const detectorClasses = [
                       borderRadius: '4px',
                       fontSize: '14px'
                     }}
-                    placeholder="e.g., ml.vehicle_detector"
-                  />
-                  <p style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
-                    Python module path where the detector class is located
-                  </p>
+                  >
+                    <option value="vertical_top_bottom">Vertical Top→Bottom</option>
+                    <option value="vertical_bottom_top">Vertical Bottom→Top</option>
+                    <option value="horizontal_left_right">Horizontal Left→Right</option>
+                    <option value="horizontal_right_left">Horizontal Right→Left</option>
+                    <option value="diagonal_ne_sw">Diagonal NE→SW</option>
+                    <option value="diagonal_nw_se">Diagonal NW→SE</option>
+                    <option value="diagonal_se_nw">Diagonal SE→NW</option>
+                    <option value="diagonal_sw_ne">Diagonal SW→NE</option>
+                    <option value="congestion_time">Congestion Time Detector</option>
+                    <option value="baliwasan_yjunction">Baliwasan Y-Junction</option>
+                  </select>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+                      Enable Congestion Detection
+                    </label>
+                    <input
+                      type="checkbox"
+                      name="enable_congestion_detection"
+                      checked={profileFormData.enable_congestion_detection}
+                      onChange={handleProfileInputChange}
+                    />
+                  </div>
+                  
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+                      Congestion Threshold
+                    </label>
+                    <input
+                      type="number"
+                      name="congestion_threshold"
+                      value={profileFormData.congestion_threshold}
+                      onChange={handleProfileInputChange}
+                      min="1"
+                      max="50"
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        border: '1px solid #d1d5db',
+                        borderRadius: '4px',
+                        fontSize: '14px'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+                    Road Type *
+                  </label>
+                  <select
+                    name="road_type"
+                    value={profileFormData.road_type}
+                    onChange={handleProfileInputChange}
+                    required
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      border: '1px solid #d1d5db',
+                      borderRadius: '4px',
+                      fontSize: '14px',
+                      backgroundColor: 'white'
+                    }}
+                  >
+                    {roadTypes.map(roadType => (
+                      <option key={roadType.value} value={roadType.value}>
+                        {roadType.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', marginBottom: '16px' }}>
@@ -1103,7 +1135,8 @@ const detectorClasses = [
                       <th>Display Name</th>
                       <th>Internal Name</th>
                       <th>Road Type</th>
-                      <th>Detector Class</th>
+                      <th>Detector Type</th>
+                      <th>Congestion Config</th>
                       <th>Locations</th>
                       <th>Status</th>
                       <th>Actions</th>
@@ -1134,10 +1167,13 @@ const detectorClasses = [
                         </td>
                         <td>
                           <div style={{ fontSize: '12px', fontFamily: 'monospace' }}>
-                            {profile.detector_class}
+                            {getDetectorTypeLabel(profile.detector_type)}
                           </div>
-                          <div style={{ fontSize: '11px', color: '#666' }}>
-                            {profile.detector_module}
+                        </td>
+                        <td>
+                          <div style={{ fontSize: '12px' }}>
+                            <div>Enabled: {profile.config_parameters?.enable_congestion_detection ? 'Yes' : 'No'}</div>
+                            <div>Threshold: {profile.config_parameters?.congestion_threshold || 5}</div>
                           </div>
                         </td>
                         <td>

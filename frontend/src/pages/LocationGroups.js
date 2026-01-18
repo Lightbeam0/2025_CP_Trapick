@@ -1,4 +1,4 @@
-// src/pages/LocationGroups.js - UPDATED WITH DATE FILTER
+// src/pages/LocationGroups.js - FIXED VERSION
 import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -8,7 +8,6 @@ function LocationGroups() {
   const navigate = useNavigate();
   const [location, setLocation] = useState(null);
   const [groups, setGroups] = useState([]);
-  const [filteredGroups, setFilteredGroups] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [debugMode, setDebugMode] = useState(false);
@@ -32,21 +31,21 @@ function LocationGroups() {
       if (startDate) params.append('start_date', startDate);
       if (endDate) params.append('end_date', endDate);
       if (searchTerm) params.append('search', searchTerm.trim());
-      params.append('location', locationId);
 
+      // ✅ FIX: Use the location-specific endpoint
+      // From your Django API: path('api/locations/<uuid:location_id>/groups/', LocationGroupsAPI.as_view())
       const locationUrl = `http://127.0.0.1:8000/api/locations/${locationId}/`;
       console.log(`📡 Requesting location: ${locationUrl}`);
       const locationResponse = await axios.get(locationUrl);
       console.log("✅ Location response:", locationResponse.data);
       setLocation(locationResponse.data);
 
-      // Fetch groups for this location with filters
-      const groupsBaseUrl = `http://127.0.0.1:8000/api/location-groups/`;
-      const groupsUrl = `${groupsBaseUrl}?${params}`;
-      console.log(`📡 Requesting groups with filters: ${groupsUrl}`);
+      // ✅ FIX: Fetch groups FOR THIS SPECIFIC LOCATION ONLY
+      const groupsUrl = `http://127.0.0.1:8000/api/locations/${locationId}/groups/?${params}`;
+      console.log(`📡 Requesting location-specific groups: ${groupsUrl}`);
 
       const groupsResponse = await axios.get(groupsUrl);
-      console.log("✅ Groups response:", groupsResponse.data);
+      console.log("✅ Location groups response:", groupsResponse.data);
 
       // Handle both array and paginated responses
       const groupsData = Array.isArray(groupsResponse.data)
@@ -54,7 +53,6 @@ function LocationGroups() {
         : (groupsResponse.data.results || []);
 
       setGroups(groupsData);
-      setFilteredGroups(groupsData); // Initialize filtered groups
       setError(null);
 
     } catch (err) {
@@ -139,7 +137,7 @@ function LocationGroups() {
         g.location?.id?.toString() === locationId || 
         g.location?.toString() === locationId
       );
-      console.log(`🔍 Groups matching location ${locationId}:`, locationGroups);
+      console.log(`🔍 Groups matching location ${locationId} in all groups:`, locationGroups);
     } catch (err) {
       console.error("❌ Error checking debug endpoint:", err);
     }
@@ -247,7 +245,7 @@ function LocationGroups() {
               marginTop: '8px',
               whiteSpace: 'pre-wrap'
             }}>
-              {`fetch("http://127.0.0.1:8000/api/locations/${locationId}/").then(r => r.json()).then(console.log)`}
+              {`fetch("http://127.0.0.1:8000/api/locations/${locationId}/groups/").then(r => r.json()).then(console.log)`}
             </code>
           </div>
         </div>
@@ -475,7 +473,7 @@ function LocationGroups() {
             <div style={{ fontSize: '14px', color: '#0369a1' }}>
               <strong>Active Filters:</strong> {getDateRangeSummary()}
               {searchTerm && ` • Search: "${searchTerm}"`}
-              {` • Showing ${groups.length} of ${groups.length} groups`}
+              {` • Showing ${groups.length} groups`}
             </div>
           </div>
         )}

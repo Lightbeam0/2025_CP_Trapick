@@ -9,7 +9,6 @@ from django.conf import settings
 
 from .models import VideoFile, TrafficAnalysis, Location, LocationDateGroup
 from .progress import ProgressTracker
-from ml.detector_factory import DetectorFactory
 
 logger = logging.getLogger(__name__)
 
@@ -23,18 +22,66 @@ def process_video_task(self, video_id, location_id=None):
 
     try:
         video_obj = VideoFile.objects.get(id=video_id)
-        location = Location.objects.get(id=location_id)
+        
+        # Get location with processing profile
+        location = None
+        
+        # Priority 1: Use provided location_id if available
+        if location_id:
+            try:
+                location = Location.objects.get(id=location_id)
+                logger.info(f"📍 Using provided location: {location.display_name}")
+            except Location.DoesNotExist:
+                logger.warning(f"⚠️ Provided location_id {location_id} not found")
+                location_id = None
+        
+        # Priority 2: Try to get location from video's existing group
+        if not location and hasattr(video_obj, 'location_date_group') and video_obj.location_date_group:
+            location = video_obj.location_date_group.location
+            logger.info(f"📍 Using location from existing group: {location.display_name}")
+        
+        # Priority 3: Check if video has a location field directly
+        if not location and hasattr(video_obj, 'location') and video_obj.location:
+            location = video_obj.location
+            logger.info(f"📍 Using location from video field: {location.display_name}")
+        
+        # Final fallback: Raise error if no location found
+        if not location:
+            raise ValueError(
+                f"Location is required for processing video {video_id}. "
+                f"Please provide location_id or ensure video has location_date_group."
+            )
+        
+        logger.info(f"✅ Location confirmed: {location.display_name} (ID: {location.id})")
 
         video_obj.processing_status = 'processing'
         video_obj.save(update_fields=['processing_status'])
 
         # Initialize fresh tracker
         progress_tracker = ProgressTracker(video_id)
-        progress_tracker.set_progress(5, "Initializing detector...")
+        progress_tracker.set_progress(5, f"Initializing for {location.display_name}...")
 
-        # Get detector
+        # Get detector from location's processing profile
         logger.info(f"🔧 Loading detector for profile: {location.processing_profile.display_name}")
-        detector = DetectorFactory.get_detector(location.processing_profile)
+        
+        processing_profile = location.processing_profile
+        
+        # Get config parameters - try multiple field names
+        config_params = None
+        for field_name in ['config_parameters', 'config_params', 'configuration', 'detection_config']:
+            if hasattr(processing_profile, field_name):
+                config_params = getattr(processing_profile, field_name, None)
+                if config_params:
+                    logger.info(f"⚙️ Found config in field: {field_name}")
+                    break
+        
+        if not config_params:
+            config_params = {}
+            logger.info("ℹ️ No config parameters found, using defaults")
+        else:
+            logger.info(f"⚙️ Config parameters: {config_params}")
+        
+        detector = processing_profile.get_detector_instance()
         progress_tracker.set_progress(10, f"Loaded {type(detector).__name__}...")
 
         # Get video info
@@ -49,184 +96,298 @@ def process_video_task(self, video_id, location_id=None):
 
         logger.info(f"📹 Video info: {total_frames} frames, {fps:.2f} FPS")
 
-        # Universal progress callback
-        def progress_callback(*args):
+        # Define progress callback function
+        def progress_callback_func(current_frame, total_frames, message=""):
+            """Progress callback wrapper for detector"""
             try:
-                # Handle different detector formats
-                if len(args) >= 2 and isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)):
-                    progress_percent = int(args[0])
-                    message = args[2] if len(args) > 2 else f"Progress: {progress_percent}%"
-                    progress_percent = max(10, min(88, progress_percent))
-                    
-                    video_obj.update_progress(progress_percent, message)
-                    progress_tracker.set_progress(progress_percent, message)
-                    return
-                
-                elif len(args) >= 2:
-                    frame_number = int(args[0])
-                    total_frames = int(args[1])
-                    message = args[2] if len(args) > 2 else f"Processing frame {frame_number}/{total_frames}"
-                    
-                    if total_frames <= 0:
-                        return
-                    
-                    progress = min(88, 10 + int((frame_number / total_frames) * 78))
-                    video_obj.update_progress(progress, message)
-                    progress_tracker.set_progress(progress, message)
-                    return
-                    
-            except (ValueError, TypeError) as e:
-                logger.warning(f"⚠️ Invalid progress callback args: {args}, error: {e}")
-                return
-
-        progress_tracker.set_progress(15, "Starting analysis...")
+                progress_percent = int((current_frame / total_frames) * 90) + 5  # Scale to 5-95%
+                progress_tracker.set_progress(
+                    progress_percent, 
+                    f"{message} ({current_frame}/{total_frames})"
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Progress callback error: {e}")
 
         # Build kwargs for detector
         detector_kwargs = {
             'save_output': True
         }
 
-        # Add ROI if location has it defined
-        if hasattr(location, 'roi_normalized') and location.roi_normalized:
-            detector_kwargs['roi_normalized'] = location.roi_normalized
-            logger.info(f"📍 Using ROI from location: {location.roi_normalized}")
+        # Add ROI if available in config (ENHANCED)
+        roi_normalized = None
+        
+        # Try multiple sources for ROI configuration
+        if config_params and 'roi_normalized' in config_params:
+            roi_normalized = config_params['roi_normalized']
+            logger.info(f"📍 Using ROI from processing profile config: {roi_normalized}")
+        elif hasattr(processing_profile, 'roi_config') and processing_profile.roi_config:
+            roi_normalized = processing_profile.roi_config
+            logger.info(f"📍 Using ROI from processing profile roi_config: {roi_normalized}")
+        elif location.counting_config and 'roi_normalized' in location.counting_config:
+            roi_normalized = location.counting_config['roi_normalized']
+            logger.info(f"📍 Using ROI from location counting_config: {roi_normalized}")
+        
+        # Validate and add ROI to kwargs
+        if roi_normalized:
+            # Basic validation
+            if isinstance(roi_normalized, list) and len(roi_normalized) >= 3:
+                # Validate each point
+                valid_roi = True
+                for point in roi_normalized:
+                    if not isinstance(point, list) or len(point) != 2:
+                        logger.warning(f"⚠️ Invalid ROI point format: {point}")
+                        valid_roi = False
+                        break
+                    x, y = point
+                    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                        logger.warning(f"⚠️ ROI point out of range [0.0, 1.0]: {point}")
+                        valid_roi = False
+                        break
+                
+                if valid_roi:
+                    detector_kwargs['roi_normalized'] = roi_normalized
+                    logger.info(f"✅ ROI validated and added to detector kwargs")
+                else:
+                    logger.warning(f"⚠️ ROI validation failed, will use full frame")
+            else:
+                logger.warning(f"⚠️ Invalid ROI format (need list with 3+ points), using full frame")
+        else:
+            logger.info("ℹ️ No ROI configured, congestion will be detected in full frame")
 
         # MAIN ANALYSIS - with graceful fallback for different detectors
         logger.info(f"🚀 Running analysis with {type(detector).__name__}...")
+        
+        report = None
 
         try:
-            # Try with progress_callback (new standard interface)
+            # ATTEMPT 1: Try with progress_callback and all kwargs (new standard interface)
+            logger.info("📡 Attempting standard detector interface with progress_callback...")
             report = detector.analyze_video(
                 video_obj.file_path.path,
-                progress_callback=progress_callback,
+                progress_callback=progress_callback_func,
                 **detector_kwargs
             )
+            logger.info("✅ Used standard interface successfully")
+            
         except TypeError as e:
-            # Handle detectors with old signatures
-            if 'progress_callback' in str(e) or 'roi_normalized' in str(e):
+            # ATTEMPT 2: Handle detectors with old signatures
+            error_msg = str(e)
+            logger.warning(f"⚠️ Standard interface failed: {error_msg}")
+            
+            if 'progress_callback' in error_msg or 'roi_normalized' in error_msg or 'unexpected keyword argument' in error_msg:
                 logger.warning(
-                    f"⚠️ {type(detector).__name__} has old signature. "
-                    f"Using fallback call..."
+                    f"⚠️ {type(detector).__name__} doesn't support all parameters. "
+                    f"Trying fallback interfaces..."
                 )
                 
-                # Fallback: try minimal call
                 try:
+                    # ATTEMPT 3: Try with just save_output (minimal signature)
+                    logger.info("📡 Attempting minimal detector interface (save_output only)...")
                     report = detector.analyze_video(
                         video_obj.file_path.path,
                         save_output=True
                     )
+                    logger.info("✅ Used minimal interface successfully")
+                    
+                except TypeError as minimal_error:
+                    # ATTEMPT 4: Try with absolutely no extra parameters
+                    logger.warning(f"⚠️ Minimal interface failed: {minimal_error}")
+                    logger.info("📡 Attempting bare-bones detector interface (video path only)...")
+                    
+                    try:
+                        report = detector.analyze_video(video_obj.file_path.path)
+                        logger.info("✅ Used bare-bones interface successfully")
+                        
+                    except Exception as bare_error:
+                        logger.error(f"❌ All detector interfaces failed")
+                        logger.error(f"   Standard error: {e}")
+                        logger.error(f"   Minimal error: {minimal_error}")
+                        logger.error(f"   Bare error: {bare_error}")
+                        raise RuntimeError(
+                            f"Detector {type(detector).__name__} is incompatible with all known interfaces. "
+                            f"The detector's analyze_video() method may have an incompatible signature."
+                        )
+                        
                 except Exception as fallback_error:
-                    logger.error(f"❌ Fallback also failed: {fallback_error}")
-                    raise
+                    logger.error(f"❌ Fallback failed with unexpected error: {fallback_error}")
+                    raise RuntimeError(
+                        f"Failed to run detector with any interface: {fallback_error}"
+                    )
             else:
-                # Different error, re-raise it
+                # Different TypeError, re-raise it
+                logger.error(f"❌ Unexpected TypeError during analysis: {e}")
                 raise
+                
+        except Exception as general_error:
+            logger.error(f"❌ Unexpected error during analysis: {general_error}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+        # Verify we got a report
+        if report is None:
+            raise RuntimeError(
+                f"Detector analysis completed but returned no report. "
+                f"This may indicate a serious issue with the detector implementation."
+            )
 
         logger.info(f"✅ Analysis complete. Processing report...")
         logger.info(f"📋 Report keys: {list(report.keys())}")
-        progress_tracker.set_progress(90, "Saving results...")
-
-        # FIXED: Handle different report formats from different detectors
-        try:
-            # Extract vehicle breakdown based on detector type
-            if 'congestion_summary' in report:
-                # This is CongestionTimeDetector format
-                logger.info("📊 Detected CongestionTimeDetector report format")
+        
+        # Process report based on detector type
+        if 'congestion_summary' in report:
+            # This is CongestionTimeDetector format
+            logger.info("📊 Detected CongestionTimeDetector report format")
+            
+            # For congestion detector, we need to extract vehicle counts differently
+            total_vehicles = report.get('vehicle_statistics', {}).get('total_vehicles_detected', 0)
+            
+            # Create analysis with congestion-focused data
+            analysis = TrafficAnalysis.objects.create(
+                video_file=video_obj,
+                location=location,
+                total_vehicles=total_vehicles,
+                processing_time_seconds=report['metadata']['processing_time'],
                 
-                # For congestion detector, we need to extract vehicle counts differently
-                # Since it doesn't provide per-class counts in the same way, we'll use totals
-                total_vehicles = report.get('vehicle_statistics', {}).get('total_vehicles_detected', 0)
+                # Use default counts for congestion detector
+                car_count=0,
+                truck_count=0,
+                motorcycle_count=0,
+                bus_count=0,
+                bicycle_count=0,
+                other_count=0,
                 
-                # Create analysis with congestion-focused data
-                analysis = TrafficAnalysis.objects.create(
-                    video_file=video_obj,
-                    location=location,
-                    total_vehicles=total_vehicles,
-                    processing_time_seconds=report['metadata']['processing_time'],
-                    
-                    # Use default counts for congestion detector
-                    car_count=0,
-                    truck_count=0,
-                    motorcycle_count=0,
-                    bus_count=0,
-                    bicycle_count=0,
-                    other_count=0,
-                    
-                    # Traffic metrics from congestion analysis
-                    peak_traffic=report.get('vehicle_statistics', {}).get('peak_vehicle_count', 0),
-                    average_traffic=report.get('vehicle_statistics', {}).get('average_vehicle_count', 0),
-                    congestion_level=map_congestion_level(report['congestion_summary']['overall_congestion_level']),
-                    traffic_pattern='stable',  # Default for congestion detector
-                    
-                    # Store full report for reference
-                    analysis_data=report,
-                    metrics_summary={
-                        'model_used': 'CongestionTimeDetector (Full-Frame)',
-                        'detection_method': 'Full-frame congestion timing analysis',
-                        'monitoring_coverage': '100% screen area',
-                        'total_congestion_time': report['congestion_summary']['total_congestion_time_seconds'],
-                        'congestion_events': report['congestion_summary']['total_congestion_events'],
-                        'peak_vehicles': report['vehicle_statistics']['peak_vehicle_count']
-                    }
-                )
-
-            elif 'summary' in report:
-                # This is standard detector format (BaliwasanYJunctionDetector, etc.)
-                logger.info("📊 Detected standard detector report format")
+                # Traffic metrics from congestion analysis
+                peak_traffic=report['vehicle_statistics'].get('peak_vehicle_count', 0),
+                average_traffic=report['vehicle_statistics'].get('average_vehicle_count', 0),
+                congestion_level=map_congestion_level(report['congestion_summary']['overall_congestion_level']),
+                traffic_pattern='stable',
                 
-                vehicle_breakdown = report['summary'].get('vehicle_breakdown', {})
+                # Store full report for reference
+                analysis_data=report,
+                metrics_summary={
+                    'model_used': 'CongestionTimeDetector (Full-Frame)',
+                    'detection_method': 'Full-frame congestion timing analysis',
+                    'monitoring_coverage': '100% screen area',
+                    'total_congestion_time': report['congestion_summary']['total_congestion_time_seconds'],
+                    'congestion_events': report['congestion_summary']['total_congestion_events'],
+                    'peak_vehicles': report['vehicle_statistics']['peak_vehicle_count'],
+                    'location_name': location.display_name,
+                    'location_id': location.id,
+                    'processing_profile': location.processing_profile.display_name if location.processing_profile else 'Default'
+                }
+            )
+
+        elif 'summary' in report:
+            # This is standard detector format (BaliwasanYJunctionDetector, UniversalTrafficDetector, etc.)
+            logger.info("📊 Detected standard detector report format")
+            
+            vehicle_breakdown = report['summary'].get('vehicle_breakdown', {})
+            
+            analysis = TrafficAnalysis.objects.create(
+                video_file=video_obj,
+                location=location,
+                total_vehicles=report['summary']['total_vehicles_counted'],
+                processing_time_seconds=report['metadata']['processing_time'],
                 
-                analysis = TrafficAnalysis.objects.create(
-                    video_file=video_obj,
-                    location=location,
-                    total_vehicles=report['summary']['total_vehicles_counted'],
-                    processing_time_seconds=report['metadata']['processing_time'],
-                    
-                    # COLLISION4 MODEL VEHICLE TYPES
-                    car_count=vehicle_breakdown.get('car', 0),
-                    truck_count=vehicle_breakdown.get('truck', 0),
-                    motorcycle_count=vehicle_breakdown.get('motorcycle', 0),
-                    bus_count=vehicle_breakdown.get('jeep', 0),  # Map jeep to bus_count
-                    bicycle_count=vehicle_breakdown.get('tricycle', 0),  # Map tricycle to bicycle_count
-                    other_count=0,
-                    
-                    # Traffic metrics
-                    peak_traffic=report['summary'].get('peak_traffic', 0),
-                    average_traffic=report['summary'].get('average_traffic_density', 0),
-                    congestion_level=map_congestion_level(report['metrics'].get('congestion_level', 'low')),
-                    traffic_pattern=map_traffic_pattern(report['metrics'].get('traffic_pattern', 'stable')),
-                    
-                    # Store full report for reference
-                    analysis_data=report,
-                    metrics_summary={
-                        'model_used': report['metadata'].get('model_used', 'collision4_model (YOLOv8s)'),
-                        'tracked_classes': ['car', 'jeep', 'motorcycle', 'tricycle', 'truck'],
-                        'excluded_classes': ['VehicleCrash', 'person'],
-                        'model_architecture': 'YOLOv8s',
-                        'confidence_threshold': 0.4,
-                        'iou_threshold': 0.7
-                    }
-                )
-
-            else:
-                # Unknown report format - create basic analysis
-                logger.warning("⚠️ Unknown report format, creating basic analysis")
+                # VEHICLE TYPES (handles both collision4 and universal detector)
+                car_count=vehicle_breakdown.get('car', 0),
+                truck_count=vehicle_breakdown.get('truck', 0),
+                motorcycle_count=vehicle_breakdown.get('motorcycle', 0),
+                bus_count=vehicle_breakdown.get('jeep', vehicle_breakdown.get('bus', 0)),  # Map jeep or bus
+                bicycle_count=vehicle_breakdown.get('tricycle', vehicle_breakdown.get('bicycle', 0)),  # Map tricycle or bicycle
+                other_count=0,
                 
-                analysis = TrafficAnalysis.objects.create(
-                    video_file=video_obj,
-                    location=location,
-                    total_vehicles=0,
-                    processing_time_seconds=report.get('metadata', {}).get('processing_time', 0),
-                    analysis_data=report,
-                    metrics_summary={'model_used': 'Unknown', 'error': 'Unexpected report format'}
-                )
+                # Traffic metrics
+                peak_traffic=report['summary'].get('peak_traffic', 0),
+                average_traffic=report['summary'].get('average_traffic_density', 0),
+                congestion_level=map_congestion_level(report['metrics'].get('congestion_level', 'low')),
+                traffic_pattern=map_traffic_pattern(report['metrics'].get('traffic_pattern', 'stable')),
+                
+                # Store full report for reference
+                analysis_data=report,
+                metrics_summary={
+                    'model_used': report['metadata'].get('model_used', 'Universal Traffic Detector'),
+                    'tracked_classes': report.get('configuration', {}).get('vehicle_classes', ['car', 'motorcycle', 'bus', 'truck']),
+                    'detection_method': report['metadata'].get('detection_method', 'Standard detection'),
+                    'counting_mode': report.get('configuration', {}).get('counting_mode', 'unknown'),
+                    'location_name': location.display_name,
+                    'location_id': location.id,
+                    'processing_profile': location.processing_profile.display_name if location.processing_profile else 'Default'
+                }
+            )
 
-        except KeyError as e:
-            logger.error(f"❌ KeyError processing report: {e}")
-            logger.error(f"📋 Available report keys: {list(report.keys())}")
-            raise
+        elif 'counting_results' in report:
+            # This is BaseDirectionalDetector format (new detectors)
+            logger.info("📊 Detected directional detector report format")
+            
+            counting_results = report.get('counting_results', {})
+            congestion_results = report.get('congestion_results', {})
+            vehicle_breakdown = counting_results.get('vehicle_breakdown', {})
+            
+            analysis = TrafficAnalysis.objects.create(
+                video_file=video_obj,
+                location=location,
+                total_vehicles=counting_results.get('total_vehicles', 0),
+                processing_time_seconds=report['metadata']['processing_time_seconds'],
+                
+                # Vehicle types
+                car_count=vehicle_breakdown.get('car', 0),
+                truck_count=vehicle_breakdown.get('truck', 0),
+                motorcycle_count=vehicle_breakdown.get('motorcycle', 0),
+                bus_count=vehicle_breakdown.get('bus', 0),
+                bicycle_count=vehicle_breakdown.get('bicycle', 0),
+                other_count=0,
+                
+                # Directional counting
+                directional_count=counting_results.get('total_vehicles', 0),
+                directional_vehicles_per_minute=counting_results.get('vehicles_per_minute', 0),
+                
+                # Congestion data
+                congestion_events_count=congestion_results.get('total_events', 0),
+                total_congestion_time=congestion_results.get('total_congestion_time', 0),
+                congestion_level=map_congestion_level(congestion_results.get('final_congestion_level', 'none')),
+                
+                # Video properties
+                duration_seconds=report['metadata']['duration_seconds'],
+                fps=report['metadata']['fps'],
+                total_frames=report['metadata']['frames_processed'],
+                
+                # Store full report
+                analysis_data=report,
+                metrics_summary={
+                    'model_used': f"Directional Detector - {report['metadata']['direction']}",
+                    'detector_type': report['metadata']['direction'],
+                    'counting_direction': report['metadata']['direction'],
+                    'tracked_classes': report['metadata']['vehicle_classes'],
+                    'detection_method': 'Directional counting with congestion detection',
+                    'location_name': location.display_name,
+                    'location_id': location.id,
+                    'processing_profile': location.processing_profile.display_name if location.processing_profile else 'Default'
+                },
+                frame_data=report.get('raw_data', {}).get('frame_data', []),
+                congestion_events=congestion_results.get('events_by_level', {})
+            )
 
-        logger.info(f"💾 TrafficAnalysis created: ID={analysis.id}, Total Vehicles={analysis.total_vehicles}")
+        else:
+            # Unknown report format - create basic analysis
+            logger.warning("⚠️ Unknown report format, creating basic analysis")
+            
+            analysis = TrafficAnalysis.objects.create(
+                video_file=video_obj,
+                location=location,
+                total_vehicles=0,
+                processing_time_seconds=report.get('metadata', {}).get('processing_time', 0),
+                analysis_data=report,
+                metrics_summary={
+                    'model_used': 'Unknown', 
+                    'error': 'Unexpected report format',
+                    'location_name': location.display_name,
+                    'location_id': location.id
+                }
+            )
+
+        logger.info(f"💾 TrafficAnalysis created: ID={analysis.id}, Location={location.display_name}, Total Vehicles={analysis.total_vehicles}")
 
         # Auto-grouping by location and date
         group_date = video_obj.video_date or timezone.now().date()
@@ -259,12 +420,14 @@ def process_video_task(self, video_id, location_id=None):
         video_info = {
             'filename': video_obj.filename,
             'location_name': location.display_name,
+            'location_id': str(location.id),
             'group_date': group.date.isoformat(),
             'group_id': str(group.id),
             'video_id': str(video_obj.id),
             'total_vehicles': analysis.total_vehicles,
             'model_used': analysis.metrics_summary.get('model_used', 'Unknown'),
-            'processing_time': analysis.processing_time_seconds
+            'processing_time': analysis.processing_time_seconds,
+            'congestion_level': getattr(analysis, 'congestion_level', 'unknown')
         }
 
         progress_tracker.set_progress(100, "Complete!")
@@ -273,7 +436,7 @@ def process_video_task(self, video_id, location_id=None):
             video_info=video_info
         )
 
-        logger.info(f"✅✅✅ Video {video_id} processed successfully")
+        logger.info(f"✅✅✅ Video {video_id} processed successfully at {location.display_name}")
         logger.info(f"📋 Final video info: {video_info}")
         
         return {'status': 'success', 'video_info': video_info}
@@ -303,23 +466,22 @@ def process_video_task(self, video_id, location_id=None):
 
 
 def map_congestion_level(level_str):
-    """
-    Map collision4_model congestion levels to database choices
-    collision4_model uses: 'Light Traffic', 'Moderate Congestion', 'High Congestion'
-    Database uses: 'very_low', 'low', 'medium', 'high', 'severe'
-    """
+    """Map congestion levels to database choices"""
     mapping = {
         'Light Traffic': 'low',
         'Moderate Congestion': 'medium',
         'High Congestion': 'high',
         'Severe Congestion': 'severe',
         'Very Light': 'very_low',
-        # Fallbacks
         'low': 'low',
         'medium': 'medium',
         'high': 'high',
         'severe': 'severe',
-        'very_low': 'very_low'
+        'very_low': 'very_low',
+        'none': 'none',
+        'light': 'low',
+        'moderate': 'medium',
+        'heavy': 'high'
     }
     
     normalized = level_str.strip().lower()
@@ -327,23 +489,17 @@ def map_congestion_level(level_str):
         if key.lower() == normalized or normalized in key.lower():
             return value
     
-    # Default fallback
     logger.warning(f"⚠️ Unknown congestion level: {level_str}, defaulting to 'low'")
     return 'low'
 
 
 def map_traffic_pattern(pattern_str):
-    """
-    Map collision4_model traffic patterns to database choices
-    collision4_model uses: 'Increasing', 'Decreasing', 'Stable'
-    Database uses: 'increasing', 'decreasing', 'stable', 'fluctuating'
-    """
+    """Map traffic patterns to database choices"""
     mapping = {
         'Increasing': 'increasing',
         'Decreasing': 'decreasing',
         'Stable': 'stable',
         'Fluctuating': 'fluctuating',
-        # Direct mappings
         'increasing': 'increasing',
         'decreasing': 'decreasing',
         'stable': 'stable',
@@ -355,17 +511,13 @@ def map_traffic_pattern(pattern_str):
         if key.lower() == normalized:
             return value
     
-    # Default fallback
     logger.warning(f"⚠️ Unknown traffic pattern: {pattern_str}, defaulting to 'stable'")
     return 'stable'
 
 
 @shared_task
 def bulk_group_videos():
-    """
-    Task to group all ungrouped completed videos
-    Useful for fixing existing data
-    """
+    """Task to group all ungrouped completed videos"""
     try:
         from .services import auto_group_all_videos
         result = auto_group_all_videos()
@@ -378,9 +530,7 @@ def bulk_group_videos():
 
 @shared_task
 def verify_video_grouping(video_id):
-    """
-    Verify and fix video grouping for a specific video
-    """
+    """Verify and fix video grouping for a specific video"""
     try:
         video = VideoFile.objects.get(id=video_id)
         
