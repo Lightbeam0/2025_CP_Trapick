@@ -1,8 +1,38 @@
 services:
+  # Main web service (Django app)
   - type: web
-    name: trapick
-    env: python
-    buildCommand: |
-      pip install --upgrade pip setuptools wheel
-      pip install -r requirements.txt
-    startCommand: gunicorn trapick.wsgi:application
+    name: trapick-cloud
+    runtime: python
+    plan: free
+    region: oregon  # Change to your preferred region
+    branch: main
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn trapick.wsgi:application --bind 0.0.0.0:$PORT"
+    
+    envVars:
+      - key: DEPLOYMENT_ENV
+        value: cloud
+      
+      - key: DEBUG
+        value: False
+      
+      - key: SECRET_KEY
+        generateValue: true
+        
+      - key: SYNC_API_KEY
+        generateValue: true
+      
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      
+      - key: WEB_CONCURRENCY
+        value: 2
+    
+    healthCheckPath: /admin/login/
+
+databases:
+  - name: trapick-db
+    plan: free
+    databaseName: trapick
+    user: trapick
+    region: oregon
