@@ -1,4 +1,4 @@
-# trapickapp/tasks.py
+# trapickapp/tasks.py - UPDATED for Enhanced Congestion Detection
 import os
 import traceback
 import logging
@@ -100,7 +100,7 @@ def process_video_task(self, video_id, location_id=None):
         def progress_callback_func(current_frame, total_frames, message=""):
             """Progress callback wrapper for detector"""
             try:
-                progress_percent = int((current_frame / total_frames) * 90) + 5  # Scale to 5-95%
+                progress_percent = int((current_frame / total_frames) * 90) + 5
                 progress_tracker.set_progress(
                     progress_percent, 
                     f"{message} ({current_frame}/{total_frames})"
@@ -113,7 +113,7 @@ def process_video_task(self, video_id, location_id=None):
             'save_output': True
         }
 
-        # Add ROI if available in config (ENHANCED)
+        # Add ROI if available in config
         roi_normalized = None
         
         # Try multiple sources for ROI configuration
@@ -129,9 +129,7 @@ def process_video_task(self, video_id, location_id=None):
         
         # Validate and add ROI to kwargs
         if roi_normalized:
-            # Basic validation
             if isinstance(roi_normalized, list) and len(roi_normalized) >= 3:
-                # Validate each point
                 valid_roi = True
                 for point in roi_normalized:
                     if not isinstance(point, list) or len(point) != 2:
@@ -160,7 +158,7 @@ def process_video_task(self, video_id, location_id=None):
         report = None
 
         try:
-            # ATTEMPT 1: Try with progress_callback and all kwargs (new standard interface)
+            # ATTEMPT 1: Try with progress_callback and all kwargs
             logger.info("📡 Attempting standard detector interface with progress_callback...")
             report = detector.analyze_video(
                 video_obj.file_path.path,
@@ -181,7 +179,7 @@ def process_video_task(self, video_id, location_id=None):
                 )
                 
                 try:
-                    # ATTEMPT 3: Try with just save_output (minimal signature)
+                    # ATTEMPT 3: Try with just save_output
                     logger.info("📡 Attempting minimal detector interface (save_output only)...")
                     report = detector.analyze_video(
                         video_obj.file_path.path,
@@ -204,17 +202,13 @@ def process_video_task(self, video_id, location_id=None):
                         logger.error(f"   Minimal error: {minimal_error}")
                         logger.error(f"   Bare error: {bare_error}")
                         raise RuntimeError(
-                            f"Detector {type(detector).__name__} is incompatible with all known interfaces. "
-                            f"The detector's analyze_video() method may have an incompatible signature."
+                            f"Detector {type(detector).__name__} is incompatible with all known interfaces."
                         )
                         
                 except Exception as fallback_error:
                     logger.error(f"❌ Fallback failed with unexpected error: {fallback_error}")
-                    raise RuntimeError(
-                        f"Failed to run detector with any interface: {fallback_error}"
-                    )
+                    raise RuntimeError(f"Failed to run detector: {fallback_error}")
             else:
-                # Different TypeError, re-raise it
                 logger.error(f"❌ Unexpected TypeError during analysis: {e}")
                 raise
                 
@@ -226,44 +220,29 @@ def process_video_task(self, video_id, location_id=None):
 
         # Verify we got a report
         if report is None:
-            raise RuntimeError(
-                f"Detector analysis completed but returned no report. "
-                f"This may indicate a serious issue with the detector implementation."
-            )
+            raise RuntimeError("Detector analysis completed but returned no report.")
 
         logger.info(f"✅ Analysis complete. Processing report...")
         logger.info(f"📋 Report keys: {list(report.keys())}")
         
-        # Process report based on detector type
+        # ✅ ENHANCED: Handle new report format with enhanced congestion data
         if 'congestion_summary' in report:
-            # This is CongestionTimeDetector format
+            # CongestionTimeDetector format
             logger.info("📊 Detected CongestionTimeDetector report format")
             
-            # For congestion detector, we need to extract vehicle counts differently
             total_vehicles = report.get('vehicle_statistics', {}).get('total_vehicles_detected', 0)
             
-            # Create analysis with congestion-focused data
             analysis = TrafficAnalysis.objects.create(
                 video_file=video_obj,
                 location=location,
                 total_vehicles=total_vehicles,
                 processing_time_seconds=report['metadata']['processing_time'],
-                
-                # Use default counts for congestion detector
-                car_count=0,
-                truck_count=0,
-                motorcycle_count=0,
-                bus_count=0,
-                bicycle_count=0,
-                other_count=0,
-                
-                # Traffic metrics from congestion analysis
+                car_count=0, truck_count=0, motorcycle_count=0,
+                bus_count=0, bicycle_count=0, other_count=0,
                 peak_traffic=report['vehicle_statistics'].get('peak_vehicle_count', 0),
                 average_traffic=report['vehicle_statistics'].get('average_vehicle_count', 0),
                 congestion_level=map_congestion_level(report['congestion_summary']['overall_congestion_level']),
                 traffic_pattern='stable',
-                
-                # Store full report for reference
                 analysis_data=report,
                 metrics_summary={
                     'model_used': 'CongestionTimeDetector (Full-Frame)',
@@ -279,7 +258,7 @@ def process_video_task(self, video_id, location_id=None):
             )
 
         elif 'summary' in report:
-            # This is standard detector format (BaliwasanYJunctionDetector, UniversalTrafficDetector, etc.)
+            # Standard detector format
             logger.info("📊 Detected standard detector report format")
             
             vehicle_breakdown = report['summary'].get('vehicle_breakdown', {})
@@ -289,22 +268,16 @@ def process_video_task(self, video_id, location_id=None):
                 location=location,
                 total_vehicles=report['summary']['total_vehicles_counted'],
                 processing_time_seconds=report['metadata']['processing_time'],
-                
-                # VEHICLE TYPES (handles both collision4 and universal detector)
                 car_count=vehicle_breakdown.get('car', 0),
                 truck_count=vehicle_breakdown.get('truck', 0),
                 motorcycle_count=vehicle_breakdown.get('motorcycle', 0),
-                bus_count=vehicle_breakdown.get('jeep', vehicle_breakdown.get('bus', 0)),  # Map jeep or bus
-                bicycle_count=vehicle_breakdown.get('tricycle', vehicle_breakdown.get('bicycle', 0)),  # Map tricycle or bicycle
+                bus_count=vehicle_breakdown.get('jeep', vehicle_breakdown.get('bus', 0)),
+                bicycle_count=vehicle_breakdown.get('tricycle', vehicle_breakdown.get('bicycle', 0)),
                 other_count=0,
-                
-                # Traffic metrics
                 peak_traffic=report['summary'].get('peak_traffic', 0),
                 average_traffic=report['summary'].get('average_traffic_density', 0),
                 congestion_level=map_congestion_level(report['metrics'].get('congestion_level', 'low')),
                 traffic_pattern=map_traffic_pattern(report['metrics'].get('traffic_pattern', 'stable')),
-                
-                # Store full report for reference
                 analysis_data=report,
                 metrics_summary={
                     'model_used': report['metadata'].get('model_used', 'Universal Traffic Detector'),
@@ -318,18 +291,54 @@ def process_video_task(self, video_id, location_id=None):
             )
 
         elif 'counting_results' in report:
-            # This is BaseDirectionalDetector format (new detectors)
-            logger.info("📊 Detected directional detector report format")
+            # ✅ ENHANCED: BaseDirectionalDetector format with new congestion features
+            logger.info("📊 Detected directional detector report format (ENHANCED)")
             
             counting_results = report.get('counting_results', {})
             congestion_results = report.get('congestion_results', {})
             vehicle_breakdown = counting_results.get('vehicle_breakdown', {})
+            metadata = report.get('metadata', {})
+            
+            # ✅ Handle multiple possible key names for processing time
+            processing_time = (
+                metadata.get('processing_time_seconds') or 
+                metadata.get('processing_time') or 
+                0
+            )
+            
+            # ✅ Handle multiple possible key names for duration
+            duration = (
+                metadata.get('duration_seconds') or
+                metadata.get('video_duration') or
+                metadata.get('duration') or
+                0
+            )
+            
+            # ✅ Handle multiple possible key names for frames
+            total_frames_processed = (
+                metadata.get('frames_processed') or
+                metadata.get('total_frames') or
+                0
+            )
+            
+            # ✅ NEW: Extract enhanced congestion metrics
+            congestion_score = congestion_results.get('congestion_score', 0)
+            events_by_level = congestion_results.get('events_by_level', {})
+            
+            # ✅ NEW: Check if enhanced congestion module was used
+            congestion_module_type = metadata.get('congestion_module', 'Standard')
+            is_enhanced = 'Enhanced' in congestion_module_type or 'Multi-Factor' in congestion_module_type
+            
+            logger.info(f"🚦 Congestion module: {congestion_module_type} (Enhanced: {is_enhanced})")
+            if is_enhanced:
+                logger.info(f"✨ Enhanced congestion score: {congestion_score}")
+                logger.info(f"📊 Events by level: {events_by_level}")
             
             analysis = TrafficAnalysis.objects.create(
                 video_file=video_obj,
                 location=location,
                 total_vehicles=counting_results.get('total_vehicles', 0),
-                processing_time_seconds=report['metadata']['processing_time_seconds'],
+                processing_time_seconds=processing_time,
                 
                 # Vehicle types
                 car_count=vehicle_breakdown.get('car', 0),
@@ -343,34 +352,40 @@ def process_video_task(self, video_id, location_id=None):
                 directional_count=counting_results.get('total_vehicles', 0),
                 directional_vehicles_per_minute=counting_results.get('vehicles_per_minute', 0),
                 
-                # Congestion data
+                # ✅ ENHANCED: Congestion data with new metrics
                 congestion_events_count=congestion_results.get('total_events', 0),
                 total_congestion_time=congestion_results.get('total_congestion_time', 0),
                 congestion_level=map_congestion_level(congestion_results.get('final_congestion_level', 'none')),
                 
                 # Video properties
-                duration_seconds=report['metadata']['duration_seconds'],
-                fps=report['metadata']['fps'],
-                total_frames=report['metadata']['frames_processed'],
+                duration_seconds=duration,
+                fps=metadata.get('fps', 30),
+                total_frames=total_frames_processed,
                 
-                # Store full report
+                # ✅ ENHANCED: Store full report with new congestion data
                 analysis_data=report,
                 metrics_summary={
-                    'model_used': f"Directional Detector - {report['metadata']['direction']}",
-                    'detector_type': report['metadata']['direction'],
-                    'counting_direction': report['metadata']['direction'],
-                    'tracked_classes': report['metadata']['vehicle_classes'],
-                    'detection_method': 'Directional counting with congestion detection',
+                    'model_used': f"Directional Detector - {metadata.get('direction', 'Unknown')}",
+                    'detector_type': metadata.get('direction', 'Unknown'),
+                    'counting_direction': metadata.get('direction', 'Unknown'),
+                    'tracked_classes': metadata.get('vehicle_classes', []),
+                    'detection_method': 'Directional counting with enhanced congestion detection',
+                    'congestion_module': congestion_module_type,  # ✅ NEW
+                    'is_enhanced_congestion': is_enhanced,  # ✅ NEW
+                    'congestion_score': congestion_score,  # ✅ NEW
+                    'events_by_level': events_by_level,  # ✅ NEW
                     'location_name': location.display_name,
                     'location_id': location.id,
                     'processing_profile': location.processing_profile.display_name if location.processing_profile else 'Default'
                 },
                 frame_data=report.get('raw_data', {}).get('frame_data', []),
-                congestion_events=congestion_results.get('events_by_level', {})
+                congestion_events=events_by_level  # ✅ Store enhanced events
             )
+            
+            logger.info(f"✅ Created enhanced analysis with congestion score: {congestion_score}")
 
         else:
-            # Unknown report format - create basic analysis
+            # Unknown report format
             logger.warning("⚠️ Unknown report format, creating basic analysis")
             
             analysis = TrafficAnalysis.objects.create(
@@ -427,7 +442,10 @@ def process_video_task(self, video_id, location_id=None):
             'total_vehicles': analysis.total_vehicles,
             'model_used': analysis.metrics_summary.get('model_used', 'Unknown'),
             'processing_time': analysis.processing_time_seconds,
-            'congestion_level': getattr(analysis, 'congestion_level', 'unknown')
+            'congestion_level': getattr(analysis, 'congestion_level', 'unknown'),
+            # ✅ NEW: Add enhanced congestion info if available
+            'is_enhanced_congestion': analysis.metrics_summary.get('is_enhanced_congestion', False),
+            'congestion_score': analysis.metrics_summary.get('congestion_score', 0)
         }
 
         progress_tracker.set_progress(100, "Complete!")
@@ -466,7 +484,7 @@ def process_video_task(self, video_id, location_id=None):
 
 
 def map_congestion_level(level_str):
-    """Map congestion levels to database choices"""
+    """Map congestion levels to database choices - ENHANCED"""
     mapping = {
         'Light Traffic': 'low',
         'Moderate Congestion': 'medium',

@@ -2023,3 +2023,611 @@ header[style*="position: fixed"] {
     transform: translateY(-1px) !important;
   }
 }
+
+/* ==================== LOGIN MODAL SPECIFIC STYLES ==================== */
+.login-modal {
+  max-width: 420px !important;
+  padding: 32px !important;
+}
+
+.login-modal .modal-header {
+  padding-bottom: 20px !important;
+  margin-bottom: 24px !important;
+  text-align: center !important;
+}
+
+.login-modal .modal-header h2 {
+  font-size: 24px !important;
+  font-weight: 700 !important;
+  color: #1f2937 !important;
+  margin: 0 !important;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  background-clip: text !important;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.login-form .form-group {
+  margin-bottom: 0;
+}
+
+.login-form label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: #374151;
+  font-size: 14px;
+}
+
+.login-form .form-input {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 16px;
+  transition: all 0.3s ease;
+  background-color: #f9fafb;
+}
+
+.login-form .form-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  background-color: white;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.login-form .form-input:disabled {
+  background-color: #f3f4f6;
+  cursor: not-allowed;
+}
+
+.login-button {
+  width: 100% !important;
+  padding: 14px !important;
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+  border: none !important;
+  color: white !important;
+  cursor: pointer !important;
+  transition: all 0.3s ease !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  margin-top: 10px !important;
+}
+
+.login-button:hover:not(:disabled) {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4) !important;
+}
+
+.login-button:disabled {
+  opacity: 0.7 !important;
+  cursor: not-allowed !important;
+}
+
+.login-button .spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top: 2px solid white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.login-footer {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #e5e7eb;
+  text-align: center;
+}
+
+.login-note {
+  font-size: 13px;
+  color: #6b7280;
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* Enhanced error styling */
+.alert-error {
+  background-color: #fef2f2 !important;
+  border: 1px solid #fecaca !important;
+  color: #dc2626 !important;
+  padding: 14px 16px !important;
+  border-radius: 8px !important;
+  margin-bottom: 24px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  font-size: 14px !important;
+}
+
+.alert-error .error-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+/* Modal close button specific styling */
+.login-modal .modal-close-button {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 36px;
+  height: 36px;
+  background-color: #f3f4f6;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  border: none;
+  cursor: pointer;
+  font-size: 20px;
+  color: #6b7280;
+}
+
+.login-modal .modal-close-button:hover {
+  background-color: #e5e7eb;
+  color: #374151;
+}
+
+
+/* Login modal responsive styles */
+@media (max-width: 480px) {
+  .login-modal {
+    max-width: 90% !important;
+    padding: 24px !important;
+    margin: 20px !important;
+  }
+  
+  .login-modal .modal-header h2 {
+    font-size: 20px !important;
+  }
+  
+  .login-form .form-input {
+    padding: 10px 14px;
+    font-size: 15px;
+  }
+  
+  .login-button {
+    padding: 12px !important;
+    font-size: 15px !important;
+  }
+  
+  .form-group:nth-child(1) .form-input,
+  .form-group:nth-child(2) .form-input {
+    padding-left: 44px;
+  }
+}
+
+/* Dark mode support (optional) */
+@media (prefers-color-scheme: dark) {
+  .login-modal {
+    background-color: #1f2937 !important;
+    color: #f9fafb !important;
+  }
+  
+  .login-modal .modal-header h2 {
+    color: #f9fafb !important;
+    background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%) !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    background-clip: text !important;
+  }
+  
+  .login-form .form-input {
+    background-color: #374151;
+    border-color: #4b5563;
+    color: #f9fafb;
+  }
+  
+  .login-form .form-input:focus {
+    border-color: #60a5fa;
+    background-color: #4b5563;
+  }
+  
+  .login-form label {
+    color: #d1d5db;
+  }
+  
+  .login-note {
+    color: #9ca3af;
+  }
+  
+  .login-modal .modal-close-button {
+    background-color: #374151;
+    color: #d1d5db;
+  }
+  
+  .login-modal .modal-close-button:hover {
+    background-color: #4b5563;
+    color: #f9fafb;
+  }
+}
+
+/* Animation for modal entrance */
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.login-modal {
+  animation: modalSlideIn 0.3s ease-out !important;
+}
+
+/* Password visibility toggle (optional enhancement) */
+.password-toggle {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: color 0.2s;
+}
+
+.password-toggle:hover {
+  color: #374151;
+}
+
+.password-toggle:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+
+
+
+
+/* ==================== DARK MODE STYLES ==================== */
+:root {
+  /* Light theme variables */
+  --bg-primary: #f5f7f9;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f8fafc;
+  --text-primary: #2d3748;
+  --text-secondary: #4a5568;
+  --text-tertiary: #718096;
+  --border-color: #e2e8f0;
+  --header-bg: rgba(255, 255, 255, 0.98);
+  --sidebar-bg: #1d4ed8;
+  --card-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+  --input-bg: #ffffff;
+  --input-border: #d1d5db;
+  --table-header-bg: #f7fafc;
+  --hover-bg: #f3f4f6;
+}
+
+.dark {
+  /* Dark theme variables */
+  --bg-primary: #111827;
+  --bg-secondary: #1f2937;
+  --bg-tertiary: #374151;
+  --text-primary: #f9fafb;
+  --text-secondary: #e5e7eb;
+  --text-tertiary: #9ca3af;
+  --border-color: #4b5563;
+  --header-bg: rgba(31, 41, 55, 0.98);
+  --sidebar-bg: #111827;
+  --card-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+  --input-bg: #374151;
+  --input-border: #4b5563;
+  --table-header-bg: #374151;
+  --hover-bg: #374151;
+}
+
+/* Apply theme variables */
+body {
+  background-color: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Header */
+.header {
+  background-color: var(--header-bg) !important;
+  border-bottom-color: var(--border-color) !important;
+}
+
+.page-title {
+  color: var(--text-primary) !important;
+}
+
+.icon-button {
+  color: var(--text-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+.icon-button:hover {
+  background-color: var(--hover-bg) !important;
+}
+
+/* Sidebar */
+.sidebar {
+  background-color: var(--sidebar-bg) !important;
+}
+
+/* Main Content */
+.main-content {
+  background-color: var(--bg-primary) !important;
+}
+
+/* Dashboard Cards */
+.dashboard-card {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  box-shadow: var(--card-shadow) !important;
+  border: 1px solid var(--border-color) !important;
+}
+
+.card-title {
+  color: var(--text-primary) !important;
+}
+
+/* Tables */
+.data-table th {
+  background-color: var(--table-header-bg) !important;
+  color: var(--text-secondary) !important;
+  border-bottom-color: var(--border-color) !important;
+}
+
+.data-table td {
+  color: var(--text-primary) !important;
+  border-bottom-color: var(--border-color) !important;
+}
+
+/* Form Inputs */
+.form-input {
+  background-color: var(--input-bg) !important;
+  border-color: var(--input-border) !important;
+  color: var(--text-primary) !important;
+}
+
+.select-input {
+  background-color: var(--input-bg) !important;
+  border-color: var(--input-border) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Modals */
+.modal-content {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+}
+
+.modal-title {
+  color: var(--text-primary) !important;
+}
+
+/* Buttons */
+.button-secondary {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-color) !important;
+}
+
+.button-secondary:hover:not(:disabled) {
+  background-color: var(--hover-bg) !important;
+}
+
+/* Stats Grid */
+.stat-card {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+}
+
+.stat-value {
+  color: var(--text-primary) !important;
+}
+
+.stat-label {
+  color: var(--text-tertiary) !important;
+}
+
+/* Info Box */
+.info-box {
+  background-color: var(--bg-tertiary) !important;
+  border-left-color: #4299e1 !important;
+}
+
+.info-title {
+  color: var(--text-primary) !important;
+}
+
+.info-text {
+  color: var(--text-secondary) !important;
+}
+
+/* Login Modal Specific */
+.login-modal .modal-header h2 {
+  color: var(--text-primary) !important;
+}
+
+.login-form .form-input {
+  background-color: var(--input-bg) !important;
+  border-color: var(--input-border) !important;
+  color: var(--text-primary) !important;
+}
+
+.login-form label {
+  color: var(--text-secondary) !important;
+}
+
+.login-note {
+  color: var(--text-tertiary) !important;
+}
+
+/* Theme Toggle Button */
+.theme-toggle-button {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 40px !important;
+  height: 40px !important;
+  background: none !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 10px !important;
+  cursor: pointer !important;
+  color: var(--text-secondary) !important;
+  transition: all 0.3s ease !important;
+}
+
+.theme-toggle-button:hover {
+  background-color: var(--hover-bg) !important;
+  border-color: var(--text-secondary) !important;
+}
+
+/* Upload Button */
+.upload-button-header {
+  background-color: #10b981 !important;
+  color: white !important;
+}
+
+.upload-button-header:hover {
+  background-color: #059669 !important;
+}
+
+/* Login Button */
+.login-button {
+  background-color: #3b82f6 !important;
+  color: white !important;
+}
+
+.login-button:hover {
+  background-color: #2563eb !important;
+}
+
+/* Code blocks */
+code {
+  background-color: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Divider */
+.divider {
+  background-color: var(--border-color) !important;
+}
+
+/* Alert boxes */
+.alert-error {
+  background-color: #7f1d1d !important;
+  border-color: #991b1b !important;
+  color: #fecaca !important;
+}
+
+.alert-success {
+  background-color: #065f46 !important;
+  border-color: #047857 !important;
+  color: #a7f3d0 !important;
+}
+
+/* Progress tracking */
+.progress-section {
+  background: #1e293b !important;
+  border-top-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Video Viewer */
+.video-player-section {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+
+.processed-video {
+  border-color: var(--border-color) !important;
+}
+
+/* Responsive adjustments for dark mode */
+@media (max-width: 768px) {
+  .header {
+    background-color: var(--bg-secondary) !important;
+  }
+}
+
+/* Smooth transitions */
+* {
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+}
+
+/* Skip transitions on initial load */
+.preload * {
+  transition: none !important;
+}
+
+/* Chart.js dark mode override */
+.chartjs-render-monitor {
+  filter: brightness(0.9) contrast(1.1);
+}
+
+.dark .chartjs-render-monitor {
+  filter: brightness(1.1) contrast(0.9);
+}
+
+/* Specific component dark mode overrides */
+.dark .sidebar-nav-link {
+  color: #e2e8f0 !important;
+}
+
+.dark .sidebar-nav-link:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: white !important;
+}
+
+.dark .sidebar-nav-link.active {
+  background: white !important;
+  color: #1d4ed8 !important;
+}
+
+/* Scrollbar styling for dark mode */
+.dark ::-webkit-scrollbar {
+  width: 10px;
+}
+
+.dark ::-webkit-scrollbar-track {
+  background: var(--bg-tertiary);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 5px;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+/* Landing page dark mode */
+.dark .main-content.no-sidebar {
+  background: var(--bg-primary) !important;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(59, 130, 246, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}

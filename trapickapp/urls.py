@@ -48,11 +48,6 @@ urlpatterns = [
     path('api/vehicles/', api_views.VehicleStatsAPI.as_view(), name='vehicle_stats'),
     path('api/congestion/', api_views.CongestionDataAPI.as_view(), name='congestion_data'),
 
-    # ==================== EXPORT ENDPOINTS ====================
-    path('api/export/<uuid:video_id>/csv/', api_views.ExportAnalysisCSVAPI.as_view(), name='export_csv'),
-    path('api/export/<uuid:video_id>/pdf/', api_views.ExportAnalysisPDFAPI.as_view(), name='export_pdf'),
-    path('api/export/<uuid:video_id>/excel/', api_views.ExportAnalysisExcelAPI.as_view(), name='export_excel'),
-
     # ==================== PREDICTION ENDPOINTS ====================
     path('api/predictions/generate/', api_views.GeneratePredictionsAPI.as_view(), name='generate_predictions'),
     path('api/predictions/', api_views.GetPredictionsAPI.as_view(), name='get_predictions'),

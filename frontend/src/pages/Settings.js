@@ -1,9 +1,10 @@
-// src/pages/Settings.js
+// src/pages/Settings.js - UPDATED WITH THEME CONTEXT
 import React, { useState, useEffect } from "react";
 import axios from "axios";
+import { useTheme } from "../contexts/ThemeContext"; // Import useTheme hook
 
 function Settings() {
-  const [darkMode, setDarkMode] = useState(false);
+  const { theme, toggleTheme, isDark } = useTheme(); // Use theme context
   const [notifications, setNotifications] = useState(true);
   const [language, setLanguage] = useState("en");
   const [activeTab, setActiveTab] = useState("general"); // "general", "locations", or "profiles"
@@ -249,15 +250,14 @@ function Settings() {
   const handleEditProfile = (profile) => {
     console.log("✏️ Editing profile:", profile);
     setEditingProfile(profile);
+    const config = profile.config_parameters || {};
     setProfileFormData({
       name: profile.name || '',
       display_name: profile.display_name || '',
       description: profile.description || '',
       detector_type: profile.detector_type || 'vertical_top_bottom',
-      enable_congestion_detection: profile.config_parameters?.enable_congestion_detection !== undefined 
-        ? profile.config_parameters.enable_congestion_detection 
-        : true,
-      congestion_threshold: profile.config_parameters?.congestion_threshold || 5,
+      enable_congestion_detection: config.enable_congestion_detection ?? true,
+      congestion_threshold: config.congestion_threshold ?? 5,
       road_type: profile.road_type || 'generic',
       active: profile.active !== undefined ? profile.active : true
     });
@@ -451,37 +451,45 @@ function Settings() {
             
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #e2e8f0', padding: '16px 0' }}>
               <div>
-                <p style={{ fontWeight: '500' }}>Dark Mode</p>
+                <p style={{ fontWeight: '500' }}>Theme Mode</p>
                 <p style={{ fontSize: '14px', color: '#666' }}>Switch between light and dark themes</p>
               </div>
-              <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={darkMode}
-                  onChange={() => setDarkMode(!darkMode)}
-                  style={{ position: 'absolute', opacity: 0 }}
-                />
-                <div style={{
-                  width: '44px',
-                  height: '24px',
-                  backgroundColor: darkMode ? '#3b82f6' : '#e5e7eb',
-                  borderRadius: '12px',
-                  position: 'relative',
-                  transition: 'background-color 0.2s'
-                }}>
-                  <span style={{
-                    position: 'absolute',
-                    left: '2px',
-                    top: '2px',
-                    backgroundColor: 'white',
-                    width: '20px',
-                    height: '20px',
-                    borderRadius: '50%',
-                    transition: 'transform 0.2s',
-                    transform: darkMode ? 'translateX(20px)' : 'translateX(0)'
-                  }}></span>
-                </div>
-              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '14px', color: isDark ? '#9ca3af' : '#3b82f6', fontWeight: isDark ? '400' : '600' }}>
+                  Light
+                </span>
+                <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={isDark}
+                    onChange={toggleTheme}
+                    style={{ position: 'absolute', opacity: 0 }}
+                  />
+                  <div style={{
+                    width: '44px',
+                    height: '24px',
+                    backgroundColor: isDark ? '#3b82f6' : '#e5e7eb',
+                    borderRadius: '12px',
+                    position: 'relative',
+                    transition: 'background-color 0.2s'
+                  }}>
+                    <span style={{
+                      position: 'absolute',
+                      left: '2px',
+                      top: '2px',
+                      backgroundColor: 'white',
+                      width: '20px',
+                      height: '20px',
+                      borderRadius: '50%',
+                      transition: 'transform 0.2s',
+                      transform: isDark ? 'translateX(20px)' : 'translateX(0)'
+                    }}></span>
+                  </div>
+                </label>
+                <span style={{ fontSize: '14px', color: isDark ? '#3b82f6' : '#9ca3af', fontWeight: isDark ? '600' : '400' }}>
+                  Dark
+                </span>
+              </div>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #e2e8f0', padding: '16px 0' }}>

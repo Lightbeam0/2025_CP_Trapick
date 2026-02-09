@@ -181,7 +181,13 @@ class BaseDetector(ABC):
         # Calculate stationary vehicles
         stationary_count = 0
         for det in detections:
-            if det.get('speed', 100) < 5:  # Less than 5 km/h
+            speed = det.get('speed')
+            
+            # ✅ FIX: Properly handle None speed values
+            if speed is None:
+                # If speed is unknown, assume vehicle is moving
+                continue
+            elif speed < 5:  # Less than 5 km/h
                 stationary_count += 1
         
         congestion_score = min(100, int((total_vehicles / 20) * 100))
@@ -500,13 +506,19 @@ class BaseDetector(ABC):
             'vehicles_per_frame': self.total_count / total_frames if total_frames > 0 else 0
         }
         
+        # ✅ FIX: Use consistent key names that tasks.py expects
         return {
             'metadata': {
                 'detector_name': self.__class__.__name__,
+                'direction': getattr(self, 'direction_name', 'Unknown'),  # For directional detectors
                 'video_duration': round(duration, 2),
+                'duration_seconds': round(duration, 2),  # ✅ Add this key
                 'processing_time': round(proc_time, 2),
+                'processing_time_seconds': round(proc_time, 2),  # ✅ Add this key
                 'processing_date': datetime.now().isoformat(),
                 'total_frames': total_frames,
+                'frames_processed': total_frames,  # ✅ Add this key
+                'fps': round(fps, 2),
                 'video_fps': round(fps, 2),
                 'vehicle_classes': self.counted_classes
             },
@@ -518,13 +530,14 @@ class BaseDetector(ABC):
                 'detection_efficiency': detection_efficiency
             },
             'congestion_results': {
-                'total_congestion_events': congestion_summary['total_events'],
-                'total_congestion_duration': round(congestion_summary['total_duration'], 2),
-                'congestion_events_by_level': dict(congestion_summary['events_by_level']),
+                'total_events': congestion_summary['total_events'],
+                'total_congestion_time': round(congestion_summary['total_duration'], 2),
+                'events_by_level': dict(congestion_summary['events_by_level']),
                 'average_congestion_duration': round(congestion_summary['average_duration'], 2),
                 'congestion_percentage': round(
                     (congestion_summary['total_duration'] / duration * 100) if duration > 0 else 0, 2
-                )
+                ),
+                'final_congestion_level': self._determine_final_congestion_level(congestion_summary)
             },
             'raw_data': {
                 'frame_data': self.frame_data[-1000:],  # Last 1000 frames for dashboard
@@ -532,6 +545,19 @@ class BaseDetector(ABC):
                 'vehicle_counts_history': self.get_vehicle_counts_history()
             }
         }
+
+    def _determine_final_congestion_level(self, congestion_summary):
+        """Helper method to determine overall congestion level"""
+        if not congestion_summary['events_by_level']:
+            return 'none'
+        
+        # Return the most severe level that occurred
+        level_priority = ['severe', 'heavy', 'moderate', 'light', 'none']
+        for level in level_priority:
+            if congestion_summary['events_by_level'].get(level, 0) > 0:
+                return level
+        
+        return 'none'
     
     def get_vehicle_counts_history(self):
         """

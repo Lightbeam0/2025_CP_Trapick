@@ -1,12 +1,13 @@
-// src/App.js - UPDATED TO HANDLE UPLOAD MODAL
+// src/App.js - UPDATED WITH THEME PROVIDER
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { WebSocketProvider } from './contexts/WebSocketContext';
+import { ThemeProvider } from './contexts/ThemeContext'; // Import ThemeProvider
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import LoginModal from './components/LoginModal';
-import VideoUploadModal from './components/VideoUploadModal'; // Import VideoUploadModal
+import VideoUploadModal from './components/VideoUploadModal';
 import LandingPage from './pages/LandingPage';
 import Home from './pages/Home';
 import VehiclesPassing from './pages/VehiclesPassing';
@@ -28,7 +29,7 @@ function AppContent() {
   
   const [user, setUser] = useState(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
-  const [showUploadModal, setShowUploadModal] = useState(false); // New state for upload modal
+  const [showUploadModal, setShowUploadModal] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   
@@ -39,15 +40,12 @@ function AppContent() {
   
   const checkAuthentication = async () => {
     try {
-      // Check localStorage first, then sessionStorage
       const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
       const storedUser = localStorage.getItem('user') || sessionStorage.getItem('user');
       
       if (token && storedUser) {
-        // Set axios header
         axios.defaults.headers.common['Authorization'] = `Token ${token}`;
         
-        // Try to parse stored user
         try {
           const parsedUser = JSON.parse(storedUser);
           setUser(parsedUser);
@@ -81,7 +79,6 @@ function AppContent() {
     setUser(userData);
     setShowLoginModal(false);
     
-    // Navigate to home if on landing page
     if (location.pathname === '/') {
       navigate('/home');
     }
@@ -96,11 +93,9 @@ function AppContent() {
   };
 
   const handleUploadClick = () => {
-    // Only allow upload if user is logged in
     if (user) {
       setShowUploadModal(true);
     } else {
-      // If not logged in, show login modal instead
       setShowLoginModal(true);
     }
   };
@@ -118,12 +113,10 @@ function AppContent() {
     setIsSidebarOpen(false);
   };
 
-  // Close sidebar when route changes
   useEffect(() => {
     closeSidebar();
   }, [location.pathname]);
 
-  // Show simple loading while checking auth
   if (isAuthChecking) {
     return (
       <div className="app-container" style={{ 
@@ -145,7 +138,7 @@ function AppContent() {
           onLoginClick={handleLoginClick}
           onLogout={handleLogout}
           toggleSidebar={toggleSidebar}
-          onUploadClick={handleUploadClick} // Pass upload handler
+          onUploadClick={handleUploadClick}
         />
       )}
       
@@ -170,7 +163,7 @@ function AppContent() {
             <Routes>
               <Route path="/" element={
                 <LandingPage 
-                  onGetStarted={() => user ? navigate('/home') : setShowLoginModal(true)} 
+                  user={user}
                 />
               } />
               <Route path="/home" element={<Home />} />
@@ -187,14 +180,12 @@ function AppContent() {
         </main>
       </div>
       
-      {/* Login Modal */}
       <LoginModal
         isOpen={showLoginModal}
         onClose={() => setShowLoginModal(false)}
         onLoginSuccess={handleLoginSuccess}
       />
       
-      {/* Video Upload Modal */}
       <VideoUploadModal
         isOpen={showUploadModal}
         onClose={() => setShowUploadModal(false)}
@@ -206,11 +197,13 @@ function AppContent() {
 
 function App() {
   return (
-    <WebSocketProvider>
-      <Router>
-        <AppContent />
-      </Router>
-    </WebSocketProvider>
+    <ThemeProvider> {/* Wrap everything with ThemeProvider */}
+      <WebSocketProvider>
+        <Router>
+          <AppContent />
+        </Router>
+      </WebSocketProvider>
+    </ThemeProvider>
   );
 }
 

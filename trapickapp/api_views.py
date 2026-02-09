@@ -1,46 +1,40 @@
-#trapickapp/api_views.py
-from asyncio.log import logger
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
+# trapickapp/api_views.py
+import os
+import csv
+import json
+import threading
+import traceback
+from datetime import datetime, timedelta
+from io import BytesIO
+from collections import Counter
 
-from django.http import (
-    HttpResponse,
-    JsonResponse,
-    FileResponse,
-)
 from django.conf import settings
+from django.http import HttpResponse, JsonResponse, FileResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage
 from django.views.static import serve
 from django.db import models
-from django.db.models import Prefetch, Q, Sum
+from django.db.models import Q, Sum, Prefetch
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.models import User
+from django.views.decorators.csrf import csrf_exempt
 
-# Standard Library
-import os
-import csv
-import json
-import threading
-from datetime import datetime, timedelta
-from io import BytesIO
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.authtoken.models import Token
 
-# Third-party
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.pdfgen import canvas
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-)
 import openpyxl
 
-# Local App
 from .models import (
     VideoFile,
     TrafficAnalysis,
@@ -58,15 +52,10 @@ from .models import (
     DirectionalAnalysis,
     CongestionEvent,
 )
+
 from .serializers import *
 from .tasks import process_video_task
 from .progress import ProgressTracker
-from django.contrib.auth import authenticate, login, logout
-from django.contrib.auth.models import User
-from django.views.decorators.csrf import csrf_exempt
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.authtoken.models import Token
 
 
 
@@ -460,55 +449,41 @@ class GroupAnalysisAPI(APIView):
         return 'severe'
 
 
+
 class AnalysisOverviewAPI(APIView):
     def get(self, request):
-        """Provide overview data for the Home page with REAL data"""
-        from .services import calculate_real_weekly_data, get_system_overview_stats, get_peak_hours_analysis
-        
+        """Provide overview data for the Home page with REAL data including peak hours"""
         try:
             # Get query parameters for location filtering
             location_id = request.query_params.get('location_id', 'all')
             
             # Use services that support location filtering
-            weekly_data = calculate_real_weekly_data(location_id=location_id)
-            system_stats = get_system_overview_stats(location_id=location_id)
-            areas_data = get_peak_hours_analysis(location_id=location_id)
+            # Note: You'll need to implement or import these service functions
+            weekly_data = self.calculate_real_weekly_data(location_id=location_id)
+            system_stats = self.get_system_overview_stats(location_id=location_id)
             
-            # Ensure weekly_data is always a 7-element array
-            if not weekly_data or len(weekly_data) != 7:
-                weekly_data = [0, 0, 0, 0, 0, 0, 0]
+            # ✅ NEW: Calculate real peak hours from actual data
+            peak_hours_data = self.get_real_peak_hours_data(location_id)
             
-            total_vehicles = sum(weekly_data)
-            
-            # Ensure we have valid peak hour data
-            if not areas_data:
-                areas_data = [
-                    {
-                        'name': 'No data available',
-                        'morning_peak': 'N/A',
-                        'evening_peak': 'N/A', 
-                        'morning_volume': 0,
-                        'evening_volume': 0,
-                        'total_analysis_vehicles': 0
-                    }
-                ]
+            # Calculate totals
+            total_vehicles = sum(weekly_data) if weekly_data else 0
             
             response_data = {
                 'weekly_data': weekly_data,
                 'total_vehicles': total_vehicles,
                 'congested_roads': system_stats.get('congested_roads', 0),
-                'peak_hour': system_stats.get('peak_hour', 'N/A'),
+                'peak_hour': self.calculate_overall_peak_hour(peak_hours_data),
                 'daily_average': total_vehicles // 7 if total_vehicles > 0 else 0,
                 'system_stats': system_stats,
-                'areas': areas_data
+                'peak_hours_data': peak_hours_data,
+                'areas': self.format_peak_hours_for_frontend(peak_hours_data, location_id)
             }
             
-            print("📊 Sending overview data:", response_data)
+            print(f"📊 Sending overview data with {len(peak_hours_data)} peak hour records")
             return Response(response_data)
             
         except Exception as e:
             print(f"❌ Error in AnalysisOverviewAPI: {e}")
-            import traceback
             traceback.print_exc()
             
             # Return safe fallback data
@@ -516,12 +491,502 @@ class AnalysisOverviewAPI(APIView):
                 'weekly_data': [0, 0, 0, 0, 0, 0, 0],
                 'total_vehicles': 0,
                 'congested_roads': 0,
-                'peak_hour': 'N/A',
+                'peak_hour': '8:00 AM',
                 'daily_average': 0,
                 'system_stats': {},
-                'areas': [],
+                'peak_hours_data': [],
+                'areas': self.get_default_peak_hours(),
                 'error': 'Error loading data'
             }, status=200)
+
+    def calculate_real_weekly_data(self, location_id='all'):
+        """Calculate weekly data based on location filter"""
+        try:
+            base_query = Q()
+            if location_id != 'all' and location_id is not None:
+                base_query &= Q(location_id=location_id)
+            
+            # Get analyses from last 7 days
+            seven_days_ago = timezone.now() - timedelta(days=7)
+            base_query &= Q(analyzed_at__gte=seven_days_ago)
+            
+            analyses = TrafficAnalysis.objects.filter(base_query)
+            
+            # Initialize weekly data (Monday=0, Sunday=6)
+            weekly_data = [0] * 7
+            
+            for analysis in analyses:
+                if analysis.video_file and analysis.video_file.video_date:
+                    day_of_week = analysis.video_file.video_date.weekday()
+                else:
+                    day_of_week = analysis.analyzed_at.weekday()
+                
+                if 0 <= day_of_week <= 6:
+                    weekly_data[day_of_week] += analysis.total_vehicles
+            
+            return weekly_data
+            
+        except Exception as e:
+            print(f"❌ Error calculating weekly data: {e}")
+            return [0, 0, 0, 0, 0, 0, 0]
+
+    def get_system_overview_stats(self, location_id='all'):
+        """Get system overview statistics"""
+        try:
+            base_query = Q()
+            if location_id != 'all' and location_id is not None:
+                base_query &= Q(location_id=location_id)
+            
+            total_analyses = TrafficAnalysis.objects.filter(base_query).count()
+            
+            # You can add more stats here like congested roads, etc.
+            return {
+                'total_analyses': total_analyses,
+                'congested_roads': 0,  # Implement congestion logic as needed
+                'active_locations': 0   # Implement location counting as needed
+            }
+            
+        except Exception as e:
+            print(f"❌ Error getting system stats: {e}")
+            return {'total_analyses': 0}
+
+    def get_real_peak_hours_data(self, location_id='all'):
+        """Calculate actual peak hours from TrafficAnalysis data using video time ranges"""
+        try:
+            # Build base query
+            base_query = Q()
+            if location_id != 'all' and location_id is not None:
+                base_query &= Q(location_id=location_id)
+            
+            # Get analyses from last 30 days for better pattern recognition
+            thirty_days_ago = timezone.now() - timedelta(days=30)
+            base_query &= Q(analyzed_at__gte=thirty_days_ago)
+            
+            # Get analyses with video file info
+            analyses = TrafficAnalysis.objects.filter(base_query).select_related(
+                'video_file', 'location'
+            ).exclude(
+                Q(video_file__video_start_time__isnull=True) | 
+                Q(video_file__video_end_time__isnull=True)
+            )
+            
+            print(f"🔍 Found {analyses.count()} analyses with time data for peak hour calculation")
+            
+            if not analyses.exists():
+                # Fallback to analyses without exact times
+                analyses = TrafficAnalysis.objects.filter(base_query).select_related(
+                    'video_file', 'location'
+                )
+                print(f"⚠️ Using {analyses.count()} analyses (some without time data)")
+            
+            # Group by 15-minute intervals
+            interval_data = {}  # Format: (day_of_week, interval_key): {data}
+            
+            for analysis in analyses:
+                # Get day of week
+                if analysis.video_file and analysis.video_file.video_date:
+                    day_of_week = analysis.video_file.video_date.weekday()
+                else:
+                    day_of_week = analysis.analyzed_at.weekday()
+                
+                # Get time range from video
+                video = analysis.video_file
+                if video and video.video_start_time and video.video_end_time:
+                    # Use actual video time range
+                    start_hour = video.video_start_time.hour
+                    start_minute = video.video_start_time.minute
+                    end_hour = video.video_end_time.hour
+                    end_minute = video.video_end_time.minute
+                    
+                    # Calculate duration in minutes
+                    duration_minutes = (end_hour * 60 + end_minute) - (start_hour * 60 + start_minute)
+                    if duration_minutes <= 0:
+                        duration_minutes = 60  # Default 1 hour if invalid
+                    
+                    # Distribute vehicles across the time range
+                    vehicles_per_minute = analysis.total_vehicles / duration_minutes if duration_minutes > 0 else 0
+                    
+                    # Add to 15-minute intervals
+                    current_minute = start_hour * 60 + start_minute
+                    end_minute_total = end_hour * 60 + end_minute
+                    
+                    while current_minute < end_minute_total:
+                        interval_key_15 = f"{current_minute // 60:02d}:{((current_minute // 15) * 15) % 60:02d}"
+                        
+                        key = (day_of_week, interval_key_15)
+                        if key not in interval_data:
+                            interval_data[key] = {
+                                'count': 0,
+                                'analyses': set(),
+                                'exact_times': []
+                            }
+                        
+                        # Add portion of vehicles for this minute
+                        interval_data[key]['count'] += vehicles_per_minute
+                        interval_data[key]['analyses'].add(analysis.id)
+                        interval_data[key]['exact_times'].append(f"{current_minute // 60:02d}:{current_minute % 60:02d}")
+                        
+                        current_minute += 1
+                else:
+                    # No exact time data, use analysis hour
+                    hour = analysis.analyzed_at.hour
+                    minute = analysis.analyzed_at.minute
+                    interval_key_15 = f"{hour:02d}:{(minute // 15) * 15:02d}"
+                    
+                    key = (day_of_week, interval_key_15)
+                    if key not in interval_data:
+                        interval_data[key] = {
+                            'count': 0,
+                            'analyses': set(),
+                            'exact_times': []
+                        }
+                    
+                    interval_data[key]['count'] += analysis.total_vehicles
+                    interval_data[key]['analyses'].add(analysis.id)
+            
+            # Convert to list format and aggregate by hour
+            hourly_data = {}
+            
+            for (day_of_week, interval_key), data in interval_data.items():
+                hour = int(interval_key.split(':')[0])
+                
+                key = (day_of_week, hour)
+                if key not in hourly_data:
+                    hourly_data[key] = {
+                        'count': 0,
+                        'analyses': set(),
+                        'intervals': {},
+                        'exact_times': []
+                    }
+                
+                hourly_data[key]['count'] += data['count']
+                hourly_data[key]['analyses'].update(data['analyses'])
+                hourly_data[key]['intervals'][interval_key] = data['count']
+                hourly_data[key]['exact_times'].extend(data['exact_times'])
+            
+            # Convert to result format
+            result = []
+            day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            
+            for (day_of_week, hour), data in hourly_data.items():
+                # Find peak 15-minute interval within this hour
+                intervals = data['intervals']
+                if intervals:
+                    peak_interval = max(intervals.items(), key=lambda x: x[1])[0]
+                    peak_time = peak_interval
+                else:
+                    peak_time = f"{hour:02d}:00"
+                
+                # Get exact time range for this data point
+                exact_times = sorted(set(data['exact_times']))
+                time_range = "Multiple recordings"
+                if exact_times:
+                    if len(exact_times) == 1:
+                        time_range = f"{exact_times[0]}"
+                    else:
+                        time_range = f"{exact_times[0]} - {exact_times[-1]}"
+                
+                result.append({
+                    'day_of_week': day_of_week,
+                    'day_name': day_names[day_of_week],
+                    'hour': hour,
+                    'peak_time': peak_time,
+                    'vehicle_count': round(data['count']),
+                    'analysis_count': len(data['analyses']),
+                    'time_range': time_range,
+                    'average_per_analysis': data['count'] / len(data['analyses']) if data['analyses'] else 0
+                })
+            
+            # Sort by vehicle count (descending)
+            result.sort(key=lambda x: x['vehicle_count'], reverse=True)
+            
+            print(f"✅ Generated {len(result)} peak hour records")
+            return result[:100]  # Return top 100 records
+            
+        except Exception as e:
+            print(f"❌ Error calculating peak hours: {e}")
+            traceback.print_exc()
+            return []
+
+    def format_peak_hours_for_frontend(self, peak_hours_data, location_id='all'):
+        """Format peak hours data for the frontend display using actual time ranges"""
+        if not peak_hours_data:
+            # Return default/fallback data
+            return self.get_default_peak_hours()
+        
+        try:
+            # Group by day of week
+            days_data = {}
+            day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            
+            for record in peak_hours_data:
+                day_name = record['day_name']
+                
+                if day_name not in days_data:
+                    days_data[day_name] = {
+                        'hour_counts': {},
+                        'time_ranges': {},
+                        'peak_times': [],
+                        'total_vehicles': 0,
+                        'analysis_count': 0
+                    }
+                
+                # Store hourly data with actual times
+                hour = record['hour']
+                day_data = days_data[day_name]
+                
+                if hour not in day_data['hour_counts']:
+                    day_data['hour_counts'][hour] = 0
+                    day_data['time_ranges'][hour] = []
+                
+                day_data['hour_counts'][hour] += record['vehicle_count']
+                day_data['time_ranges'][hour].append({
+                    'time_range': record['time_range'],
+                    'peak_time': record['peak_time'],
+                    'vehicle_count': record['vehicle_count'],
+                    'analysis_count': record['analysis_count']
+                })
+                day_data['peak_times'].append(record['peak_time'])
+                day_data['total_vehicles'] += record['vehicle_count']
+                day_data['analysis_count'] += record['analysis_count']
+            
+            # Convert to frontend format
+            result = []
+            
+            for day_name in day_names:  # Ensure correct order
+                if day_name not in days_data:
+                    continue
+                
+                day_data = days_data[day_name]
+                hour_counts = day_data['hour_counts']
+                
+                if not hour_counts:
+                    continue
+                
+                # Find morning peak (6 AM - 11 AM)
+                morning_hours = {h: c for h, c in hour_counts.items() if 6 <= h <= 11}
+                evening_hours = {h: c for h, c in hour_counts.items() if 16 <= h <= 20}
+                
+                # Calculate actual peak ranges based on recorded times
+                morning_peak = self.calculate_actual_peak_range(
+                    morning_hours, day_data['time_ranges'], "morning"
+                )
+                evening_peak = self.calculate_actual_peak_range(
+                    evening_hours, day_data['time_ranges'], "evening"
+                )
+                
+                # Calculate volumes based on actual data
+                morning_volume = self.calculate_average_volume(morning_hours, hour_counts, day_data['total_vehicles'])
+                evening_volume = self.calculate_average_volume(evening_hours, hour_counts, day_data['total_vehicles'])
+                
+                # Get most common peak time
+                most_common_peak = self.get_most_common_peak_time(day_data['peak_times'])
+                
+                result.append({
+                    'name': day_name,
+                    'morning_peak': morning_peak,
+                    'evening_peak': evening_peak,
+                    'morning_volume': morning_volume,
+                    'evening_volume': evening_volume,
+                    'total_analysis_vehicles': day_data['total_vehicles'],
+                    'analysis_count': day_data['analysis_count'],
+                    'most_common_peak': most_common_peak,
+                    'has_exact_times': len(day_data['time_ranges']) > 0
+                })
+            
+            return result
+            
+        except Exception as e:
+            print(f"❌ Error formatting peak hours: {e}")
+            traceback.print_exc()
+            return self.get_default_peak_hours()
+
+    def calculate_actual_peak_range(self, hour_data, time_ranges, period_type):
+        """Calculate peak range based on actual recorded time ranges"""
+        if not hour_data:
+            return "No data" if period_type == "morning" else "No data"
+        
+        # Find peak hour
+        peak_hour = max(hour_data.items(), key=lambda x: x[1])[0]
+        
+        # Get time ranges for this peak hour
+        hour_ranges = time_ranges.get(peak_hour, [])
+        
+        if not hour_ranges:
+            # Fallback to estimated range
+            if period_type == "morning":
+                return f"{peak_hour:02d}:00 - {min(11, peak_hour+1):02d}:00"
+            else:
+                return f"{peak_hour:02d}:00 - {min(20, peak_hour+1):02d}:00"
+        
+        # Extract all time ranges and find common pattern
+        all_times = []
+        for time_range in hour_ranges:
+            range_str = time_range['time_range']
+            if ' - ' in range_str:
+                start, end = range_str.split(' - ')
+                all_times.append((start.strip(), end.strip()))
+            else:
+                # Single time
+                all_times.append((range_str.strip(), range_str.strip()))
+        
+        if not all_times:
+            return f"{peak_hour:02d}:00 - {peak_hour+1:02d}:00"
+        
+        # Find most common start and end times
+        start_times = [t[0] for t in all_times]
+        end_times = [t[1] for t in all_times]
+        
+        # Get most frequent time
+        common_start = Counter(start_times).most_common(1)[0][0] if start_times else f"{peak_hour:02d}:00"
+        common_end = Counter(end_times).most_common(1)[0][0] if end_times else f"{min(23, peak_hour+1):02d}:00"
+        
+        # Format as range
+        if common_start == common_end:
+            # Single time point, create 30-minute window
+            hour_int = int(common_start.split(':')[0])
+            minute_int = int(common_start.split(':')[1])
+            start_time = f"{hour_int:02d}:{max(0, minute_int-15):02d}"
+            end_time = f"{hour_int:02d}:{min(59, minute_int+15):02d}"
+            return f"{start_time} - {end_time}"
+        else:
+            return f"{common_start} - {common_end}"
+
+    def calculate_average_volume(self, period_hours, all_hours, total_vehicles):
+        """Calculate average volume for a period"""
+        if not period_hours:
+            return 0
+        
+        # Calculate total vehicles in this period
+        period_total = sum(period_hours.values())
+        total_all = sum(all_hours.values())
+        
+        if total_all == 0:
+            return 0
+        
+        # Calculate percentage of daily traffic in this period
+        period_percentage = period_total / total_all
+        
+        # Estimate hourly volume
+        avg_hourly = period_total / len(period_hours) if period_hours else 0
+        
+        return round(avg_hourly)
+
+    def get_most_common_peak_time(self, peak_times):
+        """Get the most frequently occurring peak time"""
+        if not peak_times:
+            return None
+        
+        return Counter(peak_times).most_common(1)[0][0]
+
+    def calculate_overall_peak_hour(self, peak_hours_data):
+        """Calculate the overall peak hour from the data"""
+        if not peak_hours_data:
+            return "8:00 AM"
+        
+        # Find the hour with highest average vehicles
+        hourly_totals = {}
+        for record in peak_hours_data:
+            hour = record['hour']
+            hourly_totals[hour] = hourly_totals.get(hour, 0) + record['vehicle_count']
+        
+        if not hourly_totals:
+            return "8:00 AM"
+        
+        # Find peak hour
+        peak_hour = max(hourly_totals.items(), key=lambda x: x[1])[0]
+        
+        # Convert to 12-hour format
+        if peak_hour == 0:
+            return "12:00 AM"
+        elif peak_hour < 12:
+            return f"{peak_hour}:00 AM"
+        elif peak_hour == 12:
+            return "12:00 PM"
+        else:
+            return f"{peak_hour - 12}:00 PM"
+
+    def get_default_peak_hours(self):
+        """Return default peak hours when no data is available"""
+        return [
+            {
+                'name': 'Monday',
+                'morning_peak': '07:30 - 09:00',
+                'evening_peak': '17:00 - 18:30',
+                'morning_volume': 0,
+                'evening_volume': 0,
+                'total_analysis_vehicles': 0,
+                'analysis_count': 0,
+                'most_common_peak': '08:15',
+                'has_exact_times': False
+            },
+            {
+                'name': 'Tuesday',
+                'morning_peak': '07:45 - 09:15',
+                'evening_peak': '17:15 - 18:45',
+                'morning_volume': 0,
+                'evening_volume': 0,
+                'total_analysis_vehicles': 0,
+                'analysis_count': 0,
+                'most_common_peak': '08:30',
+                'has_exact_times': False
+            },
+            {
+                'name': 'Wednesday',
+                'morning_peak': '08:00 - 09:30',
+                'evening_peak': '17:00 - 18:30',
+                'morning_volume': 0,
+                'evening_volume': 0,
+                'total_analysis_vehicles': 0,
+                'analysis_count': 0,
+                'most_common_peak': '08:45',
+                'has_exact_times': False
+            },
+            {
+                'name': 'Thursday',
+                'morning_peak': '07:30 - 09:00',
+                'evening_peak': '16:45 - 18:15',
+                'morning_volume': 0,
+                'evening_volume': 0,
+                'total_analysis_vehicles': 0,
+                'analysis_count': 0,
+                'most_common_peak': '08:00',
+                'has_exact_times': False
+            },
+            {
+                'name': 'Friday',
+                'morning_peak': '07:45 - 09:15',
+                'evening_peak': '16:30 - 18:00',
+                'morning_volume': 0,
+                'evening_volume': 0,
+                'total_analysis_vehicles': 0,
+                'analysis_count': 0,
+                'most_common_peak': '17:30',
+                'has_exact_times': False
+            },
+            {
+                'name': 'Saturday',
+                'morning_peak': '09:00 - 10:30',
+                'evening_peak': '18:00 - 19:30',
+                'morning_volume': 0,
+                'evening_volume': 0,
+                'total_analysis_vehicles': 0,
+                'analysis_count': 0,
+                'most_common_peak': '09:45',
+                'has_exact_times': False
+            },
+            {
+                'name': 'Sunday',
+                'morning_peak': '10:00 - 11:30',
+                'evening_peak': '17:00 - 18:30',
+                'morning_volume': 0,
+                'evening_volume': 0,
+                'total_analysis_vehicles': 0,
+                'analysis_count': 0,
+                'most_common_peak': '10:15',
+                'has_exact_times': False
+            }
+        ]
 
 
 class VehicleStatsAPI(APIView):
@@ -984,239 +1449,6 @@ class ProcessedVideoDirectAPI(APIView):
                 {'error': 'Error serving video file'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-
-class ExportAnalysisCSVAPI(APIView):
-    def get(self, request, video_id):
-        """Export analysis data as CSV"""
-        try:
-            video_obj = VideoFile.objects.get(id=video_id)
-            
-            if not hasattr(video_obj, 'traffic_analysis'):
-                return Response({'error': 'No analysis data available'}, status=404)
-            
-            analysis = video_obj.traffic_analysis
-            
-            # Create CSV response
-            response = HttpResponse(content_type='text/csv')
-            response['Content-Disposition'] = f'attachment; filename="analysis_{video_obj.filename}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv"'
-            
-            writer = csv.writer(response)
-            
-            # Write header
-            writer.writerow(['Traffic Analysis Report', f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'])
-            writer.writerow(['Video File:', video_obj.filename])
-            writer.writerow(['Upload Date:', video_obj.uploaded_at.strftime("%Y-%m-%d %H:%M:%S")])
-            writer.writerow(['Duration:', f"{video_obj.duration_seconds or 0} seconds"])
-            writer.writerow([])
-            
-            # Summary section
-            writer.writerow(['SUMMARY'])
-            writer.writerow(['Total Vehicles:', analysis.total_vehicles])
-            writer.writerow(['Processing Time:', f"{analysis.processing_time_seconds} seconds"])
-            writer.writerow(['Congestion Level:', analysis.congestion_level])
-            writer.writerow(['Traffic Pattern:', analysis.traffic_pattern])
-            writer.writerow([])
-            
-            # Vehicle breakdown
-            writer.writerow(['VEHICLE BREAKDOWN'])
-            writer.writerow(['Vehicle Type', 'Count'])
-            writer.writerow(['Cars', analysis.car_count])
-            writer.writerow(['Trucks', analysis.truck_count])
-            writer.writerow(['Motorcycles', analysis.motorcycle_count])
-            writer.writerow(['Buses', analysis.bus_count])
-            writer.writerow(['Bicycles', analysis.bicycle_count])
-            writer.writerow(['Others', analysis.other_count])
-            writer.writerow([])
-            
-            # Metrics
-            writer.writerow(['METRICS'])
-            writer.writerow(['Peak Traffic:', analysis.peak_traffic])
-            writer.writerow(['Average Traffic:', analysis.average_traffic])
-            
-            return response
-            
-        except VideoFile.DoesNotExist:
-            return Response({'error': 'Video not found'}, status=404)
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
-
-
-class ExportAnalysisPDFAPI(APIView):
-    def get(self, request, video_id):
-        """Export analysis data as PDF"""
-        try:
-            video_obj = VideoFile.objects.get(id=video_id)
-            
-            if not hasattr(video_obj, 'traffic_analysis'):
-                return Response({'error': 'No analysis data available'}, status=404)
-            
-            analysis = video_obj.traffic_analysis
-            
-            # Create PDF in memory
-            buffer = BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=letter)
-            styles = getSampleStyleSheet()
-            
-            # Create custom styles
-            title_style = ParagraphStyle(
-                'CustomTitle',
-                parent=styles['Heading1'],
-                fontSize=16,
-                spaceAfter=30,
-                textColor=colors.HexColor('#1e40af')
-            )
-            
-            heading_style = ParagraphStyle(
-                'CustomHeading',
-                parent=styles['Heading2'],
-                fontSize=12,
-                spaceAfter=12,
-                textColor=colors.HexColor('#374151')
-            )
-            
-            # Build PDF content
-            content = []
-            
-            # Title
-            content.append(Paragraph('Traffic Analysis Report', title_style))
-            content.append(Paragraph(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', styles['Normal']))
-            content.append(Spacer(1, 20))
-            
-            # Video Information
-            content.append(Paragraph('Video Information', heading_style))
-            video_info = [
-                ['Filename:', video_obj.filename],
-                ['Upload Date:', video_obj.uploaded_at.strftime("%Y-%m-%d %H:%M:%S")],
-                ['Duration:', f"{video_obj.duration_seconds or 0} seconds"],
-                ['Processing Status:', video_obj.processing_status]
-            ]
-            video_table = Table(video_info, colWidths=[150, 300])
-            video_table.setStyle(TableStyle([
-                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-            ]))
-            content.append(video_table)
-            content.append(Spacer(1, 20))
-            
-            # Analysis Summary
-            content.append(Paragraph('Analysis Summary', heading_style))
-            summary_data = [
-                ['Total Vehicles:', str(analysis.total_vehicles)],
-                ['Processing Time:', f"{analysis.processing_time_seconds} seconds"],
-                ['Congestion Level:', analysis.congestion_level],
-                ['Traffic Pattern:', analysis.traffic_pattern]
-            ]
-            summary_table = Table(summary_data, colWidths=[150, 300])
-            summary_table.setStyle(TableStyle([
-                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3f4f6')),
-            ]))
-            content.append(summary_table)
-            content.append(Spacer(1, 20))
-            
-            # Vehicle Breakdown
-            content.append(Paragraph('Vehicle Breakdown', heading_style))
-            vehicle_data = [
-                ['Vehicle Type', 'Count'],
-                ['Cars', str(analysis.car_count)],
-                ['Trucks', str(analysis.truck_count)],
-                ['Motorcycles', str(analysis.motorcycle_count)],
-                ['Buses', str(analysis.bus_count)],
-                ['Bicycles', str(analysis.bicycle_count)],
-                ['Other Vehicles', str(analysis.other_count)]
-            ]
-            vehicle_table = Table(vehicle_data, colWidths=[200, 100])
-            vehicle_table.setStyle(TableStyle([
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9fafb')])
-            ]))
-            content.append(vehicle_table)
-            
-            # Build PDF
-            doc.build(content)
-            
-            # Get PDF value from buffer
-            pdf = buffer.getvalue()
-            buffer.close()
-            
-            # Create HTTP response
-            response = HttpResponse(content_type='application/pdf')
-            response['Content-Disposition'] = f'attachment; filename="analysis_{video_obj.filename}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf"'
-            response.write(pdf)
-            
-            return response
-            
-        except VideoFile.DoesNotExist:
-            return Response({'error': 'Video not found'}, status=404)
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
-
-
-class ExportAnalysisExcelAPI(APIView):
-    def get(self, request, video_id):
-        """Export analysis data as Excel"""
-        try:
-            video_obj = VideoFile.objects.get(id=video_id)
-            
-            if not hasattr(video_obj, 'traffic_analysis'):
-                return Response({'error': 'No analysis data available'}, status=404)
-            
-            analysis = video_obj.traffic_analysis
-            
-            # Create Excel workbook
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = "Traffic Analysis"
-            
-            # Add headers and data
-            ws.append(['Traffic Analysis Report', f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'])
-            ws.append(['Video File:', video_obj.filename])
-            ws.append([])
-            
-            # Summary section
-            ws.append(['SUMMARY'])
-            ws.append(['Total Vehicles:', analysis.total_vehicles])
-            ws.append(['Processing Time:', analysis.processing_time_seconds])
-            ws.append(['Congestion Level:', analysis.congestion_level])
-            ws.append([])
-            
-            # Vehicle breakdown
-            ws.append(['VEHICLE BREAKDOWN'])
-            ws.append(['Vehicle Type', 'Count'])
-            ws.append(['Cars', analysis.car_count])
-            ws.append(['Trucks', analysis.truck_count])
-            ws.append(['Motorcycles', analysis.motorcycle_count])
-            ws.append(['Buses', analysis.bus_count])
-            ws.append(['Bicycles', analysis.bicycle_count])
-            ws.append(['Others', analysis.other_count])
-            
-            # Save to BytesIO
-            buffer = BytesIO()
-            wb.save(buffer)
-            buffer.seek(0)
-            
-            # Create HTTP response
-            response = HttpResponse(
-                buffer.getvalue(),
-                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
-            response['Content-Disposition'] = f'attachment; filename="analysis_{video_obj.filename}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx"'
-            
-            return response
-            
-        except VideoFile.DoesNotExist:
-            return Response({'error': 'Video not found'}, status=404)
-        except Exception as e:
-            return Response({'error': str(e)}, status=500)
 
 
 class GeneratePredictionsAPI(APIView):

@@ -1,0 +1,68 @@
+# .dockerignore
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Media files (large and unnecessary in container)
+media/videos/
+media/processed_videos/
+media/cache/
+*.mp4
+*.avi
+*.mov
+*.webm
+*.mkv
+*.gif
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tiff
+
+# Machine Learning models and datasets (excluded per your preference)
+ml/
+models/
+data/
+datasets/
+
+# Frontend source (built assets are sufficient)
+frontend/node_modules/
+frontend/src/
+frontend/public/
+!frontend/build/
+!frontend/dist/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs and databases
+*.log
+db.sqlite3
+*.sqlite3
+
+# Python virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Testing artifacts
+.coverage
+htmlcov/
+.pytest_cache/
