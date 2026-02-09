@@ -1,3 +1,4 @@
+# build.sh - Build script for Trapick Cloud deployment
 #!/usr/bin/env bash
 # Exit immediately if a command exits with a non-zero status
 set -o errexit
