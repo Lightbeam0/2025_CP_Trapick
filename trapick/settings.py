@@ -259,20 +259,27 @@ if not IS_CLOUD_DEPLOYMENT:
 
 # ==================== CELERY - LOCAL ONLY ====================
 if not IS_CLOUD_DEPLOYMENT:
-    CELERY_BROKER_URL = os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/0')
-    CELERY_RESULT_BACKEND = CELERY_BROKER_URL
-    CELERY_TASK_ACKS_LATE = True
-    CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
-    CELERY_TASK_TRACK_STARTED = True
+    # Import kombu only in local mode
+    try:
+        from kombu import Queue
+    except ImportError:
+        print("  ⚠️ Warning: kombu not available (Celery disabled)")
+        Queue = None
+    
+    if Queue:
+        CELERY_BROKER_URL = os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/0')
+        CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+        CELERY_TASK_ACKS_LATE = True
+        CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
+        CELERY_TASK_TRACK_STARTED = True
 
-    from kombu import Queue
-    CELERY_TASK_ROUTES = {
-        'trapickapp.tasks.process_video_task': {'queue': 'trapick_queue'},
-        'trapickapp.tasks.process_session_task': {'queue': 'trapick_queue'},
-    }
-    CELERY_TASK_QUEUES = (Queue('trapick_queue', routing_key='trapick_queue'),)
-    CELERY_TASK_DEFAULT_QUEUE = 'trapick_queue'
-    print("  ✓ Celery configured for video processing")
+        CELERY_TASK_ROUTES = {
+            'trapickapp.tasks.process_video_task': {'queue': 'trapick_queue'},
+            'trapickapp.tasks.process_session_task': {'queue': 'trapick_queue'},
+        }
+        CELERY_TASK_QUEUES = (Queue('trapick_queue', routing_key='trapick_queue'),)
+        CELERY_TASK_DEFAULT_QUEUE = 'trapick_queue'
+        print("  ✓ Celery configured for video processing")
 else:
     print("  ✓ Celery disabled (not needed for cloud)")
 
