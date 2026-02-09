@@ -4,6 +4,7 @@ djangorestframework==3.16.0
 django-cors-headers==4.7.0
 gunicorn==23.0.0
 whitenoise==6.11.0
+django-filters==25.1
 
 # ==================== DATABASE ====================
 dj-database-url==2.1.0
