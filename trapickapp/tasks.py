@@ -8,13 +8,15 @@ from django.utils import timezone
 from django.conf import settings
 
 from .models import VideoFile, TrafficAnalysis, Location, LocationDateGroup
-from .progress import ProgressTracker
 
 logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True)
 def process_video_task(self, video_id, location_id=None):
+    # ✅ LAZY IMPORT - only import when needed
+    from .progress import ProgressTracker
+    
     logger.info(f"🎬 Starting processing for video {video_id}")
 
     # CRITICAL: Clear any old stuck progress
@@ -472,6 +474,8 @@ def process_video_task(self, video_id, location_id=None):
             logger.error(f"❌ Could not update video status to failed: {e}")
 
         try:
+            # ✅ LAZY IMPORT in exception handler too
+            from .progress import ProgressTracker
             tracker = ProgressTracker(video_id)
             tracker.fail_processing(
                 message="Processing failed",

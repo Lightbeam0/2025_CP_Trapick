@@ -55,7 +55,6 @@ from .models import (
 )
 
 from .serializers import *
-from .progress import ProgressTracker
 
 
 
@@ -1050,24 +1049,19 @@ class DebugDataAPI(APIView):
         return Response(stats)
 
 
+class ActiveVideosProgressAPI(APIView):
+    def get(self, request):
+        from .progress import ProgressTracker 
+        from .progress import get_all_active_progress
+        
+        active_progress = get_all_active_progress()
+        return Response(active_progress)
+
 class VideoProgressAPI(APIView):
-    """Simple progress API that just reads from database"""
-    
     def get(self, request, video_id):
-        try:
-            video = VideoFile.objects.get(id=video_id)
-            
-            return Response({
-                'progress': video.processing_progress,
-                'message': video.processing_message,
-                'status': video.processing_status,
-                'filename': video.filename,
-                'title': video.title,
-                'last_update': video.last_progress_update.isoformat()
-            })
-            
-        except VideoFile.DoesNotExist:
-            return Response({'error': 'Video not found'}, status=404)
+        from .progress import ProgressTracker
+        tracker = ProgressTracker(video_id)
+        return Response(tracker.get_current_progress())
 
 
 class ActiveVideosProgressAPI(APIView):
@@ -2570,17 +2564,6 @@ class DebugURLsAPI(APIView):
         return Response({
             'total_api_urls': len(api_urls),
             'urls': api_urls
-        })
-
-
-class DebugProgressStoreAPI(APIView):
-    """Debug endpoint to check progress store status"""
-    
-    def get(self, request):
-        from .progress import progress_store
-        return Response({
-            'total_videos_tracked': len(progress_store),
-            'progress_data': progress_store
         })
 
 
