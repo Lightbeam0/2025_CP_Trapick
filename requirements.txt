@@ -21,11 +21,10 @@ pytz==2025.2
 PyYAML==6.0.2
 
 # ==================== ESSENTIAL DATA PROCESSING ====================
-# Only include if absolutely needed for dashboard calculations
 numpy==1.26.4
 pandas==2.3.1
 
-# ==================== DEPENDENCY CHAIN (keep these) ====================
+# ==================== CORE DEPENDENCIES ====================
 amqp==5.3.1
 attrs==25.3.0
 certifi==2025.7.14
@@ -43,11 +42,4 @@ typing-extensions==4.14.1
 tzdata==2025.2
 urllib3==2.5.0
 zipp==3.23.0
-
-# ==================== REMOVED FROM CLOUD ====================
-# These are NOT installed on cloud (no video processing):
-# - torch, torchvision, torchaudio (900MB+)
-# - ultralytics (YOLO)
-# - opencv-python
-# - celery, redis, channels (no background processing)
-# - scipy, scikit-learn, matplotlib (ML libraries)
+reportlab==4.4.4

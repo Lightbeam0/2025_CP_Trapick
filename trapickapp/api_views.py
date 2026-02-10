@@ -7,6 +7,7 @@ import traceback
 from datetime import datetime, timedelta
 from io import BytesIO
 from collections import Counter
+from venv import logger
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse, FileResponse
