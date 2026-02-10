@@ -55,13 +55,19 @@ from .models import (
 )
 
 from .serializers import *
-from .tasks import process_video_task
 from .progress import ProgressTracker
 
 
 
 class VideoUploadAPI(APIView):
     def post(self, request):
+        # ✅ ADD CLOUD MODE CHECK AT THE BEGINNING
+        if settings.IS_CLOUD_DEPLOYMENT:
+            return Response(
+                {'error': 'Video uploads are disabled in cloud deployment'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
         print("🔍 DEBUG: VideoUploadAPI called")
         print(f"🔍 Request FILES: {list(request.FILES.keys())}")
         print(f"🔍 Request POST data: {request.POST}")
@@ -187,8 +193,10 @@ class VideoUploadAPI(APIView):
 
             print(f"📄 Video record created: {video_obj.id}, Start: {video_obj.video_start_time}, End: {video_obj.video_end_time}")
 
-            # Start processing immediately via Celery
+            # ✅ START PROCESSING - ONLY IN LOCAL MODE (but we already checked above)
             try:
+                # ✅ LAZY IMPORT - only import when needed
+                from .tasks import process_video_task
                 task = process_video_task.delay(str(video_obj.id), location_id=location_id)
                 print(f"✅ Celery task started: {task.id} for video {video_obj.id}")
 
