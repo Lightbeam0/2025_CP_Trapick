@@ -91,10 +91,13 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'trapick.urls'
 
 # ==================== TEMPLATES ====================
+# Build the frontend build path
+FRONTEND_BUILD_DIR = BASE_DIR / 'frontend' / 'build'
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [os.path.join(BASE_DIR, 'frontend', 'build')],
+        'DIRS': [FRONTEND_BUILD_DIR] if FRONTEND_BUILD_DIR.exists() else [],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -106,6 +109,18 @@ TEMPLATES = [
         },
     },
 ]
+
+# Log template directory status
+if FRONTEND_BUILD_DIR.exists():
+    print(f"  ✓ React build found at {FRONTEND_BUILD_DIR}")
+    # List contents for debugging
+    if list(FRONTEND_BUILD_DIR.glob('index.html')):
+        print(f"  ✓ index.html exists")
+    else:
+        print(f"  ⚠️ index.html NOT found in build directory")
+else:
+    print(f"  ⚠️ React build not found at {FRONTEND_BUILD_DIR}")
+    print(f"  ℹ️ You need to build the React app first: cd frontend && npm run build")
 
 WSGI_APPLICATION = 'trapick.wsgi.application'
 
@@ -145,9 +160,16 @@ USE_TZ = True
 # ==================== STATIC FILES ====================
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_DIRS = [
-    BASE_DIR / "frontend" / "build" / "static",
-]
+
+# Only add React build static dir if it exists
+STATICFILES_DIRS = []
+react_static_dir = BASE_DIR / "frontend" / "build" / "static"
+if react_static_dir.exists():
+    STATICFILES_DIRS.append(react_static_dir)
+    print(f"  ✓ React static files found")
+else:
+    print(f"  ⚠️ React static files not found at {react_static_dir}")
+
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # ==================== MEDIA FILES ====================
@@ -174,8 +196,11 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 # ✅ CLOUD-SPECIFIC: Add production frontend URL
-if IS_CLOUD_DEPLOYMENT and HEROKU_APP_NAME:
-    CORS_ALLOWED_ORIGINS.append(f"https://{HEROKU_APP_NAME}.herokuapp.com")
+if IS_CLOUD_DEPLOYMENT:
+    if RENDER_EXTERNAL_HOSTNAME:
+        CORS_ALLOWED_ORIGINS.append(f"https://{RENDER_EXTERNAL_HOSTNAME}")
+    if HEROKU_APP_NAME:
+        CORS_ALLOWED_ORIGINS.append(f"https://{HEROKU_APP_NAME}.herokuapp.com")
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_HEADERS = [
@@ -288,8 +313,8 @@ else:
 if not IS_CLOUD_DEPLOYMENT:
     CLOUD_SYNC_URL = os.environ.get(
         'CLOUD_SYNC_URL',
-        'https://your-app.herokuapp.com/api/sync/'  # Fixed trailing spaces
-    ).rstrip('/') + '/'  # Ensure clean URL
+        'https://your-app.herokuapp.com/api/sync/'
+    ).rstrip('/') + '/'
     CLOUD_SYNC_API_KEY = os.environ.get('CLOUD_SYNC_API_KEY', None)
     if CLOUD_SYNC_API_KEY:
         print(f"  ✓ Cloud sync configured: {CLOUD_SYNC_URL}")

@@ -1,34 +1,30 @@
 services:
+  # Web Service
   - type: web
-    name: trapick-cloud
-    runtime: python
-    plan: free
+    name: trapick
+    env: python
     region: oregon
+    plan: free
     branch: main
-    buildCommand: |
-      # Build React frontend first
-      cd frontend
-      npm ci
-      npm run build
-      cd ..
-      # Install Python dependencies and run Django setup
-      pip install -r requirements.txt
-      python manage.py collectstatic --no-input --clear
-      python manage.py migrate --no-input
-    startCommand: "gunicorn trapick.wsgi:application --bind 0.0.0.0:$PORT"
-    
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn trapick.wsgi:application"
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
       - key: DEPLOYMENT_ENV
         value: cloud
       - key: DEBUG
-        value: "False"
+        value: false
       - key: SECRET_KEY
         generateValue: true
       - key: SYNC_API_KEY
         generateValue: true
-      - key: PYTHON_VERSION
-        value: "3.9.2"
       - key: WEB_CONCURRENCY
-        value: "2"
+        value: 4
     
-    healthCheckPath: /api/health/
+  # PostgreSQL Database
+  - type: pgsql
+    name: trapick-db
+    plan: free
+    databaseName: trapickdb
+    user: trapickuser
