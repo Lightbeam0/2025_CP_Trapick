@@ -11,8 +11,10 @@ services:
       npm ci
       npm run build
       cd ..
-      # Then build Django app
-      ./build.sh
+      # Install Python dependencies and run Django setup
+      pip install -r requirements.txt
+      python manage.py collectstatic --no-input --clear
+      python manage.py migrate --no-input
     startCommand: "gunicorn trapick.wsgi:application --bind 0.0.0.0:$PORT"
     
     envVars:
