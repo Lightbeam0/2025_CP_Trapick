@@ -1,4 +1,4 @@
-// src/App.js - UPDATED WITH THEME PROVIDER
+// src/App.js - UPDATED WITH THEME PROVIDER AND DYNAMIC API URL
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -20,8 +20,22 @@ import GroupVideos from './pages/GroupVideos';
 import './App.css';
 
 // Configure axios defaults once at module level
-axios.defaults.baseURL = 'http://127.0.0.1:8000';
+// Use relative path in production, localhost in development
+const getApiBaseUrl = () => {
+  if (process.env.NODE_ENV === 'development') {
+    // Development: use Django backend on localhost
+    return 'http://127.0.0.1:8000';
+  } else {
+    // Production: use same origin as frontend (relative path)
+    return '';
+  }
+};
+
+axios.defaults.baseURL = getApiBaseUrl();
 axios.defaults.withCredentials = true;
+
+console.log('🔧 API Base URL:', axios.defaults.baseURL);
+console.log('🔧 Environment:', process.env.NODE_ENV);
 
 function AppContent() {
   const location = useLocation();
