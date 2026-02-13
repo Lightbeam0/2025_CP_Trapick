@@ -126,9 +126,12 @@ WSGI_APPLICATION = 'trapick.wsgi.application'
 
 # ==================== DATABASE ====================
 # Primary method: Use DATABASE_URL if available (Render/Heroku/etc)
-if 'DATABASE_URL' in os.environ:
+database_url = os.environ.get('DATABASE_URL', '')
+
+if database_url and database_url.strip():  # Check if DATABASE_URL exists and is not empty
     DATABASES = {
         'default': dj_database_url.config(
+            default=database_url,
             conn_max_age=600,
             conn_health_checks=True,
         )
@@ -146,6 +149,8 @@ else:
             'PORT': os.environ.get('DB_PORT', '5432'),
         }
     }
+    if 'DATABASE_URL' in os.environ:
+        print(f"  ⚠️ DATABASE_URL is set but empty - using fallback configuration")
     print(f"  ✓ Database configured from individual env vars")
 
 # ==================== PASSWORD VALIDATION ====================
