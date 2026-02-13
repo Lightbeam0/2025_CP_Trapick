@@ -1,3 +1,4 @@
+#requirements.txt
 # ==================== CORE DJANGO & WEB ====================
 Django==4.2.23
 djangorestframework==3.16.0

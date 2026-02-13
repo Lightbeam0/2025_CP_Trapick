@@ -125,23 +125,28 @@ else:
 WSGI_APPLICATION = 'trapick.wsgi.application'
 
 # ==================== DATABASE ====================
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('DB_NAME', 'trapickdb'),
-        'USER': os.environ.get('DB_USER', 'trapickuser'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', 'strongpassword'),
-        'HOST': os.environ.get('DB_HOST', 'localhost'),
-        'PORT': os.environ.get('DB_PORT', '5432'),
-    }
-}
-
-# Support for DATABASE_URL (common in cloud platforms)
+# Primary method: Use DATABASE_URL if available (Render/Heroku/etc)
 if 'DATABASE_URL' in os.environ:
-    DATABASES['default'] = dj_database_url.config(
-        conn_max_age=600,
-        conn_health_checks=True,
-    )
+    DATABASES = {
+        'default': dj_database_url.config(
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
+    }
+    print(f"  ✓ Database configured from DATABASE_URL")
+else:
+    # Fallback: Use individual environment variables (local development)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('DB_NAME', 'trapickdb'),
+            'USER': os.environ.get('DB_USER', 'trapickuser'),
+            'PASSWORD': os.environ.get('DB_PASSWORD', 'strongpassword'),
+            'HOST': os.environ.get('DB_HOST', 'localhost'),
+            'PORT': os.environ.get('DB_PORT', '5432'),
+        }
+    }
+    print(f"  ✓ Database configured from individual env vars")
 
 # ==================== PASSWORD VALIDATION ====================
 AUTH_PASSWORD_VALIDATORS = [
@@ -370,7 +375,13 @@ print(f"🚀 TRAPICK CONFIGURATION")
 print("="*60)
 print(f"Environment: {DEPLOYMENT_ENV.upper()}")
 print(f"Debug: {DEBUG}")
-print(f"Database: {DATABASES['default']['NAME']}@{DATABASES['default']['HOST']}")
+# Show database info based on configuration
+if 'DATABASE_URL' in os.environ:
+    # Parse DATABASE_URL to show sanitized info
+    db_config = DATABASES['default']
+    print(f"Database: {db_config.get('NAME', 'N/A')} @ {db_config.get('HOST', 'N/A')}")
+else:
+    print(f"Database: {DATABASES['default']['NAME']}@{DATABASES['default']['HOST']}")
 if IS_CLOUD_DEPLOYMENT:
     print("Mode: DASHBOARD ONLY (no ML, no video processing)")
 else:

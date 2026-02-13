@@ -6,16 +6,7 @@ services:
     plan: free
     region: oregon
     branch: main
-    buildCommand: |
-      # Disable CI mode to allow warnings during build
-      export CI=false
-      # Build React frontend first
-      cd frontend
-      npm ci
-      npm run build
-      cd ..
-      # Then build Django app
-      ./build.sh
+    buildCommand: ./build.sh
     startCommand: "gunicorn trapick.wsgi:application --bind 0.0.0.0:$PORT"
     
     envVars:
@@ -32,10 +23,16 @@ services:
         generateValue: true
       
       - key: PYTHON_VERSION
-        value: "3.9.2"  # Match your local Python version
+        value: "3.9.2"
       
       - key: WEB_CONCURRENCY
         value: "2"
+      
+      # This is the critical line - it links your database
+      - key: DATABASE_URL
+        fromDatabase:
+          name: trapick-db
+          property: connectionString
     
     healthCheckPath: /api/health/
 
