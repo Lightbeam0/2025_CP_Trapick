@@ -1,5 +1,5 @@
 // src/App.js - UPDATED WITH THEME PROVIDER AND DYNAMIC API URL
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { WebSocketProvider } from './contexts/WebSocketContext';
@@ -52,7 +52,7 @@ function AppContent() {
     checkAuthentication();
   }, []);
   
-  const checkAuthentication = async () => {
+  const checkAuthentication = useCallback(async () => {
     try {
       const token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
       const storedUser = localStorage.getItem('user') || sessionStorage.getItem('user');
@@ -74,7 +74,7 @@ function AppContent() {
     } finally {
       setIsAuthChecking(false);
     }
-  };
+  }, []); // Empty dependency array - no component dependencies
   
   const clearAuth = () => {
     localStorage.removeItem('auth_token');
