@@ -225,7 +225,7 @@ class LocationDateGroup(models.Model):
 class VideoFile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     filename = models.CharField(max_length=255)
-    file_path = models.FileField(upload_to='videos/')
+    file_path = models.FileField(upload_to='videos/', null=True, blank=True)
     uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     uploaded_at = models.DateTimeField(default=timezone.now)
 
