@@ -9,34 +9,21 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# ✅ Load .env.local if it exists
+# Load .env.local if it exists
 env_file = BASE_DIR / '.env.local'
 if env_file.exists():
     load_dotenv(env_file)
-    print(f"✅ Loaded environment from {env_file}")
-else:
-    print("ℹ️  No .env.local file found, using system environment variables")
 
 # ==================== DEPLOYMENT ENVIRONMENT DETECTION ====================
-# Set DEPLOYMENT_ENV=cloud on your cloud platform
-# Set DEPLOYMENT_ENV=local (or leave unset) on your local machine
 DEPLOYMENT_ENV = os.environ.get('DEPLOYMENT_ENV', 'local')
 IS_CLOUD_DEPLOYMENT = DEPLOYMENT_ENV == 'cloud'
 
-# Quick check logging
-if IS_CLOUD_DEPLOYMENT:
-    print("🌐 Running in CLOUD mode (dashboard-only, no ML)")
-else:
-    print("💻 Running in LOCAL mode (full system with ML)")
-
 # ==================== SECURITY ====================
-# Handle SECRET_KEY securely
 if not os.environ.get('SECRET_KEY'):
     if IS_CLOUD_DEPLOYMENT:
         raise ValueError("SECRET_KEY must be set in cloud deployments!")
     else:
         SECRET_KEY = 'django-insecure-_u9zxz!@e8mafz9^@b$)*hi-egorgmvgg+16%7re0@9g3k*d9='
-        print("⚠️  Using default SECRET_KEY (local development only)")
 else:
     SECRET_KEY = os.environ['SECRET_KEY']
 
@@ -47,7 +34,6 @@ RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
 if RENDER_EXTERNAL_HOSTNAME:
     ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
 
-# For Heroku
 HEROKU_APP_NAME = os.environ.get('HEROKU_APP_NAME')
 if HEROKU_APP_NAME:
     ALLOWED_HOSTS.append(f'{HEROKU_APP_NAME}.herokuapp.com')
@@ -67,12 +53,8 @@ INSTALLED_APPS = [
     'django_filters',
 ]
 
-# ✅ CLOUD-SPECIFIC: Remove Channels (no WebSocket needed for dashboard)
 if not IS_CLOUD_DEPLOYMENT:
     INSTALLED_APPS.append('channels')
-    print("  ✓ Channels enabled (WebSocket support)")
-else:
-    print("  ✓ Channels disabled (not needed for cloud)")
 
 # ==================== MIDDLEWARE ====================
 MIDDLEWARE = [
@@ -91,7 +73,6 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'trapick.urls'
 
 # ==================== TEMPLATES ====================
-# Build the frontend build path
 FRONTEND_BUILD_DIR = BASE_DIR / 'frontend' / 'build'
 
 TEMPLATES = [
@@ -110,48 +91,36 @@ TEMPLATES = [
     },
 ]
 
-# Log template directory status
-if FRONTEND_BUILD_DIR.exists():
-    print(f"  ✓ React build found at {FRONTEND_BUILD_DIR}")
-    # List contents for debugging
-    if list(FRONTEND_BUILD_DIR.glob('index.html')):
-        print(f"  ✓ index.html exists")
-    else:
-        print(f"  ⚠️ index.html NOT found in build directory")
-else:
-    print(f"  ⚠️ React build not found at {FRONTEND_BUILD_DIR}")
-    print(f"  ℹ️ You need to build the React app first: cd frontend && npm run build")
-
 WSGI_APPLICATION = 'trapick.wsgi.application'
 
 # ==================== DATABASE ====================
-# Primary method: Use DATABASE_URL if available (Render/Heroku/etc)
-database_url = os.environ.get('DATABASE_URL', '')
+database_url = os.environ.get('DATABASE_URL', '').strip()
 
-if database_url and database_url.strip():  # Check if DATABASE_URL exists and is not empty
+if database_url:
+    os.environ['DATABASE_URL'] = database_url
     DATABASES = {
         'default': dj_database_url.config(
-            default=database_url,
             conn_max_age=600,
             conn_health_checks=True,
         )
     }
-    print(f"  ✓ Database configured from DATABASE_URL")
 else:
-    # Fallback: Use individual environment variables (local development)
+    db_name = os.environ.get('DB_NAME', 'trapickdb')
+    db_user = os.environ.get('DB_USER', 'trapickuser')
+    db_password = os.environ.get('DB_PASSWORD', 'strongpassword')
+    db_host = os.environ.get('DB_HOST', 'localhost')
+    db_port = os.environ.get('DB_PORT', '5432')
+    
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.environ.get('DB_NAME', 'trapickdb'),
-            'USER': os.environ.get('DB_USER', 'trapickuser'),
-            'PASSWORD': os.environ.get('DB_PASSWORD', 'strongpassword'),
-            'HOST': os.environ.get('DB_HOST', 'localhost'),
-            'PORT': os.environ.get('DB_PORT', '5432'),
+            'NAME': db_name,
+            'USER': db_user,
+            'PASSWORD': db_password,
+            'HOST': db_host,
+            'PORT': db_port,
         }
     }
-    if 'DATABASE_URL' in os.environ:
-        print(f"  ⚠️ DATABASE_URL is set but empty - using fallback configuration")
-    print(f"  ✓ Database configured from individual env vars")
 
 # ==================== PASSWORD VALIDATION ====================
 AUTH_PASSWORD_VALIDATORS = [
@@ -171,14 +140,10 @@ USE_TZ = True
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
-# Only add React build static dir if it exists
 STATICFILES_DIRS = []
 react_static_dir = BASE_DIR / "frontend" / "build" / "static"
 if react_static_dir.exists():
     STATICFILES_DIRS.append(react_static_dir)
-    print(f"  ✓ React static files found")
-else:
-    print(f"  ⚠️ React static files not found at {react_static_dir}")
 
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
@@ -186,15 +151,12 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# ✅ CLOUD-SPECIFIC: Smaller upload limits (only for sync API, no videos)
 if IS_CLOUD_DEPLOYMENT:
-    DATA_UPLOAD_MAX_MEMORY_SIZE = 2097152   # 2MB (for JSON sync data)
+    DATA_UPLOAD_MAX_MEMORY_SIZE = 2097152   # 2MB
     FILE_UPLOAD_MAX_MEMORY_SIZE = 2097152   # 2MB
-    print("  ✓ Upload limits: 2MB (sync API only)")
 else:
-    DATA_UPLOAD_MAX_MEMORY_SIZE = 2147483648  # 2GB (for video uploads)
+    DATA_UPLOAD_MAX_MEMORY_SIZE = 2147483648  # 2GB
     FILE_UPLOAD_MAX_MEMORY_SIZE = 2147483648  # 2GB
-    print("  ✓ Upload limits: 2GB (video uploads enabled)")
 
 FILE_UPLOAD_PERMISSIONS = 0o644
 FILE_UPLOAD_DIRECTORY_PERMISSIONS = 0o755
@@ -205,7 +167,6 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000"
 ]
 
-# ✅ CLOUD-SPECIFIC: Add production frontend URL
 if IS_CLOUD_DEPLOYMENT:
     if RENDER_EXTERNAL_HOSTNAME:
         CORS_ALLOWED_ORIGINS.append(f"https://{RENDER_EXTERNAL_HOSTNAME}")
@@ -216,7 +177,7 @@ CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_HEADERS = [
     'accept', 'accept-encoding', 'authorization', 'content-type',
     'dnt', 'origin', 'user-agent', 'x-csrftoken', 'x-requested-with',
-    'x-sync-api-key',  # ✅ For sync endpoint
+    'x-sync-api-key',
 ]
 CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 CORS_ALLOW_CREDENTIALS = True
@@ -259,7 +220,6 @@ REST_FRAMEWORK = {
     ],
 }
 
-# ✅ Disable browsable API in cloud deployments
 if IS_CLOUD_DEPLOYMENT:
     REST_FRAMEWORK['DEFAULT_RENDERER_CLASSES'] = [
         'rest_framework.renderers.JSONRenderer',
@@ -279,7 +239,6 @@ if not IS_CLOUD_DEPLOYMENT:
             },
         },
     }
-    print("  ✓ WebSocket channels configured")
 
 # ==================== CACHE - LOCAL ONLY ====================
 if not IS_CLOUD_DEPLOYMENT:
@@ -290,15 +249,12 @@ if not IS_CLOUD_DEPLOYMENT:
             'TIMEOUT': 3600,
         }
     }
-    print("  ✓ Cache configured")
 
 # ==================== CELERY - LOCAL ONLY ====================
 if not IS_CLOUD_DEPLOYMENT:
-    # Import kombu only in local mode
     try:
         from kombu import Queue
     except ImportError:
-        print("  ⚠️ Warning: kombu not available (Celery disabled)")
         Queue = None
     
     if Queue:
@@ -314,28 +270,17 @@ if not IS_CLOUD_DEPLOYMENT:
         }
         CELERY_TASK_QUEUES = (Queue('trapick_queue', routing_key='trapick_queue'),)
         CELERY_TASK_DEFAULT_QUEUE = 'trapick_queue'
-        print("  ✓ Celery configured for video processing")
-else:
-    print("  ✓ Celery disabled (not needed for cloud)")
 
 # ==================== CLOUD SYNC CONFIGURATION ====================
-# ✅ LOCAL: URL where to send data
 if not IS_CLOUD_DEPLOYMENT:
     CLOUD_SYNC_URL = os.environ.get(
         'CLOUD_SYNC_URL',
         'https://your-app.herokuapp.com/api/sync/'
     ).rstrip('/') + '/'
     CLOUD_SYNC_API_KEY = os.environ.get('CLOUD_SYNC_API_KEY', None)
-    if CLOUD_SYNC_API_KEY:
-        print(f"  ✓ Cloud sync configured: {CLOUD_SYNC_URL}")
 
-# ✅ CLOUD: API key to accept data
 if IS_CLOUD_DEPLOYMENT:
     SYNC_API_KEY = os.environ.get('SYNC_API_KEY', None)
-    if SYNC_API_KEY:
-        print("  ✓ Sync API endpoint enabled")
-    else:
-        print("  ⚠️ WARNING: SYNC_API_KEY not set - sync endpoint will reject requests")
 
 # ==================== LOGGING ====================
 LOGGING = {
@@ -373,22 +318,3 @@ LOGGING = {
 
 # ==================== DEFAULT PRIMARY KEY ====================
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-# ==================== DEPLOYMENT INFO ====================
-print("\n" + "="*60)
-print(f"🚀 TRAPICK CONFIGURATION")
-print("="*60)
-print(f"Environment: {DEPLOYMENT_ENV.upper()}")
-print(f"Debug: {DEBUG}")
-# Show database info based on configuration
-if 'DATABASE_URL' in os.environ:
-    # Parse DATABASE_URL to show sanitized info
-    db_config = DATABASES['default']
-    print(f"Database: {db_config.get('NAME', 'N/A')} @ {db_config.get('HOST', 'N/A')}")
-else:
-    print(f"Database: {DATABASES['default']['NAME']}@{DATABASES['default']['HOST']}")
-if IS_CLOUD_DEPLOYMENT:
-    print("Mode: DASHBOARD ONLY (no ML, no video processing)")
-else:
-    print("Mode: FULL SYSTEM (ML enabled, video processing)")
-print("="*60 + "\n")
