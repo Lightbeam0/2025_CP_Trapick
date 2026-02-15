@@ -210,8 +210,9 @@ function AppContent() {
 }
 
 function App() {
+  // Ensure light mode is default by passing defaultTheme="light" to ThemeProvider
   return (
-    <ThemeProvider> {/* Wrap everything with ThemeProvider */}
+    <ThemeProvider defaultTheme="light"> {/* Explicitly set default theme to light */}
       <WebSocketProvider>
         <Router>
           <AppContent />
