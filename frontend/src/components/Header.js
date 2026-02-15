@@ -1,4 +1,4 @@
-// src/components/Header.js - UPDATED WITH UPLOAD BUTTON
+// src/components/Header.js
 import React, { useState } from 'react';
 import { FaUserCircle, FaSignOutAlt, FaCog, FaHome, FaChevronDown, FaBars, FaTimes, FaUpload } from 'react-icons/fa';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -9,6 +9,9 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
+  // 🔒 Detect cloud deployment: hide upload button in production
+  const isCloudDeployment = process.env.NODE_ENV === 'production';
+
   const handleUserMenuToggle = () => {
     setShowUserMenu(!showUserMenu);
   };
@@ -16,7 +19,6 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
   const handleNavigation = (path) => {
     navigate(path);
     setShowUserMenu(false);
-    // Close sidebar on mobile when navigating
     if (window.innerWidth <= 768) {
       setIsMobileMenuOpen(false);
     }
@@ -47,7 +49,6 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
     <header className="header">
       {/* Left Section */}
       <div className="header-left">
-        {/* Mobile Menu Button - Only visible on mobile */}
         <button
           className="mobile-menu-button"
           onClick={handleMobileMenuToggle}
@@ -68,16 +69,16 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
 
       {/* Right Section */}
       <div className="header-right">
-        {/* Upload Video Button - Only show when logged in */}
-        {user && onUploadClick && (
-        <button
+        {/* Upload Video Button - ONLY shown in LOCAL (development), hidden in CLOUD (production) */}
+        {user && onUploadClick && !isCloudDeployment && (
+          <button
             onClick={onUploadClick}
             className="upload-button-header-alt"
             title="Upload Video"
             aria-label="Upload Video"
-        >
+          >
             <FaUpload size={18} />
-        </button>
+          </button>
         )}
 
         {/* Home Button */}
