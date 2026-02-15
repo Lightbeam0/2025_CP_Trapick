@@ -16,7 +16,7 @@ from django.utils.dateparse import parse_date
 from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage
 from django.views.static import serve
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q, Sum, Prefetch
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
@@ -3308,3 +3308,326 @@ class CheckAuthAPI(APIView):
             return Response({
                 'authenticated': False
             })
+
+class DataSyncAPI(APIView):
+    """
+    Receive and sync data from local deployment to cloud.
+    Only available in cloud deployments.
+    """
+    permission_classes = []  # No authentication required, using API key
+    
+    def post(self, request):
+        # Security: Only allow in cloud deployment
+        if not settings.IS_CLOUD_DEPLOYMENT:
+            return Response(
+                {'error': 'Sync endpoint only available in cloud deployment'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Verify API key
+        api_key = request.headers.get('X-Sync-API-Key') or request.data.get('api_key')
+        expected_key = getattr(settings, 'SYNC_API_KEY', None)
+        
+        if not expected_key:
+            return Response(
+                {'error': 'SYNC_API_KEY not configured on server'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        if api_key != expected_key:
+            logger.warning(f"Invalid sync API key attempt")
+            return Response(
+                {'error': 'Invalid API key'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get sync data
+        sync_data = request.data.get('data', {})
+        sync_type = request.data.get('sync_type', 'full')
+        
+        if not sync_data:
+            return Response(
+                {'error': 'No data provided'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            with transaction.atomic():
+                results = self._process_sync_data(sync_data, sync_type)
+            
+            return Response({
+                'success': True,
+                'message': 'Data synced successfully',
+                'results': results
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Sync error: {str(e)}", exc_info=True)
+            return Response(
+                {'error': f'Sync failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def _process_sync_data(self, sync_data, sync_type):
+        """Process the sync data and update database"""
+        from .models import (
+            Location, ProcessingProfile, VideoFile, 
+            LocationDateGroup, VehicleType, TrafficAnalysis,
+            DirectionalAnalysis, CongestionEvent
+        )
+        from django.contrib.auth.models import User
+        
+        results = {
+            'vehicle_types': 0,
+            'processing_profiles': 0,
+            'locations': 0,
+            'groups': 0,
+            'videos': 0,
+            'analyses': 0,
+            'directional_analyses': 0,
+            'congestion_events': 0,
+        }
+        
+        # 1. Sync Vehicle Types
+        for vt_data in sync_data.get('vehicle_types', []):
+            VehicleType.objects.update_or_create(
+                name=vt_data['name'],
+                defaults={
+                    'display_name': vt_data.get('display_name', vt_data['name'])
+                }
+            )
+            results['vehicle_types'] += 1
+        
+        # 2. Sync Processing Profiles
+        for profile_data in sync_data.get('processing_profiles', []):
+            ProcessingProfile.objects.update_or_create(
+                id=profile_data['id'],
+                defaults={
+                    'name': profile_data['name'],
+                    'display_name': profile_data.get('display_name', profile_data['name']),
+                    'description': profile_data.get('description', ''),
+                    'detector_type': profile_data.get('detector_type', 'vertical_top_bottom'),
+                    'enable_congestion_detection': profile_data.get('enable_congestion_detection', True),
+                    'congestion_threshold': profile_data.get('congestion_threshold', 5),
+                    'road_type': profile_data.get('road_type', 'generic'),
+                    'config_parameters': profile_data.get('config_parameters', {}),
+                    'active': profile_data.get('active', True),
+                }
+            )
+            results['processing_profiles'] += 1
+        
+        # 3. Sync Locations
+        for loc_data in sync_data.get('locations', []):
+            # Get processing profile if it exists
+            profile_id = loc_data.get('processing_profile_id')
+            profile = None
+            if profile_id:
+                try:
+                    profile = ProcessingProfile.objects.get(id=profile_id)
+                except ProcessingProfile.DoesNotExist:
+                    logger.warning(f"Processing profile {profile_id} not found, using default")
+                    profile = ProcessingProfile.objects.first()
+            else:
+                profile = ProcessingProfile.objects.first()
+            
+            if not profile:
+                logger.error("No processing profiles available, skipping location sync")
+                continue
+            
+            Location.objects.update_or_create(
+                id=loc_data['id'],
+                defaults={
+                    'name': loc_data['name'],
+                    'display_name': loc_data.get('display_name', loc_data['name']),
+                    'description': loc_data.get('description', ''),
+                    'latitude': loc_data.get('latitude'),
+                    'longitude': loc_data.get('longitude'),
+                    'processing_profile': profile,
+                    'counting_config': loc_data.get('counting_config', {}),
+                    'active': loc_data.get('active', True),
+                }
+            )
+            results['locations'] += 1
+        
+        # 4. Sync Location Groups
+        for group_data in sync_data.get('groups', []):
+            try:
+                location = Location.objects.get(id=group_data['location_id'])
+                
+                LocationDateGroup.objects.update_or_create(
+                    id=group_data['id'],
+                    defaults={
+                        'location': location,
+                        'date': datetime.fromisoformat(group_data['date']).date(),
+                        'total_directional_count': group_data.get('total_directional_count', 0),
+                        'average_directional_flow': group_data.get('average_directional_flow', 0.0),
+                        'peak_directional_flow': group_data.get('peak_directional_flow', 0),
+                    }
+                )
+                results['groups'] += 1
+            except Location.DoesNotExist:
+                logger.warning(f"Location {group_data['location_id']} not found, skipping group")
+        
+        # 5. Sync Videos (metadata only)
+        for video_data in sync_data.get('videos', []):
+            try:
+                # Get related objects
+                group = None
+                if video_data.get('group_id'):
+                    try:
+                        group = LocationDateGroup.objects.get(id=video_data['group_id'])
+                    except LocationDateGroup.DoesNotExist:
+                        pass
+                
+                profile = None
+                if video_data.get('processing_profile_id'):
+                    try:
+                        profile = ProcessingProfile.objects.get(id=video_data['processing_profile_id'])
+                    except ProcessingProfile.DoesNotExist:
+                        pass
+                
+                VideoFile.objects.update_or_create(
+                    id=video_data['id'],
+                    defaults={
+                        'filename': video_data['filename'],
+                        'uploaded_at': datetime.fromisoformat(video_data['uploaded_at']),
+                        'video_date': datetime.fromisoformat(video_data['video_date']).date() if video_data.get('video_date') else None,
+                        'video_start_time': datetime.fromisoformat(video_data['video_start_time']).time() if video_data.get('video_start_time') else None,
+                        'video_end_time': datetime.fromisoformat(video_data['video_end_time']).time() if video_data.get('video_end_time') else None,
+                        'original_duration': video_data.get('original_duration'),
+                        'location_date_group': group,
+                        'processed': True,
+                        'processing_status': 'completed',
+                        'processing_progress': 100,
+                        'processing_message': 'Synced from local',
+                        'duration_seconds': video_data.get('duration_seconds'),
+                        'fps': video_data.get('fps'),
+                        'total_frames': video_data.get('total_frames'),
+                        'title': video_data.get('title'),
+                        'resolution': video_data.get('resolution'),
+                        'processing_profile': profile,
+                    }
+                )
+                results['videos'] += 1
+            except Exception as e:
+                logger.error(f"Failed to sync video {video_data.get('id')}: {e}")
+        
+        # 6. Sync Traffic Analyses
+        for analysis_data in sync_data.get('analyses', []):
+            try:
+                video = VideoFile.objects.get(id=analysis_data['video_id'])
+                location = None
+                if analysis_data.get('location_id'):
+                    try:
+                        location = Location.objects.get(id=analysis_data['location_id'])
+                    except Location.DoesNotExist:
+                        pass
+                
+                TrafficAnalysis.objects.update_or_create(
+                    id=analysis_data['id'],
+                    defaults={
+                        'video_file': video,
+                        'location': location,
+                        'total_vehicles': analysis_data.get('total_vehicles', 0),
+                        'processing_time_seconds': analysis_data.get('processing_time_seconds', 0),
+                        'analyzed_at': datetime.fromisoformat(analysis_data['analyzed_at']),
+                        
+                        # Vehicle type counts
+                        'car_count': analysis_data.get('car_count', 0),
+                        'truck_count': analysis_data.get('truck_count', 0),
+                        'motorcycle_count': analysis_data.get('motorcycle_count', 0),
+                        'bus_count': analysis_data.get('bus_count', 0),
+                        'bicycle_count': analysis_data.get('bicycle_count', 0),
+                        'other_count': analysis_data.get('other_count', 0),
+                        
+                        # Directional data
+                        'directional_count': analysis_data.get('directional_count', 0),
+                        'directional_vehicles_per_minute': analysis_data.get('directional_vehicles_per_minute', 0.0),
+                        'peak_directional_flow': analysis_data.get('peak_directional_flow', 0),
+                        
+                        # Congestion data
+                        'congestion_events_count': analysis_data.get('congestion_events_count', 0),
+                        'total_congestion_time': analysis_data.get('total_congestion_time', 0.0),
+                        'congestion_percentage': analysis_data.get('congestion_percentage', 0.0),
+                        'congestion_none_time': analysis_data.get('congestion_none_time', 0.0),
+                        'congestion_light_time': analysis_data.get('congestion_light_time', 0.0),
+                        'congestion_moderate_time': analysis_data.get('congestion_moderate_time', 0.0),
+                        'congestion_heavy_time': analysis_data.get('congestion_heavy_time', 0.0),
+                        'congestion_severe_time': analysis_data.get('congestion_severe_time', 0.0),
+                        
+                        # Video properties
+                        'duration_seconds': analysis_data.get('duration_seconds', 0.0),
+                        'fps': analysis_data.get('fps', 0.0),
+                        'total_frames': analysis_data.get('total_frames', 0),
+                        
+                        # Traffic metrics
+                        'peak_traffic': analysis_data.get('peak_traffic', 0),
+                        'average_traffic': analysis_data.get('average_traffic', 0.0),
+                        'congestion_level': analysis_data.get('congestion_level', 'none'),
+                        'traffic_pattern': analysis_data.get('traffic_pattern', 'stable'),
+                        
+                        # JSON data
+                        'analysis_data': analysis_data.get('analysis_data', {}),
+                        'metrics_summary': analysis_data.get('metrics_summary', {}),
+                        'frame_data': analysis_data.get('frame_data', []),
+                        'congestion_events': analysis_data.get('congestion_events', []),
+                    }
+                )
+                results['analyses'] += 1
+            except VideoFile.DoesNotExist:
+                logger.warning(f"Video {analysis_data.get('video_id')} not found, skipping analysis")
+            except Exception as e:
+                logger.error(f"Failed to sync analysis {analysis_data.get('id')}: {e}")
+        
+        # 7. Sync Directional Analyses (optional)
+        for dir_analysis_data in sync_data.get('directional_analyses', []):
+            try:
+                traffic_analysis = TrafficAnalysis.objects.get(id=dir_analysis_data['traffic_analysis_id'])
+                
+                DirectionalAnalysis.objects.update_or_create(
+                    id=dir_analysis_data['id'],
+                    defaults={
+                        'traffic_analysis': traffic_analysis,
+                        'direction_name': dir_analysis_data.get('direction_name', ''),
+                        'direction_angle': dir_analysis_data.get('direction_angle', 0),
+                        'line_start_x': dir_analysis_data.get('line_start_x', 0.0),
+                        'line_start_y': dir_analysis_data.get('line_start_y', 0.0),
+                        'line_end_x': dir_analysis_data.get('line_end_x', 0.0),
+                        'line_end_y': dir_analysis_data.get('line_end_y', 0.0),
+                        'directional_car_count': dir_analysis_data.get('directional_car_count', 0),
+                        'directional_truck_count': dir_analysis_data.get('directional_truck_count', 0),
+                        'directional_motorcycle_count': dir_analysis_data.get('directional_motorcycle_count', 0),
+                        'directional_bus_count': dir_analysis_data.get('directional_bus_count', 0),
+                        'directional_bicycle_count': dir_analysis_data.get('directional_bicycle_count', 0),
+                    }
+                )
+                results['directional_analyses'] += 1
+            except TrafficAnalysis.DoesNotExist:
+                logger.warning(f"TrafficAnalysis {dir_analysis_data.get('traffic_analysis_id')} not found")
+        
+        # 8. Sync Congestion Events (optional)
+        for event_data in sync_data.get('congestion_events', []):
+            try:
+                traffic_analysis = TrafficAnalysis.objects.get(id=event_data['traffic_analysis_id'])
+                
+                CongestionEvent.objects.update_or_create(
+                    id=event_data['id'],
+                    defaults={
+                        'traffic_analysis': traffic_analysis,
+                        'start_frame': event_data.get('start_frame', 0),
+                        'end_frame': event_data.get('end_frame', 0),
+                        'start_time_seconds': event_data.get('start_time_seconds', 0.0),
+                        'end_time_seconds': event_data.get('end_time_seconds', 0.0),
+                        'duration_seconds': event_data.get('duration_seconds', 0.0),
+                        'level': event_data.get('level', 'light'),
+                        'peak_vehicles': event_data.get('peak_vehicles', 0),
+                        'average_vehicles': event_data.get('average_vehicles', 0.0),
+                        'stationary_vehicles': event_data.get('stationary_vehicles', 0),
+                        'details': event_data.get('details', {}),
+                    }
+                )
+                results['congestion_events'] += 1
+            except TrafficAnalysis.DoesNotExist:
+                logger.warning(f"TrafficAnalysis {event_data.get('traffic_analysis_id')} not found")
+        
+        return results

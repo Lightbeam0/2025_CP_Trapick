@@ -69,4 +69,5 @@ urlpatterns = [
     path('api/auth/current-user/', api_views.CurrentUserAPI.as_view(), name='current_user'),
     path('api/auth/register/', api_views.RegisterAPI.as_view(), name='register'),
     path('api/auth/check-auth/', api_views.CheckAuthAPI.as_view(), name='check_auth'),
+    path('api/sync/', api_views.DataSyncAPI.as_view(), name='data_sync'),
 ]
