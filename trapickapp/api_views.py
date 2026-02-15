@@ -3367,7 +3367,7 @@ class DataSyncAPI(APIView):
                 {'error': f'Sync failed: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-    
+
     def _process_sync_data(self, sync_data, sync_type):
         """Process the sync data and update database"""
         from .models import (
@@ -3375,7 +3375,6 @@ class DataSyncAPI(APIView):
             LocationDateGroup, VehicleType, TrafficAnalysis,
             DirectionalAnalysis, CongestionEvent
         )
-        from django.contrib.auth.models import User
         
         results = {
             'vehicle_types': 0,
@@ -3418,7 +3417,6 @@ class DataSyncAPI(APIView):
         
         # 3. Sync Locations
         for loc_data in sync_data.get('locations', []):
-            # Get processing profile if it exists
             profile_id = loc_data.get('processing_profile_id')
             profile = None
             if profile_id:
@@ -3471,7 +3469,6 @@ class DataSyncAPI(APIView):
         # 5. Sync Videos (metadata only)
         for video_data in sync_data.get('videos', []):
             try:
-                # Get related objects
                 group = None
                 if video_data.get('group_id'):
                     try:
@@ -3531,21 +3528,15 @@ class DataSyncAPI(APIView):
                         'total_vehicles': analysis_data.get('total_vehicles', 0),
                         'processing_time_seconds': analysis_data.get('processing_time_seconds', 0),
                         'analyzed_at': datetime.fromisoformat(analysis_data['analyzed_at']),
-                        
-                        # Vehicle type counts
                         'car_count': analysis_data.get('car_count', 0),
                         'truck_count': analysis_data.get('truck_count', 0),
                         'motorcycle_count': analysis_data.get('motorcycle_count', 0),
                         'bus_count': analysis_data.get('bus_count', 0),
                         'bicycle_count': analysis_data.get('bicycle_count', 0),
                         'other_count': analysis_data.get('other_count', 0),
-                        
-                        # Directional data
                         'directional_count': analysis_data.get('directional_count', 0),
                         'directional_vehicles_per_minute': analysis_data.get('directional_vehicles_per_minute', 0.0),
                         'peak_directional_flow': analysis_data.get('peak_directional_flow', 0),
-                        
-                        # Congestion data
                         'congestion_events_count': analysis_data.get('congestion_events_count', 0),
                         'total_congestion_time': analysis_data.get('total_congestion_time', 0.0),
                         'congestion_percentage': analysis_data.get('congestion_percentage', 0.0),
@@ -3554,19 +3545,13 @@ class DataSyncAPI(APIView):
                         'congestion_moderate_time': analysis_data.get('congestion_moderate_time', 0.0),
                         'congestion_heavy_time': analysis_data.get('congestion_heavy_time', 0.0),
                         'congestion_severe_time': analysis_data.get('congestion_severe_time', 0.0),
-                        
-                        # Video properties
                         'duration_seconds': analysis_data.get('duration_seconds', 0.0),
                         'fps': analysis_data.get('fps', 0.0),
                         'total_frames': analysis_data.get('total_frames', 0),
-                        
-                        # Traffic metrics
                         'peak_traffic': analysis_data.get('peak_traffic', 0),
                         'average_traffic': analysis_data.get('average_traffic', 0.0),
                         'congestion_level': analysis_data.get('congestion_level', 'none'),
                         'traffic_pattern': analysis_data.get('traffic_pattern', 'stable'),
-                        
-                        # JSON data
                         'analysis_data': analysis_data.get('analysis_data', {}),
                         'metrics_summary': analysis_data.get('metrics_summary', {}),
                         'frame_data': analysis_data.get('frame_data', []),
@@ -3579,7 +3564,7 @@ class DataSyncAPI(APIView):
             except Exception as e:
                 logger.error(f"Failed to sync analysis {analysis_data.get('id')}: {e}")
         
-        # 7. Sync Directional Analyses (optional)
+        # 7. Sync Directional Analyses
         for dir_analysis_data in sync_data.get('directional_analyses', []):
             try:
                 traffic_analysis = TrafficAnalysis.objects.get(id=dir_analysis_data['traffic_analysis_id'])
@@ -3605,7 +3590,7 @@ class DataSyncAPI(APIView):
             except TrafficAnalysis.DoesNotExist:
                 logger.warning(f"TrafficAnalysis {dir_analysis_data.get('traffic_analysis_id')} not found")
         
-        # 8. Sync Congestion Events (optional)
+        # 8. Sync Congestion Events
         for event_data in sync_data.get('congestion_events', []):
             try:
                 traffic_analysis = TrafficAnalysis.objects.get(id=event_data['traffic_analysis_id'])
