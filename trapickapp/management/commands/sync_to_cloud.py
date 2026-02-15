@@ -189,8 +189,11 @@ class Command(BaseCommand):
                 'filename': video.filename,
                 'uploaded_at': video.uploaded_at.isoformat(),
                 'video_date': video.video_date.isoformat() if video.video_date else None,
-                'video_start_time': video.video_start_time.isoformat() if video.video_start_time else None,
-                'video_end_time': video.video_end_time.isoformat() if video.video_end_time else None,
+                
+                # FIX: Convert time objects to ISO format strings with dummy date
+                'video_start_time': f"2000-01-01T{video.video_start_time.isoformat()}" if video.video_start_time else None,
+                'video_end_time': f"2000-01-01T{video.video_end_time.isoformat()}" if video.video_end_time else None,
+                
                 'original_duration': float(video.original_duration) if video.original_duration else None,
                 'group_id': str(video.location_date_group_id) if video.location_date_group_id else None,
                 'processing_profile_id': video.processing_profile_id if video.processing_profile else None,
