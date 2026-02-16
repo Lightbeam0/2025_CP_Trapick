@@ -1,17 +1,13 @@
 // src/hooks/useWebSocket.js
 import { useRef, useCallback, useEffect, useState } from 'react';
+import API_CONFIG from '../config/api';
 
 // Global singleton WebSocket instance (shared across all components)
 let globalWebSocket = null;
 let connectionCallbacks = new Set(); // To notify all components of status changes
 
-const WEBSOCKET_URL = (() => {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = process.env.NODE_ENV === 'development'
-    ? '127.0.0.1:8000'
-    : window.location.host;
-  return `${protocol}//${host}/ws/progress/`;
-})();
+// ✅ USE THE CONFIGURED WS_URL DIRECTLY
+const WEBSOCKET_URL = API_CONFIG.WS_URL + '/progress/';
 
 const createWebSocket = () => {
   if (globalWebSocket && (globalWebSocket.readyState === WebSocket.CONNECTING || globalWebSocket.readyState === WebSocket.OPEN)) {
@@ -62,7 +58,6 @@ export const useWebSocket = ({ onMessage, onStatusChange } = {}) => {
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const callbacksRef = useRef({ onMessage, onStatusChange });
 
-  // Keep callbacks up to date
   useEffect(() => {
     callbacksRef.current.onMessage = onMessage;
     callbacksRef.current.onStatusChange = onStatusChange;
@@ -79,14 +74,11 @@ export const useWebSocket = ({ onMessage, onStatusChange } = {}) => {
   }, []);
 
   useEffect(() => {
-    // Register this component's callback
     connectionCallbacks.add(handleStatusChange);
     console.log('✅ Registered WebSocket callback');
 
-    // Connect if not already connected
     const ws = createWebSocket();
 
-    // Sync current status
     if (ws.readyState === WebSocket.OPEN) {
       setConnectionStatus('connected');
     } else if (ws.readyState === WebSocket.CONNECTING) {
@@ -94,11 +86,9 @@ export const useWebSocket = ({ onMessage, onStatusChange } = {}) => {
     }
 
     return () => {
-      // Unregister on unmount
       connectionCallbacks.delete(handleStatusChange);
       console.log('❌ Unregistered WebSocket callback');
 
-      // Only close global socket if no one is using it
       if (connectionCallbacks.size === 0 && globalWebSocket) {
         console.log('No more listeners — closing WebSocket');
         globalWebSocket.close(1000, 'No active listeners');
