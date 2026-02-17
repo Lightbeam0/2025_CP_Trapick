@@ -75,7 +75,7 @@ function Home() {
           const demoData = Array(7).fill(0).map(() => Math.floor(Math.random() * 1000) + 500);
           setOverviewData({
             ...data,
-            weekly_ demoData,
+            weekly_data: demoData,
             total_vehicles: demoData.reduce((a, b) => a + b, 0),
             hasData: true
           });
@@ -94,7 +94,7 @@ function Home() {
         // Use demo data when API fails
         const demoData = Array(7).fill(0).map(() => Math.floor(Math.random() * 1000) + 500);
         setOverviewData({
-          weekly_ demoData,
+          weekly_data: demoData,
           total_vehicles: demoData.reduce((a, b) => a + b, 0),
           congested_roads: 0,
           peak_hour: '8:00 AM',
