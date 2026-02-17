@@ -11,22 +11,18 @@ export const useTheme = () => {
   return context;
 };
 
-export const ThemeProvider = ({ children }) => {
-  // Check localStorage for saved theme or use system preference
+export const ThemeProvider = ({ children, defaultTheme = 'light' }) => {
+  // Determine initial theme
   const getInitialTheme = () => {
     if (typeof window !== 'undefined' && window.localStorage) {
       const storedPref = window.localStorage.getItem('color-theme');
       if (storedPref) {
+        // If user has previously toggled, respect their choice
         return storedPref;
       }
-
-      // Check system preference
-      const systemPref = window.matchMedia('(prefers-color-scheme: dark)');
-      if (systemPref.matches) {
-        return 'dark';
-      }
     }
-    return 'light'; // Default theme
+    // DEFAULT TO LIGHT: Ignore system preference if no stored choice exists
+    return defaultTheme; 
   };
 
   const [theme, setTheme] = useState(getInitialTheme);
@@ -42,10 +38,10 @@ export const ThemeProvider = ({ children }) => {
     // Add new theme class
     root.classList.add(newTheme);
     
-    // Update localStorage
+    // Update localStorage so the choice persists on refresh
     localStorage.setItem('color-theme', newTheme);
     
-    // Update theme state
+    // Update state
     setTheme(newTheme);
   };
 
@@ -62,14 +58,18 @@ export const ThemeProvider = ({ children }) => {
     }
   }, [theme, isInitialized]);
 
-  // Listen for system theme changes
+  // Optional: Listen for system changes ONLY if user hasn't made a choice yet.
+  // Since we want a strict Light default, we generally disable auto-switching 
+  // once the app loads to prevent unexpected jumps to Dark mode.
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     
     const handleChange = (e) => {
-      // Only auto-change if user hasn't set a preference
+      // Only react if the user has NEVER set a preference manually
       if (!localStorage.getItem('color-theme')) {
-        applyTheme(e.matches ? 'dark' : 'light');
+        // We intentionally do NOT auto-update here to maintain the "Light Default" requirement.
+        // If you wanted it to follow system on first load ONLY, you could call applyTheme here.
+        // But for a strict Light default, we do nothing.
       }
     };
     
