@@ -25,6 +25,10 @@ ChartJS.register(
   Legend
 );
 
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 function Home() {
   const [overviewData, setOverviewData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -40,7 +44,7 @@ function Home() {
   useEffect(() => {
     const fetchLocations = async () => {
       try {
-        const response = await axios.get("http://127.0.0.1:8000/api/locations/");
+        const response = await axios.get(`${API_BASE_URL}/api/locations/`);
         setLocations(response.data);
       } catch (err) {
         console.error("Failed to fetch locations:", err);
@@ -61,7 +65,7 @@ function Home() {
           params.append('location_id', selectedLocation);
         }
         
-        const url = `http://127.0.0.1:8000/api/analyze/?${params}`;
+        const url = `${API_BASE_URL}/api/analyze/?${params}`;
         const response = await axios.get(url);
         const data = response.data;
         
@@ -71,7 +75,7 @@ function Home() {
           const demoData = Array(7).fill(0).map(() => Math.floor(Math.random() * 1000) + 500);
           setOverviewData({
             ...data,
-            weekly_data: demoData,
+            weekly_ demoData,
             total_vehicles: demoData.reduce((a, b) => a + b, 0),
             hasData: true
           });
@@ -90,7 +94,7 @@ function Home() {
         // Use demo data when API fails
         const demoData = Array(7).fill(0).map(() => Math.floor(Math.random() * 1000) + 500);
         setOverviewData({
-          weekly_data: demoData,
+          weekly_ demoData,
           total_vehicles: demoData.reduce((a, b) => a + b, 0),
           congested_roads: 0,
           peak_hour: '8:00 AM',
@@ -263,7 +267,7 @@ function Home() {
     datasets: [
       {
         label: "Vehicles",
-        data: weeklyData,
+         weeklyData,
         backgroundColor: "rgba(59, 130, 246, 0.1)",
         borderColor: "rgba(59, 130, 246, 1)",
         borderWidth: 3,

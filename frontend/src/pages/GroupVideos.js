@@ -5,6 +5,10 @@ import axios from "axios";
 import ProcessedVideoViewer from "../components/ProcessedVideoViewer";
 import EditVideoModal from "../components/EditVideoModal";
 
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 // Helper functions defined outside component to avoid ESLint issues
 const formatVideoTime = (time) => {
   if (!time) return 'Unknown';
@@ -98,7 +102,7 @@ function GroupVideos() {
 
       // ✅ FIXED: Use the correct URL pattern with location_id and group_id
       const response = await axios.get(
-        `http://127.0.0.1:8000/api/locations/${locationId}/groups/${groupId}/videos/`
+        `${API_BASE_URL}/api/locations/${locationId}/groups/${groupId}/videos/`
       );
 
       // ✅ ADD DIAGNOSTIC LOGGING
@@ -143,7 +147,7 @@ function GroupVideos() {
       } else if (err.response?.data?.error) {
         setError(`Server error: ${err.response.data.error}`);
       } else {
-        setError(`Failed to load group videos: ${err.message}`); // Fixed string interpolation
+        setError(`Failed to load group videos: ${err.message}`);
       }
     } finally {
       setLoading(false);
@@ -153,7 +157,7 @@ function GroupVideos() {
   const fetchLocations = useCallback(async () => {
     try {
       console.log("🔄 Fetching locations for edit modal...");
-      const response = await axios.get("http://127.0.0.1:8000/api/locations/");
+      const response = await axios.get(`${API_BASE_URL}/api/locations/`);
       setLocations(response.data);
       console.log(`✅ Loaded ${response.data.length} locations for editing`);
     } catch (err) {
@@ -164,7 +168,7 @@ function GroupVideos() {
   // ✅ ADD: Check for pending videos
   const checkForPendingVideos = useCallback(async () => {
     try {
-      const response = await axios.get('http://127.0.0.1:8000/api/videos/');
+      const response = await axios.get(`${API_BASE_URL}/api/videos/`);
       const processing = response.data.filter(v =>
         v.processing_status === 'processing' || v.processing_status === 'uploaded'
       );

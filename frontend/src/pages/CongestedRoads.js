@@ -2,6 +2,10 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 function CongestedRoads() {
   const [timeFilter, setTimeFilter] = useState("today");
   const [congestionData, setCongestionData] = useState([]);
@@ -30,7 +34,7 @@ function CongestedRoads() {
   useEffect(() => {
     const fetchCongestionData = async () => {
       try {
-        const response = await axios.get("http://127.0.0.1:8000/api/congestion/");
+        const response = await axios.get(`${API_BASE_URL}/api/congestion/`);
         let apiData = response.data;
         
         if (Array.isArray(apiData)) {

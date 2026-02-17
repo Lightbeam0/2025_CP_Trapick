@@ -2,6 +2,10 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 const LoginModal = ({ isOpen, onClose, onLoginSuccess }) => {
   const [credentials, setCredentials] = useState({
     username: '',
@@ -30,7 +34,7 @@ const LoginModal = ({ isOpen, onClose, onLoginSuccess }) => {
     try {
       console.log('🔐 Attempting login...');
       
-      const response = await axios.post('http://127.0.0.1:8000/api/auth/login/', {
+      const response = await axios.post(`${API_BASE_URL}/api/auth/login/`, {
         username: credentials.username,
         password: credentials.password
       });
@@ -63,7 +67,7 @@ const LoginModal = ({ isOpen, onClose, onLoginSuccess }) => {
       let errorMsg = 'Login failed. Please try again.';
       
       if (!err.response) {
-        errorMsg = 'Cannot connect to server. Is the backend running at http://127.0.0.1:8000?';
+        errorMsg = `Cannot connect to server. Is the backend running at ${API_BASE_URL}?`;
       } else if (err.response.status === 401) {
         errorMsg = 'Invalid username or password';
       } else if (err.response?.data?.message) {

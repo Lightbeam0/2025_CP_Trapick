@@ -2,6 +2,10 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 function EditVideoModal({ isOpen, onClose, video, onVideoUpdated, locations = [] }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -154,7 +158,7 @@ function EditVideoModal({ isOpen, onClose, video, onVideoUpdated, locations = []
 
       // Make API call to update video metadata
       const response = await axios.put(
-        `http://127.0.0.1:8000/api/videos/${video.id}/manage/`,
+        `${API_BASE_URL}/api/videos/${video.id}/manage/`,
         updateData,
         {
           headers: {
@@ -209,7 +213,7 @@ function EditVideoModal({ isOpen, onClose, video, onVideoUpdated, locations = []
       console.log("🗑️ Deleting video:", video.id);
       
       const response = await axios.delete(
-        `http://127.0.0.1:8000/api/videos/${video.id}/delete/`
+        `${API_BASE_URL}/api/videos/${video.id}/delete/`
       );
 
       console.log("✅ Delete response:", response.data);

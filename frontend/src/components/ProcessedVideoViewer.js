@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
   const [videoUrl, setVideoUrl] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -20,7 +24,7 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
 
         if (type === 'session') {
           // Fetch session group data with videos
-          const groupResponse = await axios.get(`http://127.0.0.1:8000/api/location-groups/${videoId}/`);
+          const groupResponse = await axios.get(`${API_BASE_URL}/api/location-groups/${videoId}/`);
           const groupData = groupResponse.data;
           
           setItemInfo(groupData);
@@ -34,15 +38,15 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
             const firstVideo = videosWithAnalysis[0];
             setSelectedVideo(firstVideo);
             setAnalysisData(firstVideo.analysis);
-            setVideoUrl(`http://127.0.0.1:8000/api/video/${firstVideo.id}/view/`);
+            setVideoUrl(`${API_BASE_URL}/api/video/${firstVideo.id}/view/`);
           }
           
         } else {
           // Single video mode
-          const analysisResponse = await axios.get(`http://127.0.0.1:8000/api/analysis/${videoId}/`);
+          const analysisResponse = await axios.get(`${API_BASE_URL}/api/analysis/${videoId}/`);
           setAnalysisData(analysisResponse.data);
           setItemInfo(analysisResponse.data);
-          setVideoUrl(`http://127.0.0.1:8000/api/video/${videoId}/view/`);
+          setVideoUrl(`${API_BASE_URL}/api/video/${videoId}/view/`);
         }
         
       } catch (err) {
@@ -61,7 +65,7 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
   const handleVideoSelect = (video) => {
     setSelectedVideo(video);
     setAnalysisData(video.analysis);
-    setVideoUrl(`http://127.0.0.1:8000/api/video/${video.id}/view/`);
+    setVideoUrl(`${API_BASE_URL}/api/video/${video.id}/view/`);
     setVideoLoadError(null);
   };
 
@@ -69,11 +73,11 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
   const handleDownloadVideo = () => {
     if (type === 'session' && selectedVideo) {
       // Download selected video from session
-      const downloadUrl = `http://127.0.0.1:8000/api/video/${selectedVideo.id}/download/`;
+      const downloadUrl = `${API_BASE_URL}/api/video/${selectedVideo.id}/download/`;
       window.open(downloadUrl, '_blank');
     } else {
       // Download single video
-      const downloadUrl = `http://127.0.0.1:8000/api/video/${videoId}/download/`;
+      const downloadUrl = `${API_BASE_URL}/api/video/${videoId}/download/`;
       window.open(downloadUrl, '_blank');
     }
   };

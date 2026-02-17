@@ -6,7 +6,7 @@ import API_CONFIG from '../config/api';
 let globalWebSocket = null;
 let connectionCallbacks = new Set(); // To notify all components of status changes
 
-// ✅ USE THE CONFIGURED WS_URL DIRECTLY
+// ✅ CORRECTLY USE THE CONFIGURED WS_URL
 const WEBSOCKET_URL = API_CONFIG.WS_URL + '/progress/';
 
 const createWebSocket = () => {

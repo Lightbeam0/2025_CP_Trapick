@@ -2,6 +2,11 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
+// API Base URL Configuration
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 const TrafficPredictions = () => {
   const [predictions, setPredictions] = useState([]);
   const [insights, setInsights] = useState(null);
@@ -19,7 +24,7 @@ const TrafficPredictions = () => {
   const generatePredictions = async () => {
     setGenerating(true);
     try {
-      await axios.post('http://127.0.0.1:8000/api/predictions/generate/');
+      await axios.post(`${API_BASE_URL}/api/predictions/generate/`);
       alert('Predictions generated successfully!');
       fetchPredictions();
       fetchInsights();
@@ -36,7 +41,7 @@ const TrafficPredictions = () => {
     
     setLoading(true);
     try {
-      const response = await axios.get(`http://127.0.0.1:8000/api/predictions/?date=${selectedDate}`);
+      const response = await axios.get(`${API_BASE_URL}/api/predictions/?date=${selectedDate}`);
       setPredictions(response.data.predictions);
     } catch (error) {
       console.error('Error fetching predictions:', error);
@@ -47,7 +52,7 @@ const TrafficPredictions = () => {
 
   const fetchInsights = async () => {
     try {
-      const response = await axios.get('http://127.0.0.1:8000/api/predictions/insights/');
+      const response = await axios.get(`${API_BASE_URL}/api/predictions/insights/`);
       setInsights(response.data);
     } catch (error) {
       console.error('Error fetching insights:', error);

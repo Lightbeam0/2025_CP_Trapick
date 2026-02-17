@@ -1,4 +1,4 @@
-//src/pages/VehiclesPassing.js
+// src/pages/VehiclesPassing.js
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { Bar, Pie } from "react-chartjs-2";
@@ -23,6 +23,11 @@ ChartJS.register(
   Legend
 );
 
+// API Base URL Configuration
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 function VehiclesPassing() {
   const [timePeriod, setTimePeriod] = useState("today");
   const [vehicleData, setVehicleData] = useState(null);
@@ -39,7 +44,7 @@ function VehiclesPassing() {
 
   const fetchLocations = async () => {
     try {
-      const response = await axios.get("http://127.0.0.1:8000/api/locations/");
+      const response = await axios.get(`${API_BASE_URL}/api/locations/`);
       setLocations(response.data);
     } catch (err) {
       console.error("Error fetching locations:", err);
@@ -57,7 +62,7 @@ function VehiclesPassing() {
       if (locationFilter && locationFilter !== "all") params.append('location_id', locationFilter);
       if (dateRange && dateRange !== "all") params.append('date_range', dateRange);
       
-      const url = `http://127.0.0.1:8000/api/vehicles/?${params}`;
+      const url = `${API_BASE_URL}/api/vehicles/?${params}`;
       console.log("📡 API URL:", url);
       
       const response = await axios.get(url);

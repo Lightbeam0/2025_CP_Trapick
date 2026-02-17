@@ -3,6 +3,11 @@ import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import axios from "axios";
 
+// API Base URL Configuration
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 function LocationGroups() {
   const { locationId } = useParams();
   const navigate = useNavigate();
@@ -34,14 +39,14 @@ function LocationGroups() {
 
       // ✅ FIX: Use the location-specific endpoint
       // From your Django API: path('api/locations/<uuid:location_id>/groups/', LocationGroupsAPI.as_view())
-      const locationUrl = `http://127.0.0.1:8000/api/locations/${locationId}/`;
+      const locationUrl = `${API_BASE_URL}/api/locations/${locationId}/`;
       console.log(`📡 Requesting location: ${locationUrl}`);
       const locationResponse = await axios.get(locationUrl);
       console.log("✅ Location response:", locationResponse.data);
       setLocation(locationResponse.data);
 
       // ✅ FIX: Fetch groups FOR THIS SPECIFIC LOCATION ONLY
-      const groupsUrl = `http://127.0.0.1:8000/api/locations/${locationId}/groups/?${params}`;
+      const groupsUrl = `${API_BASE_URL}/api/locations/${locationId}/groups/?${params}`;
       console.log(`📡 Requesting location-specific groups: ${groupsUrl}`);
 
       const groupsResponse = await axios.get(groupsUrl);
@@ -56,7 +61,7 @@ function LocationGroups() {
       setError(null);
 
     } catch (err) {
-      console.error("❌ Error fetching location data:", err);
+      console.error("❌ Error fetching location ", err);
       handleFetchError(err);
     } finally {
       setLoading(false);
@@ -128,7 +133,7 @@ function LocationGroups() {
   const checkAllGroups = async () => {
     try {
       console.log("🔍 Fetching all groups for debug...");
-      const response = await axios.get('http://127.0.0.1:8000/api/location-groups/');
+      const response = await axios.get(`${API_BASE_URL}/api/location-groups/`);
       const allGroups = Array.isArray(response.data) ? response.data : response.data.results || [];
       console.log(`🔍 Found ${allGroups.length} total groups in system:`, allGroups);
       
@@ -245,7 +250,7 @@ function LocationGroups() {
               marginTop: '8px',
               whiteSpace: 'pre-wrap'
             }}>
-              {`fetch("http://127.0.0.1:8000/api/locations/${locationId}/groups/").then(r => r.json()).then(console.log)`}
+              {`fetch("${API_BASE_URL}/api/locations/${locationId}/groups/").then(r => r.json()).then(console.log)`}
             </code>
           </div>
         </div>

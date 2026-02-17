@@ -2,6 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 const VideoProgressTracker = ({ videoId, onCompletion }) => {
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState('');
@@ -13,7 +17,8 @@ const VideoProgressTracker = ({ videoId, onCompletion }) => {
     let pollInterval = null;
 
     // Try WebSocket first
-    const wsUrl = `ws://127.0.0.1:8000/ws/video-progress/${videoId}/`;
+    const protocol = process.env.NODE_ENV === 'development' ? 'ws' : 'wss';
+    const wsUrl = `${protocol}://${API_BASE_URL.replace('http://', '').replace('https://', '')}/ws/video-progress/${videoId}/`;
     
     try {
       ws = new WebSocket(wsUrl);
@@ -55,7 +60,7 @@ const VideoProgressTracker = ({ videoId, onCompletion }) => {
     if (!wsConnected) {
       pollInterval = setInterval(async () => {
         try {
-          const response = await axios.get(`http://127.0.0.1:8000/api/progress/${videoId}/`);
+          const response = await axios.get(`${API_BASE_URL}/api/progress/${videoId}/`);
           const progressData = response.data;
           
           setProgress(progressData.progress || 0);

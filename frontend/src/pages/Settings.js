@@ -3,6 +3,11 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { useTheme } from "../contexts/ThemeContext"; // Import useTheme hook
 
+// API Base URL Configuration
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 function Settings() {
   const { theme, toggleTheme, isDark } = useTheme(); // Use theme context
   const [notifications, setNotifications] = useState(true);
@@ -85,7 +90,7 @@ function Settings() {
     try {
       setLocationLoading(true);
       console.log("🔄 Fetching locations...");
-      const response = await axios.get("http://127.0.0.1:8000/api/locations/");
+      const response = await axios.get(`${API_BASE_URL}/api/locations/`);
       console.log("✅ Locations fetched:", response.data);
       setLocations(response.data);
     } catch (error) {
@@ -100,7 +105,7 @@ function Settings() {
     try {
       setProfileLoading(true);
       console.log("🔄 Fetching processing profiles...");
-      const response = await axios.get("http://127.0.0.1:8000/api/processing-profiles/");
+      const response = await axios.get(`${API_BASE_URL}/api/processing-profiles/`);
       console.log("✅ Processing profiles fetched:", response.data);
       setProcessingProfiles(response.data);
     } catch (error) {
@@ -136,10 +141,10 @@ function Settings() {
       console.log("📝 Editing location:", editingLocation);
 
       if (editingLocation) {
-        response = await axios.put(`http://127.0.0.1:8000/api/locations/${editingLocation.id}/`, locationFormData);
+        response = await axios.put(`${API_BASE_URL}/api/locations/${editingLocation.id}/`, locationFormData);
         console.log("✅ Location update response:", response.data);
       } else {
-        response = await axios.post('http://127.0.0.1:8000/api/locations/', locationFormData);
+        response = await axios.post(`${API_BASE_URL}/api/locations/`, locationFormData);
         console.log("✅ Location create response:", response.data);
       }
       
@@ -193,10 +198,10 @@ function Settings() {
       console.log("📝 Editing profile:", editingProfile);
 
       if (editingProfile) {
-        response = await axios.put(`http://127.0.0.1:8000/api/processing-profiles/${editingProfile.id}/`, profileData);
+        response = await axios.put(`${API_BASE_URL}/api/processing-profiles/${editingProfile.id}/`, profileData);
         console.log("✅ Profile update response:", response.data);
       } else {
-        response = await axios.post('http://127.0.0.1:8000/api/processing-profiles/', profileData);
+        response = await axios.post(`${API_BASE_URL}/api/processing-profiles/`, profileData);
         console.log("✅ Profile create response:", response.data);
       }
       
@@ -268,7 +273,7 @@ function Settings() {
     if (window.confirm(`Are you sure you want to delete "${location.display_name}"?`)) {
       try {
         console.log(`🗑️ Deleting location ID: ${location.id}`);
-        await axios.delete(`http://127.0.0.1:8000/api/locations/${location.id}/`);
+        await axios.delete(`${API_BASE_URL}/api/locations/${location.id}/`);
         console.log("✅ Location deleted successfully");
         fetchLocations();
       } catch (error) {
@@ -282,7 +287,7 @@ function Settings() {
     if (window.confirm(`Are you sure you want to delete "${profile.display_name}"? This will fail if any locations are using this profile.`)) {
       try {
         console.log(`🗑️ Deleting profile ID: ${profile.id}`);
-        await axios.delete(`http://127.0.0.1:8000/api/processing-profiles/${profile.id}/`);
+        await axios.delete(`${API_BASE_URL}/api/processing-profiles/${profile.id}/`);
         console.log("✅ Profile deleted successfully");
         fetchProcessingProfiles();
       } catch (error) {

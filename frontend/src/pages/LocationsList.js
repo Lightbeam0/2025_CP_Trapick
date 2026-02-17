@@ -3,6 +3,11 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 
+// API Base URL Configuration
+const API_BASE_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000' 
+  : '';
+
 function LocationsList() {
   const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -15,7 +20,7 @@ function LocationsList() {
       console.log("🔄 Fetching locations from API...");
       
       // Log the exact URL being called
-      const apiUrl = "http://127.0.0.1:8000/api/locations/";
+      const apiUrl = `${API_BASE_URL}/api/locations/`;
       console.log(`📡 Request URL: ${apiUrl}`);
       
       const response = await axios.get(apiUrl);
@@ -82,7 +87,7 @@ function LocationsList() {
   useEffect(() => {
     console.group("🛠️ Debug Tip");
     console.log("To test the locations API directly in browser console, run:");
-    console.log('fetch("http://127.0.0.1:8000/api/locations/").then(r => r.json()).then(console.log)');
+    console.log(`fetch("${API_BASE_URL}/api/locations/").then(r => r.json()).then(console.log)`);
     console.log("Expected response: array of location objects with id, display_name, etc.");
     console.groupEnd();
   }, []);
