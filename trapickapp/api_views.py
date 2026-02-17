@@ -3616,3 +3616,141 @@ class DataSyncAPI(APIView):
                 logger.warning(f"TrafficAnalysis {event_data.get('traffic_analysis_id')} not found")
         
         return results
+
+
+class SyncStatusAPI(APIView):
+    """Check what data is available to sync"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Security: Only allow in local deployment
+        if settings.IS_CLOUD_DEPLOYMENT:
+            return Response(
+                {'error': 'Sync is only available in local deployment'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Check if user is admin
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {'error': 'Admin privileges required'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            # Get counts of data available to sync
+            profiles = ProcessingProfile.objects.count()
+            locations = Location.objects.count()
+            groups = LocationDateGroup.objects.count()
+            videos = VideoFile.objects.filter(processing_status='completed').count()
+            analyses = TrafficAnalysis.objects.count()
+            
+            # Check configuration
+            cloud_url = getattr(settings, 'CLOUD_SYNC_URL', None)
+            api_key = getattr(settings, 'CLOUD_SYNC_API_KEY', None)
+            
+            return Response({
+                'status': 'ready',
+                'counts': {
+                    'locations': locations,
+                    'processing_profiles': profiles,
+                    'groups': groups,
+                    'videos': videos,
+                    'analyses': analyses
+                },
+                'configuration': {
+                    'cloud_url': cloud_url,
+                    'api_key_set': bool(api_key)
+                },
+                'can_sync': bool(cloud_url and api_key and analyses > 0)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error checking sync status: {e}")
+            return Response(
+                {'error': f'Failed to check sync status: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class SyncExecuteAPI(APIView):
+    """Execute sync to cloud"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        # Security: Only allow in local deployment
+        if settings.IS_CLOUD_DEPLOYMENT:
+            return Response(
+                {'error': 'Sync is only available in local deployment'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Check if user is admin
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response(
+                {'error': 'Admin privileges required'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        try:
+            # Import the sync command
+            from django.core.management import call_command
+            from io import StringIO
+            
+            # Capture command output
+            out = StringIO()
+            
+            # Run sync command
+            try:
+                call_command('sync_to_cloud', stdout=out)
+                output = out.getvalue()
+                
+                # Parse results from output
+                # This is a simple parser - you might want to enhance it
+                success = 'SYNC SUCCESSFUL' in output
+                
+                if success:
+                    return Response({
+                        'success': True,
+                        'message': 'Data synced successfully',
+                        'results': {
+                            'locations': self._extract_count(output, 'locations'),
+                            'videos': self._extract_count(output, 'videos'),
+                            'analyses': self._extract_count(output, 'analyses')
+                        },
+                        'output': output
+                    })
+                else:
+                    return Response({
+                        'success': False,
+                        'message': 'Sync completed with errors',
+                        'output': output
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                    
+            except Exception as cmd_error:
+                logger.error(f"Sync command error: {cmd_error}")
+                return Response({
+                    'success': False,
+                    'error': str(cmd_error),
+                    'message': 'Sync command failed'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+        except Exception as e:
+            logger.error(f"Sync execution error: {e}")
+            return Response(
+                {'error': f'Failed to execute sync: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def _extract_count(self, output, key):
+        """Extract count from command output"""
+        try:
+            # Look for patterns like "• locations: 3 synced"
+            import re
+            pattern = rf'{key}:\s*(\d+)'
+            match = re.search(pattern, output, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+        except:
+            pass
+        return 0

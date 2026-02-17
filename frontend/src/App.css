@@ -1,4 +1,4 @@
-/* src/App.css - COMPLETE FIXED VERSION WITH ALL STYLES */
+/* src/App.css
 
 /* ==================== BASE STYLES ==================== */
 * {
@@ -2629,5 +2629,119 @@ code {
   }
   100% {
     box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}
+
+/* ==================== SYNC BUTTON STYLES ==================== */
+.sync-button-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+  white-space: nowrap;
+}
+
+.sync-button-header:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+}
+
+.sync-button-header:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.sync-button-header.syncing {
+  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+}
+
+.sync-button-header .spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Hide text on mobile */
+@media (max-width: 768px) {
+  .sync-button-header .sync-text {
+    display: none;
+  }
+  
+  .sync-button-header {
+    padding: 8px 12px;
+    min-width: auto;
+  }
+}
+
+/* ==================== SYNC NOTIFICATION ==================== */
+.sync-notification {
+  position: fixed;
+  top: 70px;
+  right: 20px;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  z-index: 10000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  animation: slideIn 0.3s ease-out;
+  max-width: 400px;
+}
+
+.sync-notification.info {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.sync-notification.success {
+  background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+  color: white;
+}
+
+.sync-notification.error {
+  background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+  color: white;
+}
+
+.sync-notification.warning {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  color: white;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(400px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 768px) {
+  .sync-notification {
+    top: 60px;
+    right: 10px;
+    left: 10px;
+    max-width: none;
+    font-size: 12px;
   }
 }

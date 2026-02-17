@@ -1,16 +1,23 @@
-// src/components/Header.js
+// src/components/Header.js - ADD SYNC BUTTON
 import React, { useState } from 'react';
-import { FaUserCircle, FaSignOutAlt, FaCog, FaHome, FaChevronDown, FaBars, FaTimes, FaUpload } from 'react-icons/fa';
+import { FaUserCircle, FaSignOutAlt, FaCog, FaHome, FaChevronDown, FaBars, FaTimes, FaUpload, FaCloudUploadAlt, FaSync } from 'react-icons/fa';
 import { useNavigate, useLocation } from 'react-router-dom';
+import axios from 'axios';
 
 const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
 
-  // 🔒 Detect cloud deployment: hide upload button in production
+  // 🔒 Detect cloud deployment and check if user is admin
   const isCloudDeployment = process.env.NODE_ENV === 'production';
+  const isAdmin = user && (user.is_staff || user.is_superuser);
+  
+  // 🔒 Show sync button ONLY in local (development) mode for admin users
+  const showSyncButton = !isCloudDeployment && isAdmin;
 
   const handleUserMenuToggle = () => {
     setShowUserMenu(!showUserMenu);
@@ -45,6 +52,108 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
     }
   };
 
+  // 🔄 NEW: Handle sync to cloud
+  const handleSyncToCloud = async () => {
+    if (isSyncing) return;
+    
+    const confirmed = window.confirm(
+      '🌐 Sync Data to Cloud?\n\n' +
+      'This will:\n' +
+      '• Check what data is available locally\n' +
+      '• Send all processed analyses to cloud\n' +
+      '• Preserve cloud dashboard data\n\n' +
+      'Continue?'
+    );
+    
+    if (!confirmed) return;
+
+    setIsSyncing(true);
+    setSyncStatus({ type: 'info', message: 'Checking sync status...' });
+
+    try {
+      // First, check sync status
+      const statusResponse = await axios.get('/api/sync/status/');
+      
+      console.log('📊 Sync Status:', statusResponse.data);
+      
+      const { locations, videos, analyses } = statusResponse.data;
+      
+      if (analyses === 0) {
+        setSyncStatus({ 
+          type: 'warning', 
+          message: 'No data to sync. Process some videos first.' 
+        });
+        setIsSyncing(false);
+        setTimeout(() => setSyncStatus(null), 5000);
+        return;
+      }
+
+      // Confirm with data counts
+      const finalConfirm = window.confirm(
+        `📊 Ready to Sync:\n\n` +
+        `• ${locations} Location(s)\n` +
+        `• ${videos} Completed Video(s)\n` +
+        `• ${analyses} Analysis/Analyses\n\n` +
+        `Proceed with sync?`
+      );
+
+      if (!finalConfirm) {
+        setIsSyncing(false);
+        setSyncStatus(null);
+        return;
+      }
+
+      // Perform the sync
+      setSyncStatus({ type: 'info', message: 'Syncing data to cloud...' });
+      
+      const syncResponse = await axios.post('/api/sync/execute/');
+      
+      console.log('✅ Sync Response:', syncResponse.data);
+
+      if (syncResponse.data.success) {
+        setSyncStatus({ 
+          type: 'success', 
+          message: `✅ Sync Complete! ${syncResponse.data.results.analyses} analyses synced.` 
+        });
+        
+        // Show detailed results
+        setTimeout(() => {
+          alert(
+            '🎉 Sync Successful!\n\n' +
+            `• Locations: ${syncResponse.data.results.locations}\n` +
+            `• Videos: ${syncResponse.data.results.videos}\n` +
+            `• Analyses: ${syncResponse.data.results.analyses}\n\n` +
+            'Check your cloud dashboard to view the data.'
+          );
+        }, 500);
+      } else {
+        setSyncStatus({ 
+          type: 'error', 
+          message: `❌ Sync Failed: ${syncResponse.data.message}` 
+        });
+      }
+
+    } catch (error) {
+      console.error('❌ Sync Error:', error);
+      
+      let errorMessage = 'Sync failed. ';
+      
+      if (error.response) {
+        errorMessage += error.response.data?.error || error.response.statusText;
+      } else if (error.request) {
+        errorMessage += 'No response from server. Check your connection.';
+      } else {
+        errorMessage += error.message;
+      }
+      
+      setSyncStatus({ type: 'error', message: `❌ ${errorMessage}` });
+    } finally {
+      setIsSyncing(false);
+      // Clear status after 5 seconds
+      setTimeout(() => setSyncStatus(null), 5000);
+    }
+  };
+
   return (
     <header className="header">
       {/* Left Section */}
@@ -69,6 +178,29 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
 
       {/* Right Section */}
       <div className="header-right">
+        {/* 🔄 NEW: Sync to Cloud Button - ONLY for admin in LOCAL mode */}
+        {showSyncButton && (
+          <button
+            onClick={handleSyncToCloud}
+            className={`sync-button-header ${isSyncing ? 'syncing' : ''}`}
+            title="Sync Data to Cloud"
+            aria-label="Sync Data to Cloud"
+            disabled={isSyncing}
+          >
+            {isSyncing ? (
+              <>
+                <FaSync className="spin" size={18} />
+                <span className="sync-text">Syncing...</span>
+              </>
+            ) : (
+              <>
+                <FaCloudUploadAlt size={18} />
+                <span className="sync-text">Sync to Cloud</span>
+              </>
+            )}
+          </button>
+        )}
+
         {/* Upload Video Button - ONLY shown in LOCAL (development), hidden in CLOUD (production) */}
         {user && onUploadClick && !isCloudDeployment && (
           <button
@@ -103,7 +235,7 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
                 </div>
                 <div className="user-info">
                   <span className="user-name">{user.name || user.username}</span>
-                  <span className="user-role">{user.role || 'Admin'}</span>
+                  <span className="user-role">{user.role || (isAdmin ? 'Admin' : 'User')}</span>
                 </div>
                 <FaChevronDown 
                   size={12} 
@@ -121,7 +253,7 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
                       <strong>{user.name || user.username}</strong>
                       <span>{user.email || 'admin@trapick.com'}</span>
                       <small className="user-role-badge">
-                        {user.role || 'Administrator'}
+                        {user.role || (isAdmin ? 'Administrator' : 'User')}
                       </small>
                     </div>
                   </div>
@@ -167,6 +299,13 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
           )}
         </div>
       </div>
+
+      {/* 🔄 NEW: Sync Status Notification */}
+      {syncStatus && (
+        <div className={`sync-notification ${syncStatus.type}`}>
+          {syncStatus.message}
+        </div>
+      )}
     </header>
   );
 };

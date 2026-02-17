@@ -70,4 +70,6 @@ urlpatterns = [
     path('api/auth/register/', api_views.RegisterAPI.as_view(), name='register'),
     path('api/auth/check-auth/', api_views.CheckAuthAPI.as_view(), name='check_auth'),
     path('api/sync/', api_views.DataSyncAPI.as_view(), name='data_sync'),
+    path('api/sync/status/', api_views.SyncStatusAPI.as_view(), name='sync_status'),
+    path('api/sync/execute/', api_views.SyncExecuteAPI.as_view(), name='sync_execute'),
 ]
