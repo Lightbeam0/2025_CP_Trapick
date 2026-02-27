@@ -1,6 +1,6 @@
 # trapickapp/urls.py - REORGANIZED AND CLEANED
 from django.urls import path, re_path
-from . import api_views
+from . import api_views, peak_hours_api
 
 urlpatterns = [
     # ==================== VIDEO PROCESSING ENDPOINTS ====================
@@ -72,4 +72,12 @@ urlpatterns = [
     path('api/sync/', api_views.DataSyncAPI.as_view(), name='data_sync'),
     path('api/sync/status/', api_views.SyncStatusAPI.as_view(), name='sync_status'),
     path('api/sync/execute/', api_views.SyncExecuteAPI.as_view(), name='sync_execute'),
+    path('api/peak-hours/analysis/', peak_hours_api.PeakHoursAnalysisAPI.as_view(), name='peak_hours_analysis'),
+    path('api/peak-hours/detail/', peak_hours_api.PeakHoursDetailAPI.as_view(), name='peak_hours_detail'),
+    path('api/peak-hours/refresh-cache/',  peak_hours_api.PeakHoursRefreshCacheAPI.as_view(), name='peak_hours_refresh_cache'),
+    path('api/groups/<uuid:group_id>/aggregation/',  api_views.GroupAggregationAPI.as_view(), name='group_aggregation'),
+    path('api/groups/<uuid:group_id>/timeline/', api_views.GroupTimelineAPI.as_view(), name='group_timeline'),
+    path('api/peak-hours/enhanced/',api_views.EnhancedPeakHoursAPI.as_view(),name='enhanced_peak_hours'),
+    path('api/data-quality/report/',api_views.DataQualityReportAPI.as_view(),name='data_quality_report'),
+    path('api/videos/<uuid:video_id>/reset-reprocess/', api_views.VideoResetAndReprocessAPI.as_view(), name='video_reset_reprocess'),
 ]

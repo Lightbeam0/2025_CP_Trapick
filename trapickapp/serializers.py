@@ -1,4 +1,4 @@
-# trapickapp/serializers.py - FIXED VideoFileSerializer
+# trapickapp/serializers.py
 
 from rest_framework import serializers
 from .models import (
@@ -10,23 +10,44 @@ from .models import (
 
 class ProcessingProfileSerializer(serializers.ModelSerializer):
     location_count = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = ProcessingProfile
         fields = [
-            'id', 'name', 'display_name', 'description', 
+            'id', 'name', 'display_name', 'description',
             'detector_type',
             'enable_congestion_detection',
             'congestion_threshold',
             'road_type',
+            'config_parameters',   # ← ADD THIS so frontend can read it
             'active',
             'created_at',
             'location_count'
         ]
         read_only_fields = ['id', 'created_at', 'location_count']
-    
+
     def get_location_count(self, obj):
         return obj.locations.count()
+
+    def create(self, validated_data):
+        # Mirror direct model fields into config_parameters so both stay in sync
+        config = validated_data.get('config_parameters', {}) or {}
+        config['enable_congestion_detection'] = validated_data.get('enable_congestion_detection', True)
+        config['congestion_threshold'] = validated_data.get('congestion_threshold', 5)
+        validated_data['config_parameters'] = config
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        # Mirror direct model fields into config_parameters on update too
+        config = validated_data.get('config_parameters', instance.config_parameters or {})
+        config['enable_congestion_detection'] = validated_data.get(
+            'enable_congestion_detection', instance.enable_congestion_detection
+        )
+        config['congestion_threshold'] = validated_data.get(
+            'congestion_threshold', instance.congestion_threshold
+        )
+        validated_data['config_parameters'] = config
+        return super().update(instance, validated_data)
 
 
 class LocationSerializer(serializers.ModelSerializer):

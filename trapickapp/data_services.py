@@ -1,43 +1,37 @@
-# trapickapp/services.py
+# trapickapp/data_services.py
 from django.db.models import Count, Avg, Max, Min, Q, F
 from django.utils import timezone
 from datetime import timedelta, datetime
 from .models import Location, TrafficAnalysis, Detection, VideoFile, HourlyTrafficSummary, DailyTrafficSummary, TrafficPrediction
 import numpy as np
+from .services.aggregation_service import VideoAggregationService
+from .peak_hours_service import peak_hours_service
+from .models import LocationDateGroup
 
 def calculate_real_weekly_data(location_id='all'):
-    """Calculate weekly vehicle counts from all available data with location filtering"""
     try:
-        # Build base query
         base_query = Q()
         
-        # Add location filter if specified
         if location_id != 'all' and location_id is not None:
             base_query &= Q(location_id=location_id)
         
-        # Get analyses with location filter
         analyses = TrafficAnalysis.objects.filter(base_query)
         
         if not analyses.exists():
             print(f"No traffic analyses found for location: {location_id}")
             return [0, 0, 0, 0, 0, 0, 0]
         
-        # Initialize daily counts (Monday=0 to Sunday=6)
         daily_counts = [0, 0, 0, 0, 0, 0, 0]
         total_analyses = 0
         
         for analysis in analyses:
-            # Try to get date from different sources in priority order:
             date_to_use = None
             
-            # 1. First try video file date
             if analysis.video_file and analysis.video_file.video_date:
                 date_to_use = analysis.video_file.video_date
-            # 2. Finally use analysis date
             else:
                 date_to_use = analysis.analyzed_at.date()
             
-            # Calculate day of week and add to counts
             day_of_week = date_to_use.weekday()
             daily_counts[day_of_week] += analysis.total_vehicles
             total_analyses += 1
@@ -52,22 +46,18 @@ def calculate_real_weekly_data(location_id='all'):
         return [0, 0, 0, 0, 0, 0, 0]
     
 def calculate_real_vehicle_stats(period='today', location_id=None, date_range='last_7_days'):
-    """Calculate actual vehicle statistics from TrafficAnalysis with filtering"""
     try:
         from django.db.models import Q
         from datetime import timedelta
         
         print(f"🔄 Calculating vehicle stats - period: {period}, location: {location_id}, date_range: {date_range}")
         
-        # Build base query
         base_query = Q()
         
-        # Add location filter
         if location_id and location_id != 'all':
             base_query &= Q(location_id=location_id)
             print(f"📍 Filtering by location: {location_id}")
         
-        # Add date range filter
         if date_range != 'all':
             if date_range == 'last_7_days':
                 start_date = timezone.now() - timedelta(days=7)
@@ -76,16 +66,14 @@ def calculate_real_vehicle_stats(period='today', location_id=None, date_range='l
             elif date_range == 'last_90_days':
                 start_date = timezone.now() - timedelta(days=90)
             else:
-                start_date = timezone.now() - timedelta(days=7)  # Default
+                start_date = timezone.now() - timedelta(days=7)
             
             base_query &= Q(analyzed_at__gte=start_date)
             print(f"📅 Filtering by date range: {date_range} from {start_date}")
         
-        # Get analyses with filters applied
         analyses = TrafficAnalysis.objects.filter(base_query)
         print(f"📊 Total filtered analyses: {analyses.count()}")
         
-        # Debug: Print first few analyses
         for i, analysis in enumerate(analyses[:3]):
             print(f"🔍 Analysis {i+1}: ID={analysis.id}, Vehicles={analysis.total_vehicles}, Date={analysis.analyzed_at}")
         
@@ -94,7 +82,6 @@ def calculate_real_vehicle_stats(period='today', location_id=None, date_range='l
             return get_fallback_data("No traffic analyses found with current filters")
         
         def get_period_counts(period_type):
-            """Get vehicle counts for a specific period"""
             if period_type == 'today':
                 target_date = timezone.now().date()
                 period_analyses = analyses.filter(analyzed_at__date=target_date)
@@ -104,7 +91,6 @@ def calculate_real_vehicle_stats(period='today', location_id=None, date_range='l
                 period_analyses = analyses.filter(analyzed_at__date=target_date)
                 print(f"📅 Yesterday analyses: {period_analyses.count()} on {target_date}")
             else:
-                # For week/month, use all data for now
                 period_analyses = analyses
                 print(f"📅 {period_type} analyses: using all {period_analyses.count()} analyses")
             
@@ -117,17 +103,14 @@ def calculate_real_vehicle_stats(period='today', location_id=None, date_range='l
                 'others': sum(a.other_count for a in period_analyses)
             }
         
-        # Get data for different periods
         today_data = get_period_counts('today')
         yesterday_data = get_period_counts('yesterday')
         week_data = get_period_counts('week')
         month_data = get_period_counts('month')
         
-        # Calculate summary statistics
         total_analyses = analyses.count()
         total_vehicles = sum(a.total_vehicles for a in analyses)
         
-        # Count unique days with analyses
         unique_days = analyses.dates('analyzed_at', 'day').count()
         average_daily = total_vehicles / max(1, unique_days)
         
@@ -144,7 +127,7 @@ def calculate_real_vehicle_stats(period='today', location_id=None, date_range='l
             'yesterday': yesterday_data,
             'week': week_data,
             'month': month_data,
-            'all': today_data,  # Fallback
+            'all': today_data,
             'summary': {
                 'total_analyses': total_analyses,
                 'average_daily': round(average_daily),
@@ -164,7 +147,6 @@ def calculate_real_vehicle_stats(period='today', location_id=None, date_range='l
         return get_fallback_data(f"Error: {str(e)}")
 
 def get_fallback_data(reason):
-    """Return fallback data structure"""
     fallback_data = {
         'cars': 0, 'trucks': 0, 'buses': 0, 'motorcycles': 0, 'bicycles': 0, 'others': 0
     }
@@ -185,14 +167,11 @@ def get_fallback_data(reason):
     }
         
 def calculate_real_congestion_data(location_id='all'):
-    """Calculate real congestion data from recent TrafficAnalysis with location filtering"""
     try:
-        # Build base query
         base_query = Q()
         if location_id != 'all' and location_id is not None:
             base_query &= Q(location_id=location_id)
         
-        # Get recent analyses with locations
         recent_analyses = TrafficAnalysis.objects.filter(
             base_query,
             location__isnull=False
@@ -201,14 +180,11 @@ def calculate_real_congestion_data(location_id='all'):
         congestion_data = []
         
         for analysis in recent_analyses:
-            # Calculate vehicles per hour
             video_duration_hours = analysis.video_file.duration_seconds / 3600 if analysis.video_file and analysis.video_file.duration_seconds else 1
             vehicles_per_hour = analysis.total_vehicles / video_duration_hours if video_duration_hours > 0 else 0
             
-            # Use actual congestion level from analysis
             congestion_level = analysis.congestion_level.capitalize()
             
-            # Determine trend from traffic pattern
             trend = 'stable'
             if analysis.traffic_pattern == 'increasing':
                 trend = 'increasing'
@@ -233,33 +209,26 @@ def calculate_real_congestion_data(location_id='all'):
         return []
     
 def calculate_hourly_traffic_summary(location_id='all'):
-    """Calculate hourly traffic patterns for today - SQLite compatible with location filtering"""
     today = timezone.now().date()
     today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
     today_end = today_start + timedelta(days=1)
     
-    # Build base query
     base_query = Q(timestamp__range=(today_start, today_end))
     if location_id != 'all' and location_id is not None:
         base_query &= Q(analysis__location_id=location_id)
     
-    # Get all detections for today with location filter
     detections = Detection.objects.filter(base_query)
     
-    # Manual grouping by hour for SQLite compatibility
     hourly_counts = {}
     for detection in detections:
         hour = detection.timestamp.hour
         hourly_counts[hour] = hourly_counts.get(hour, 0) + 1
     
-    # Convert to format expected by frontend
     hourly_summary = {f"{hour:02d}:00": count for hour, count in sorted(hourly_counts.items())}
     
     return hourly_summary
 
 def get_system_overview_stats(location_id='all'):
-    """Get real system overview statistics with location filtering"""
-    # Build base queries
     video_query = Q()
     analysis_query = Q()
     
@@ -274,14 +243,12 @@ def get_system_overview_stats(location_id='all'):
     ).count()
     total_analyses = TrafficAnalysis.objects.filter(analysis_query).count()
     
-    # Recent activity (last 24 hours)
     one_day_ago = timezone.now() - timedelta(hours=24)
     recent_analyses = TrafficAnalysis.objects.filter(
         analysis_query,
         analyzed_at__gte=one_day_ago
     )
     
-    # Calculate congested roads (analyses with high congestion)
     congested_roads = TrafficAnalysis.objects.filter(
         analysis_query,
         congestion_level__in=['high', 'severe']
@@ -297,8 +264,6 @@ def get_system_overview_stats(location_id='all'):
     }
 
 def get_vehicle_type_distribution(location_id='all'):
-    """Get distribution of vehicle types across all detections with location filtering"""
-    # Build base query
     base_query = Q()
     if location_id != 'all' and location_id is not None:
         base_query &= Q(analysis__location_id=location_id)
@@ -314,18 +279,14 @@ def get_vehicle_type_distribution(location_id='all'):
     return {item['vehicle_type__name']: item['count'] for item in distribution}
 
 def get_peak_hours_analysis(location_id='all'):
-    """Get peak hours analysis for each location from TrafficAnalysis data with location filtering"""
     try:
-        # Build base query
         base_query = Q()
         if location_id != 'all' and location_id is not None:
             base_query &= Q(location_id=location_id)
         
-        # Get all analyses with location filter
         all_analyses = TrafficAnalysis.objects.filter(base_query)
         print(f"🔍 Found {all_analyses.count()} total analyses for location {location_id}")
         
-        # If no analyses at all, return helpful message
         if not all_analyses.exists():
             print("❌ No analyses found for peak hours")
             return [
@@ -339,14 +300,12 @@ def get_peak_hours_analysis(location_id='all'):
                 }
             ]
         
-        # If location is specified, return data for that location
         if location_id != 'all':
             try:
                 location = Location.objects.get(id=location_id)
                 location_analyses = all_analyses.filter(location=location)
                 
                 if location_analyses.exists():
-                    # Calculate real peak hours from actual data
                     morning_peak, evening_peak = calculate_real_peak_hours(location_analyses)
                     morning_volume, evening_volume = calculate_real_peak_volumes(location_analyses, morning_peak, evening_peak)
                     
@@ -361,7 +320,6 @@ def get_peak_hours_analysis(location_id='all'):
                         'total_analysis_vehicles': total_vehicles
                     }]
                 else:
-                    # No data for this specific location
                     return [{
                         'name': f'{location.display_name} - No Data',
                         'morning_peak': 'No data',
@@ -381,7 +339,6 @@ def get_peak_hours_analysis(location_id='all'):
                     'total_analysis_vehicles': 0
                 }]
         
-        # If all locations requested, aggregate by location
         locations = Location.objects.filter(
             trafficanalysis__isnull=False
         ).distinct()
@@ -390,14 +347,11 @@ def get_peak_hours_analysis(location_id='all'):
         
         areas_data = []
         
-        # If we have locations with data, analyze each one
         if locations.exists():
             for location in locations:
-                # Get analyses for this location
                 location_analyses = all_analyses.filter(location=location)
                 
                 if location_analyses.exists():
-                    # Calculate real peak hours from actual data
                     morning_peak, evening_peak = calculate_real_peak_hours(location_analyses)
                     morning_volume, evening_volume = calculate_real_peak_volumes(location_analyses, morning_peak, evening_peak)
                     
@@ -413,7 +367,6 @@ def get_peak_hours_analysis(location_id='all'):
                     })
                     print(f"✅ Added peak data for {location.display_name}: {morning_peak}, {evening_peak}")
         
-        # If no location-specific data but we have analyses, create general analysis
         if not areas_data and all_analyses.exists():
             print("📊 Creating general peak analysis from all analyses")
             morning_peak, evening_peak = calculate_real_peak_hours(all_analyses)
@@ -430,7 +383,6 @@ def get_peak_hours_analysis(location_id='all'):
                 'total_analysis_vehicles': total_vehicles
             })
         
-        # Final fallback if still no data
         if not areas_data:
             print("❌ No peak data could be generated")
             areas_data.append({
@@ -461,11 +413,9 @@ def get_peak_hours_analysis(location_id='all'):
         ]
 
 def calculate_real_peak_hours(analyses):
-    """Calculate actual morning and evening peak hours from analyses"""
     try:
         print(f"📈 Calculating peak hours from {analyses.count()} analyses")
         
-        # Group by hour of analysis (as proxy for traffic hour)
         hourly_totals = {}
         
         for analysis in analyses:
@@ -475,14 +425,11 @@ def calculate_real_peak_hours(analyses):
         print(f"🕒 Hourly totals: {hourly_totals}")
         
         if not hourly_totals:
-            return "7:30 - 9:00 AM", "4:30 - 6:30 PM"  # Default peaks
+            return "7:30 - 9:00 AM", "4:30 - 6:30 PM"
         
-        # Find morning peak (6 AM - 10 AM)
         morning_hours = {h: c for h, c in hourly_totals.items() if 6 <= h <= 10}
-        # Find evening peak (4 PM - 8 PM)  
         evening_hours = {h: c for h, c in hourly_totals.items() if 16 <= h <= 20}
         
-        # Calculate morning peak
         if morning_hours:
             peak_hour = max(morning_hours.items(), key=lambda x: x[1])[0]
             morning_peak = format_peak_time(peak_hour, "morning")
@@ -491,7 +438,6 @@ def calculate_real_peak_hours(analyses):
             morning_peak = "7:30 - 9:00 AM"
             print("🌅 Using default morning peak")
         
-        # Calculate evening peak
         if evening_hours:
             peak_hour = max(evening_hours.items(), key=lambda x: x[1])[0]
             evening_peak = format_peak_time(peak_hour, "evening")
@@ -509,13 +455,12 @@ def calculate_real_peak_hours(analyses):
         return "7:30 - 9:00 AM", "4:30 - 6:30 PM"
 
 def format_peak_time(hour, period):
-    """Format peak hour into readable time range"""
     if period == "morning":
-        start_hour = max(6, hour - 1)  # 1 hour before peak
-        end_hour = min(11, hour + 1)   # 1 hour after peak
-    else:  # evening
-        start_hour = max(15, hour - 1)  # 1 hour before peak
-        end_hour = min(21, hour + 1)    # 1 hour after peak
+        start_hour = max(6, hour - 1)
+        end_hour = min(11, hour + 1)
+    else:
+        start_hour = max(15, hour - 1)
+        end_hour = min(21, hour + 1)
     
     start_period = "AM" if start_hour < 12 else "PM"
     end_period = "AM" if end_hour < 12 else "PM"
@@ -526,7 +471,6 @@ def format_peak_time(hour, period):
     return f"{start_display}:00 - {end_display}:00 {start_period}"
 
 def calculate_real_peak_volumes(analyses, morning_peak, evening_peak):
-    """Calculate realistic peak volumes based on actual data"""
     try:
         total_vehicles = sum(analysis.total_vehicles for analysis in analyses)
         analysis_count = analyses.count()
@@ -534,14 +478,11 @@ def calculate_real_peak_volumes(analyses, morning_peak, evening_peak):
         if analysis_count == 0:
             return 0, 0
         
-        # Calculate average vehicles per analysis
         avg_per_analysis = total_vehicles / analysis_count
         
-        # Estimate peak volumes (morning typically 30-40%, evening 25-35% of daily traffic)
-        morning_volume = int(avg_per_analysis * 0.35)  # 35% in morning peak
-        evening_volume = int(avg_per_analysis * 0.30)  # 30% in evening peak
+        morning_volume = int(avg_per_analysis * 0.35)
+        evening_volume = int(avg_per_analysis * 0.30)
         
-        # Ensure minimum reasonable values
         morning_volume = max(10, morning_volume)
         evening_volume = max(10, evening_volume)
         
@@ -555,22 +496,17 @@ def calculate_real_peak_volumes(analyses, morning_peak, evening_peak):
         return 0, 0
 
 def generate_traffic_predictions(location_id=None, days_ahead=7):
-    """Generate traffic predictions based on actual TrafficAnalysis data with hourly patterns"""
     from .models import TrafficPrediction, TrafficAnalysis, Detection
     from django.db.models import Count, Avg, Q
     
-    # Clear old predictions
     TrafficPrediction.objects.all().delete()
     
-    # Get actual historical data from TrafficAnalysis and Detections
     thirty_days_ago = timezone.now() - timedelta(days=30)
     
-    # Build base query
     historical_query = Q(analyzed_at__gte=thirty_days_ago)
     if location_id:
         historical_query &= Q(location_id=location_id)
     
-    # Get analyses with their detections for more granular data
     historical_analyses = TrafficAnalysis.objects.filter(historical_query)
     
     if not historical_analyses.exists():
@@ -579,21 +515,17 @@ def generate_traffic_predictions(location_id=None, days_ahead=7):
     
     predictions = []
     
-    # Analyze historical patterns by day of week and hour
     hourly_patterns = analyze_hourly_traffic_patterns(historical_analyses, location_id)
     
-    # Generate predictions for next days
     for day_offset in range(1, days_ahead + 1):
         prediction_date = timezone.now().date() + timedelta(days=day_offset)
         day_of_week = prediction_date.weekday()
         
         for hour in range(24):
-            # Get prediction based on historical patterns
             predicted_count, confidence = predict_hourly_traffic(
                 hourly_patterns, day_of_week, hour, historical_analyses
             )
             
-            # Determine congestion based on actual traffic patterns
             congestion_thresholds = calculate_congestion_thresholds(hourly_patterns)
             predicted_congestion = determine_congestion_level(predicted_count, congestion_thresholds)
             
@@ -616,22 +548,18 @@ def generate_traffic_predictions(location_id=None, days_ahead=7):
     return predictions
 
 def analyze_hourly_traffic_patterns(historical_analyses, location_id):
-    """Analyze traffic patterns by day of week and hour"""
     from django.db.models import Count, Avg, Q
     
     patterns = {}
     
-    # Analyze each day of week (0=Monday, 6=Sunday)
     for day in range(7):
         patterns[day] = {}
         
-        # Get analyses for this specific day of week
         day_analyses = historical_analyses.filter(
-            analyzed_at__week_day=((day + 1) % 7) + 1  # Convert to Django week_day (1=Sunday)
+            analyzed_at__week_day=((day + 1) % 7) + 1
         )
         
         if not day_analyses.exists():
-            # If no specific day data, use overall average
             overall_avg = historical_analyses.aggregate(avg=Avg('total_vehicles'))['avg'] or 0
             for hour in range(24):
                 patterns[day][hour] = {
@@ -641,20 +569,16 @@ def analyze_hourly_traffic_patterns(historical_analyses, location_id):
                 }
             continue
         
-        # Analyze hourly patterns for this day
         for hour in range(24):
-            # Get analyses around this hour (considering video recording times)
             hour_start = hour
             hour_end = hour + 1
             
-            # Find analyses that likely contain this hour based on their metadata
             relevant_analyses = []
             for analysis in day_analyses:
                 if has_hourly_data(analysis, hour):
                     relevant_analyses.append(analysis)
             
             if relevant_analyses:
-                # Calculate average for this hour
                 avg_vehicles = np.mean([a.total_vehicles for a in relevant_analyses])
                 confidence = min(0.9, len(relevant_analyses) * 0.1)
                 
@@ -664,7 +588,6 @@ def analyze_hourly_traffic_patterns(historical_analyses, location_id):
                     'data_points': len(relevant_analyses)
                 }
             else:
-                # Fallback to daily average with hourly pattern
                 day_avg = day_analyses.aggregate(avg=Avg('total_vehicles'))['avg'] or 0
                 patterns[day][hour] = {
                     'avg_vehicles': day_avg * get_hourly_pattern_factor(hour),
@@ -675,31 +598,24 @@ def analyze_hourly_traffic_patterns(historical_analyses, location_id):
     return patterns
 
 def has_hourly_data(analysis, target_hour):
-    """Check if analysis likely contains data for the target hour"""
-    # If analysis has video file with time information, use it
     if analysis.video_file and analysis.video_file.video_start_time:
         try:
             video_hour = analysis.video_file.video_start_time.hour
-            # Consider analyses starting within 2 hours of target hour as relevant
             return abs(video_hour - target_hour) <= 2
         except:
             pass
     
-    # Fallback: use analysis timestamp hour
     analysis_hour = analysis.analyzed_at.hour
     return abs(analysis_hour - target_hour) <= 2
 
 def predict_hourly_traffic(hourly_patterns, day_of_week, hour, historical_analyses):
-    """Predict traffic for specific day and hour"""
     day_pattern = hourly_patterns.get(day_of_week, {})
     hour_data = day_pattern.get(hour, {})
     
     if hour_data and hour_data.get('data_points', 0) >= 3:
-        # Use specific hour pattern if we have enough data
         predicted_count = hour_data['avg_vehicles']
         confidence = hour_data['confidence']
     else:
-        # Fallback to overall patterns
         overall_avg = historical_analyses.aggregate(avg=Avg('total_vehicles'))['avg'] or 50
         predicted_count = overall_avg * get_hourly_pattern_factor(hour)
         confidence = 0.4
@@ -707,7 +623,6 @@ def predict_hourly_traffic(hourly_patterns, day_of_week, hour, historical_analys
     return round(predicted_count), confidence
 
 def calculate_congestion_thresholds(hourly_patterns):
-    """Calculate dynamic congestion thresholds based on historical data"""
     all_volumes = []
     for day_data in hourly_patterns.values():
         for hour_data in day_data.values():
@@ -728,7 +643,6 @@ def calculate_congestion_thresholds(hourly_patterns):
     }
 
 def determine_congestion_level(vehicle_count, thresholds):
-    """Determine congestion level based on dynamic thresholds"""
     if vehicle_count >= thresholds['severe']:
         return 'severe'
     elif vehicle_count >= thresholds['high']:
@@ -741,25 +655,18 @@ def determine_congestion_level(vehicle_count, thresholds):
         return 'very_low'
 
 def get_hourly_pattern_factor(hour):
-    """Get traffic pattern factor based on hour of day"""
-    # Morning peak: 7-9 AM
     if 7 <= hour <= 9:
         return 1.8
-    # Evening peak: 4-7 PM
     elif 16 <= hour <= 19:
         return 1.6
-    # Mid-day: 10 AM - 3 PM
     elif 10 <= hour <= 15:
         return 1.2
-    # Late night: 12 AM - 5 AM
     elif hour <= 5:
         return 0.3
-    # Other hours
     else:
         return 0.8
 
 def get_traffic_predictions_for_date(date=None, location_id=None):
-    """Get predictions for a specific date (default: tomorrow)"""
     if date is None:
         date = timezone.now().date() + timedelta(days=1)
     
@@ -771,18 +678,15 @@ def get_traffic_predictions_for_date(date=None, location_id=None):
     return predictions.order_by('hour_of_day')
 
 def get_peak_prediction_hours(date=None, location_id=None):
-    """Get peak traffic hours from predictions"""
     predictions = get_traffic_predictions_for_date(date, location_id)
     
     if not predictions.exists():
         return []
     
-    # Find hours with highest predicted traffic
     hourly_predictions = {}
     for pred in predictions:
         hourly_predictions[pred.hour_of_day] = pred.predicted_vehicle_count
     
-    # Get top 3 peak hours
     peak_hours = sorted(hourly_predictions.items(), key=lambda x: x[1], reverse=True)[:3]
     
     return [
@@ -795,7 +699,6 @@ def get_peak_prediction_hours(date=None, location_id=None):
     ]
 
 def auto_group_all_videos():
-    """Automatically group all ungrouped videos by location and date"""
     from .models import VideoFile, LocationDateGroup, TrafficAnalysis
     
     ungrouped_videos = VideoFile.objects.filter(
@@ -808,23 +711,19 @@ def auto_group_all_videos():
     
     for video in ungrouped_videos:
         try:
-            # Get location from traffic analysis
             if hasattr(video, 'traffic_analysis') and video.traffic_analysis.location:
                 location = video.traffic_analysis.location
                 
-                # Use video date or fallback to analysis date
                 if video.video_date:
                     group_date = video.video_date
                 else:
                     group_date = video.traffic_analysis.analyzed_at.date()
                 
-                # Get or create group for this location and date
                 group, created = LocationDateGroup.objects.get_or_create(
                     location=location,
                     date=group_date
                 )
                 
-                # Add video to group
                 video.location_date_group = group
                 video.save()
                 
@@ -846,7 +745,6 @@ def auto_group_all_videos():
     }
 
 def get_location_groups_with_videos():
-    """Get all location groups with their videos sorted by time"""
     from .models import LocationDateGroup
     from django.db.models import Prefetch
     
@@ -885,3 +783,155 @@ def get_location_groups_with_videos():
         })
     
     return result
+
+def get_enhanced_peak_hours_analysis(location_id='all', days_back=30, include_warnings=True):
+    try:
+        from .peak_hours_service import peak_hours_service
+        result = peak_hours_service.get_peak_hours_analysis(
+            location_id=location_id,
+            days_back=days_back,
+            include_warnings=include_warnings
+        )
+        return result
+    except Exception as e:
+        print(f"❌ Error in get_enhanced_peak_hours_analysis: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e),
+            'peak_hours': []
+        }
+
+def get_location_peak_summary(location_id):
+    try:
+        from .peak_hours_service import peak_hours_service
+        return peak_hours_service.get_location_summary(location_id)
+    except Exception as e:
+        print(f"❌ Error in get_location_peak_summary: {e}")
+        return {
+            'location_id': location_id,
+            'has_data': False,
+            'error': str(e)
+        }
+
+def get_peak_hour_trends(location_id='all', weeks=4):
+    try:
+        from .peak_hours_service import peak_hours_service
+        return peak_hours_service.get_peak_hour_trends(
+            location_id=location_id,
+            weeks=weeks
+        )
+    except Exception as e:
+        print(f"❌ Error in get_peak_hour_trends: {e}")
+        return {
+            'location_id': location_id,
+            'weeks_analyzed': 0,
+            'trends': [],
+            'trend_direction': 'error'
+        }
+
+def get_group_aggregation(group_id):
+    try:
+        group = LocationDateGroup.objects.get(id=group_id)
+        service = VideoAggregationService(group)
+        return service.get_aggregation_summary()
+    except LocationDateGroup.DoesNotExist:
+        return {'error': 'Group not found'}
+    except Exception as e:
+        print(f"❌ Error in get_group_aggregation: {e}")
+        return {'error': str(e)}
+
+def get_group_timeline(group_id):
+    try:
+        group = LocationDateGroup.objects.get(id=group_id)
+        service = VideoAggregationService(group)
+        return service.generate_timeline_view()
+    except LocationDateGroup.DoesNotExist:
+        return {'error': 'Group not found'}
+    except Exception as e:
+        print(f"❌ Error in get_group_timeline: {e}")
+        return {'error': str(e)}
+
+def get_data_quality_report(location_id='all', days_back=30):
+    try:
+        cutoff_date = timezone.now().date() - timedelta(days=days_back)
+        
+        groups = LocationDateGroup.objects.filter(
+            date__gte=cutoff_date
+        ).select_related('location')
+        
+        if location_id != 'all':
+            groups = groups.filter(location_id=location_id)
+        
+        quality_report = {
+            'total_groups': groups.count(),
+            'groups_with_issues': 0,
+            'total_gaps': 0,
+            'total_overlaps': 0,
+            'average_confidence': 0,
+            'issues_by_location': []
+        }
+        
+        confidence_scores = []
+        
+        for group in groups:
+            service = VideoAggregationService(group)
+            weighted = service.weighted_aggregation()
+            analysis = service.analyze_segments()
+            
+            confidence_scores.append(weighted['confidence_score'])
+            
+            if weighted['has_gaps'] or weighted['has_overlaps']:
+                quality_report['groups_with_issues'] += 1
+                quality_report['total_gaps'] += len(analysis.get('gaps', []))
+                quality_report['total_overlaps'] += len(analysis.get('overlaps', []))
+                
+                quality_report['issues_by_location'].append({
+                    'location': group.location.display_name,
+                    'date': group.date.isoformat(),
+                    'confidence': weighted['confidence_score'],
+                    'gaps': len(analysis.get('gaps', [])),
+                    'overlaps': len(analysis.get('overlaps', [])),
+                    'warnings': weighted['warnings']
+                })
+        
+        if confidence_scores:
+            quality_report['average_confidence'] = round(
+                sum(confidence_scores) / len(confidence_scores), 1
+            )
+        
+        return quality_report
+        
+    except Exception as e:
+        print(f"❌ Error in get_data_quality_report: {e}")
+        return {'error': str(e)}
+
+def migrate_to_enhanced_peak_hours():
+    from .models import LocationDateGroup
+    
+    groups = LocationDateGroup.objects.all()
+    updated = 0
+    errors = 0
+    
+    print(f"🔄 Migrating {groups.count()} groups to enhanced peak hours...")
+    
+    for group in groups:
+        try:
+            service = VideoAggregationService(group)
+            
+            weighted = service.weighted_aggregation()
+            peaks = service.peak_hour_analysis()
+            
+            print(f"  ✅ {group.location.display_name} - {group.date}: {weighted['total_vehicles']} vehicles, {weighted['confidence_score']}% confidence")
+            updated += 1
+            
+        except Exception as e:
+            print(f"  ❌ Error migrating {group.id}: {e}")
+            errors += 1
+    
+    return {
+        'total_groups': groups.count(),
+        'updated': updated,
+        'errors': errors
+    }

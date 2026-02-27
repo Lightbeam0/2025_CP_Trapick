@@ -35,6 +35,14 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.pdfgen import canvas
 import openpyxl
+from django.db.models import Sum, Avg
+from datetime import datetime, time, timedelta
+from collections import defaultdict
+import numpy as np
+
+from .services.aggregation_service import VideoAggregationService
+from .peak_hours_service import peak_hours_service
+
 
 from .models import (
     VideoFile,
@@ -271,7 +279,7 @@ class LocationDateGroupListAPI(APIView):
 
 
 class LocationDateGroupDetailAPI(APIView):
-    """Handle individual location-date group operations"""
+    """Handle individual location-date group operations with coverage data"""
     
     def get_object(self, group_id):
         try:
@@ -283,33 +291,59 @@ class LocationDateGroupDetailAPI(APIView):
         group = self.get_object(group_id)
         if group is None:
             return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
-        serializer = LocationDateGroupSerializer(group)
-        return Response(serializer.data)
-
-    def put(self, request, group_id):
-        group = self.get_object(group_id)
-        if group is None:
-            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
         
-        serializer = LocationDateGroupSerializer(group, data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    def delete(self, request, group_id):
-        group = self.get_object(group_id)
-        if group is None:
-            return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Get videos
+        videos = group.videos.filter(processing_status='completed').order_by('video_start_time')
         
-        # Check if group has videos
-        if group.videos.exists():
-            return Response({
-                'error': 'Cannot delete group that contains videos. Remove videos first.'
-            }, status=status.HTTP_400_BAD_REQUEST)
+        # Get detailed time range with coverage info
+        time_range = group.get_detailed_time_range()
         
-        group.delete()
-        return Response({'message': 'Group deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+        # Get coverage summary
+        coverage_summary = group.get_coverage_summary()
+        
+        # Get hourly distribution
+        hourly_dist = group.hourly_distribution or group.calculate_hourly_distribution()
+        
+        # Prepare video data
+        videos_data = []
+        for video in videos:
+            analysis = None
+            if hasattr(video, 'traffic_analysis'):
+                analysis = {
+                    'total_vehicles': video.traffic_analysis.total_vehicles,
+                    'congestion_level': video.traffic_analysis.congestion_level,
+                    'car_count': video.traffic_analysis.car_count,
+                    'truck_count': video.traffic_analysis.truck_count,
+                    'motorcycle_count': video.traffic_analysis.motorcycle_count,
+                    'bus_count': video.traffic_analysis.bus_count
+                }
+            
+            videos_data.append({
+                'id': video.id,
+                'filename': video.filename,
+                'title': video.title,
+                'start_time': video.video_start_time.strftime('%H:%M') if video.video_start_time else None,
+                'end_time': video.video_end_time.strftime('%H:%M') if video.video_end_time else None,
+                'duration_minutes': video.duration_seconds / 60 if video.duration_seconds else None,
+                'analysis': analysis
+            })
+        
+        # Prepare response
+        response_data = {
+            'id': group.id,
+            'location': {
+                'id': group.location.id,
+                'name': group.location.display_name
+            },
+            'date': group.date.isoformat(),
+            'videos': videos_data,
+            'time_range': time_range,
+            'coverage_summary': coverage_summary,
+            'hourly_distribution': hourly_dist,
+            'total_vehicles': group.get_total_vehicles()
+        }
+        
+        return Response(response_data)
 
 
 class GroupVideosAPI(APIView):
@@ -389,18 +423,22 @@ class UngroupedVideosAPI(APIView):
 
 
 class GroupAnalysisAPI(APIView):
-    """Get aggregated analysis for a location-date group"""
+    """Get aggregated analysis for a location-date group with coverage info"""
     
     def get(self, request, group_id):
         try:
             group = LocationDateGroup.objects.get(id=group_id)
-            videos = group.videos.filter(processing_status='completed')
             
-            # Get all analyses for videos in this group
+            # Ensure coverage metrics are up to date
+            coverage = group.calculate_coverage_metrics()
+            hourly = group.calculate_hourly_distribution()
+            
+            videos = group.videos.filter(processing_status='completed')
             analyses = TrafficAnalysis.objects.filter(video_file__in=videos)
             
             if not analyses.exists():
-                return Response({'error': 'No analyses found for this group'}, status=status.HTTP_404_NOT_FOUND)
+                return Response({'error': 'No analyses found for this group'}, 
+                              status=status.HTTP_404_NOT_FOUND)
             
             # Calculate aggregated statistics
             aggregated_data = {
@@ -413,7 +451,9 @@ class GroupAnalysisAPI(APIView):
                 'other_count': sum(analysis.other_count for analysis in analyses),
                 'total_processing_time': sum(analysis.processing_time_seconds for analysis in analyses),
                 'video_count': videos.count(),
-                'time_range': self.get_time_range(videos),
+                'time_range': group.get_detailed_time_range(),
+                'coverage': coverage,
+                'hourly_distribution': hourly,
                 'average_congestion': self.get_average_congestion(analyses)
             }
             
@@ -422,39 +462,36 @@ class GroupAnalysisAPI(APIView):
         except LocationDateGroup.DoesNotExist:
             return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
     
-    def get_time_range(self, videos):
-        """Calculate time range for videos in group"""
-        times = []
-        for video in videos:
-            if video.video_start_time:
-                times.append(video.video_start_time)
-            if video.video_end_time:
-                times.append(video.video_end_time)
-        
-        if times:
-            return f"{min(times).strftime('%H:%M')} - {max(times).strftime('%H:%M')}"
-        return "Time range not available"
-    
     def get_average_congestion(self, analyses):
         """Calculate average congestion level"""
         congestion_levels = {
-            'very_low': 0,
-            'low': 1, 
-            'medium': 2,
-            'high': 3,
-            'severe': 4
+            'none': 0,
+            'very_low': 1,
+            'low': 2, 
+            'medium': 3,
+            'high': 4,
+            'severe': 5
+        }
+        
+        reverse_map = {
+            0: 'none',
+            1: 'very_low',
+            2: 'low',
+            3: 'medium',
+            4: 'high',
+            5: 'severe'
         }
         
         if not analyses:
             return 'low'
         
-        total_score = sum(congestion_levels.get(analysis.congestion_level, 0) for analysis in analyses)
+        total_score = sum(congestion_levels.get(analysis.congestion_level, 2) 
+                         for analysis in analyses)
         avg_score = total_score / len(analyses)
         
-        for level, score in congestion_levels.items():
-            if avg_score <= score:
-                return level
-        return 'severe'
+        # Find closest level
+        closest_level = min(reverse_map.keys(), key=lambda x: abs(x - avg_score))
+        return reverse_map[closest_level]
 
 
 
@@ -466,12 +503,17 @@ class AnalysisOverviewAPI(APIView):
             location_id = request.query_params.get('location_id', 'all')
             
             # Use services that support location filtering
-            # Note: You'll need to implement or import these service functions
             weekly_data = self.calculate_real_weekly_data(location_id=location_id)
             system_stats = self.get_system_overview_stats(location_id=location_id)
             
-            # ✅ NEW: Calculate real peak hours from actual data
-            peak_hours_data = self.get_real_peak_hours_data(location_id)
+            # ✅ NEW: Get peak hours data from the dedicated service
+            peak_hours_data = peak_hours_service.get_peak_hours_analysis(
+                location_id=location_id,
+                days_back=30
+            )
+            
+            # Get peak hour statistics
+            peak_stats = peak_hours_service.get_peak_hour_statistics(location_id)
             
             # Calculate totals
             total_vehicles = sum(weekly_data) if weekly_data else 0
@@ -480,11 +522,12 @@ class AnalysisOverviewAPI(APIView):
                 'weekly_data': weekly_data,
                 'total_vehicles': total_vehicles,
                 'congested_roads': system_stats.get('congested_roads', 0),
-                'peak_hour': self.calculate_overall_peak_hour(peak_hours_data),
+                'peak_hour': peak_stats.get('overall_peak_hour', '8:00 AM'),
                 'daily_average': total_vehicles // 7 if total_vehicles > 0 else 0,
                 'system_stats': system_stats,
                 'peak_hours_data': peak_hours_data,
-                'areas': self.format_peak_hours_for_frontend(peak_hours_data, location_id)
+                'areas': peak_hours_data,  # For frontend compatibility
+                'peak_stats': peak_stats
             }
             
             print(f"📊 Sending overview data with {len(peak_hours_data)} peak hour records")
@@ -504,9 +547,10 @@ class AnalysisOverviewAPI(APIView):
                 'system_stats': {},
                 'peak_hours_data': [],
                 'areas': self.get_default_peak_hours(),
+                'peak_stats': {},
                 'error': 'Error loading data'
             }, status=200)
-
+        
     def calculate_real_weekly_data(self, location_id='all'):
         """Calculate weekly data based on location filter"""
         try:
@@ -1218,25 +1262,27 @@ class LocationDetailAPI(APIView):
 
 class ProcessingProfileListAPI(APIView):
     """Handle processing profile listing and creation"""
-    
+
     def get(self, request):
-        """Get all processing profiles"""
-        profiles = ProcessingProfile.objects.filter(active=True)
+        """Get all processing profiles — active AND inactive so the list is never empty"""
+        profiles = ProcessingProfile.objects.all()   # ← was .filter(active=True)
         serializer = ProcessingProfileSerializer(profiles, many=True)
         return Response(serializer.data)
-    
+
     def post(self, request):
         """Create a new processing profile"""
         serializer = ProcessingProfileSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
+        # Return validation errors so the frontend can show them
+        print(f"❌ ProcessingProfile validation errors: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ProcessingProfileDetailAPI(APIView):
     """Handle individual processing profile operations"""
-    
+
     def get_object(self, profile_id):
         try:
             return ProcessingProfile.objects.get(id=profile_id)
@@ -1244,7 +1290,6 @@ class ProcessingProfileDetailAPI(APIView):
             return None
 
     def get(self, request, profile_id):
-        """Get a specific processing profile"""
         profile = self.get_object(profile_id)
         if profile is None:
             return Response({'error': 'Processing profile not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -1252,29 +1297,29 @@ class ProcessingProfileDetailAPI(APIView):
         return Response(serializer.data)
 
     def put(self, request, profile_id):
-        """Update a processing profile"""
         profile = self.get_object(profile_id)
         if profile is None:
             return Response({'error': 'Processing profile not found'}, status=status.HTTP_404_NOT_FOUND)
-        
+
+        print(f"📝 Updating profile {profile_id} with data: {request.data}")
         serializer = ProcessingProfileSerializer(profile, data=request.data)
         if serializer.is_valid():
             serializer.save()
+            print(f"✅ Profile {profile_id} updated successfully")
             return Response(serializer.data)
+        print(f"❌ Profile update validation errors: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, profile_id):
-        """Delete a processing profile (soft delete)"""
         profile = self.get_object(profile_id)
         if profile is None:
             return Response({'error': 'Processing profile not found'}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Check if any locations are using this profile
+
         if profile.locations.exists():
             return Response({
                 'error': 'Cannot delete processing profile. It is being used by one or more locations.'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
+
         profile.delete()
         return Response({'message': 'Processing profile deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
 
@@ -1542,6 +1587,59 @@ class PeakHoursPredictionAPI(APIView):
                 'status': 'error', 
                 'message': f'Failed to get peak hours: {str(e)}'
             }, status=500)
+        
+class EnhancedPeakHoursAPI(APIView):
+    """Enhanced peak hours analysis using VideoAggregationService (Phase 3)."""
+
+    def get(self, request):
+        try:
+            location_id = request.GET.get('location_id', 'all')
+            days_back = int(request.GET.get('days_back', 30))
+            include_warnings = request.GET.get('include_warnings', 'true').lower() == 'true'
+
+            peak_data = peak_hours_service.get_peak_hours_analysis(
+                location_id=location_id,
+                days_back=days_back,
+                include_warnings=include_warnings
+            )
+            stats = peak_hours_service.get_peak_hour_statistics(location_id)
+
+            return Response({
+                'success': True,
+                'peak_hours': peak_data,
+                'statistics': stats,
+                'location_id': location_id,
+                'days_back': days_back
+            })
+
+        except ValueError:
+            return Response(
+                {'error': 'days_back must be a valid integer'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.error(f"EnhancedPeakHoursAPI error: {e}", exc_info=True)
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class DataQualityReportAPI(APIView):
+    """Get data quality report for a location"""
+    
+    def get(self, request):
+        try:
+            location_id = request.GET.get('location_id', 'all')
+            days_back = int(request.GET.get('days_back', 30))
+            
+            from .services import get_data_quality_report
+            report = get_data_quality_report(
+                location_id=location_id,
+                days_back=days_back
+            )
+            
+            return Response(report)
+            
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
 
 
 class PredictionInsightsAPI(APIView):
@@ -3754,3 +3852,115 @@ class SyncExecuteAPI(APIView):
         except:
             pass
         return 0
+    
+class GroupAggregationAPI(APIView):
+    """
+    Get aggregated data for a location-date group using the VideoAggregationService
+    """
+    
+    def get(self, request, group_id):
+        try:
+            group = LocationDateGroup.objects.select_related('location').get(id=group_id)
+            
+            # Initialize aggregation service
+            service = VideoAggregationService(group)
+            
+            # Get aggregation summary
+            summary = service.get_aggregation_summary()
+            
+            return Response({
+                'success': True,
+                'data': summary
+            })
+            
+        except LocationDateGroup.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Group not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Error in GroupAggregationAPI: {e}")
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class GroupTimelineAPI(APIView):
+    """
+    Get timeline visualization data for a group
+    """
+    
+    def get(self, request, group_id):
+        try:
+            group = LocationDateGroup.objects.get(id=group_id)
+            service = VideoAggregationService(group)
+            
+            timeline = service.generate_timeline_view()
+            
+            return Response({
+                'success': True,
+                'timeline': timeline
+            })
+            
+        except LocationDateGroup.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Group not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+class VideoResetAndReprocessAPI(APIView):
+    """Reset a stuck/failed video and reprocess it"""
+    
+    def post(self, request, video_id):
+        if settings.IS_CLOUD_DEPLOYMENT:
+            return Response(
+                {'error': 'Video processing disabled in cloud mode'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            video = VideoFile.objects.get(id=video_id)
+            location_id = request.data.get('location_id')
+            
+            if not location_id:
+                # Try to get from existing analysis
+                if hasattr(video, 'traffic_analysis') and video.traffic_analysis.location:
+                    location_id = video.traffic_analysis.location.id
+                elif video.location_date_group:
+                    location_id = video.location_date_group.location.id
+            
+            if not location_id:
+                return Response(
+                    {'error': 'location_id is required to reprocess'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Delete any existing partial analysis
+            if hasattr(video, 'traffic_analysis'):
+                video.traffic_analysis.delete()
+                logger.info(f"🗑️ Deleted partial analysis for video {video_id}")
+            
+            # Reset video status
+            video.processing_status = 'uploaded'
+            video.processing_progress = 0
+            video.processing_message = 'Reset for reprocessing...'
+            video.location_date_group = None  # Will be re-assigned after processing
+            video.save()
+            
+            # Start reprocessing
+            from .tasks import process_video_task
+            task = process_video_task.delay(str(video.id), location_id=str(location_id))
+            
+            return Response({
+                'status': 'success',
+                'message': 'Video reset and reprocessing started',
+                'video_id': str(video.id),
+                'task_id': task.id
+            })
+            
+        except VideoFile.DoesNotExist:
+            return Response({'error': 'Video not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Error resetting video {video_id}: {e}")
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

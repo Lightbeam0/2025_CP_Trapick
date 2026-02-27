@@ -9,11 +9,22 @@ logger = logging.getLogger(__name__)
 # Global progress store (works in both modes)
 progress_store = {}
 
+# Processing stage definitions with weights for accurate progress calculation
+PROCESSING_STAGES = {
+    'initializing':     {'start': 0,  'end': 5,  'label': 'Initializing...'},
+    'loading_detector': {'start': 5,  'end': 12, 'label': 'Loading detector...'},
+    'reading_video':    {'start': 12, 'end': 18, 'label': 'Reading video metadata...'},
+    'analyzing':        {'start': 18, 'end': 88, 'label': 'Analyzing video...'},
+    'saving_results':   {'start': 88, 'end': 94, 'label': 'Saving results...'},
+    'grouping':         {'start': 94, 'end': 97, 'label': 'Organizing data...'},
+    'finalizing':       {'start': 97, 'end': 100, 'label': 'Finalizing...'},
+}
+
+
 def get_all_active_progress():
     """Get all active video progress from cache and memory"""
     all_progress = {}
-    
-    # Get from Django cache
+
     try:
         cache_keys = cache.keys('video_progress_*') if hasattr(cache, 'keys') else []
         for key in cache_keys:
@@ -24,197 +35,263 @@ def get_all_active_progress():
                     all_progress[video_id] = progress_data
     except Exception as e:
         logger.warning(f"Could not get cache keys: {e}")
-    
-    # Also check memory store
+
     for video_id, data in list(progress_store.items()):
         if time.time() - data.get('timestamp', 0) <= 600:
             all_progress[video_id] = data
         else:
             del progress_store[video_id]
-    
+
     logger.info(f"📊 Retrieved progress for {len(all_progress)} active videos")
     return all_progress
 
+
 class ProgressTracker:
-    """Handles progress tracking - WebSocket broadcasting only in local mode"""
-    
+    """Handles progress tracking with smooth, accurate stage-based updates"""
+
+    # Minimum ms between updates to avoid flooding
+    MIN_UPDATE_INTERVAL = 0.25  # 250ms
+
     def __init__(self, video_id):
         self.video_id = str(video_id)
+        self._last_update_time = 0
+        self._last_broadcast_progress = -1
+        self._current_stage = None
         logger.info(f"🎯 ProgressTracker initialized for video {self.video_id}")
-    
-    def _store_progress(self, progress, message, status='processing', video_info=None, error_details=None):
-        """Store progress data in cache and memory"""
+
+    # ------------------------------------------------------------------
+    # Stage-based helpers
+    # ------------------------------------------------------------------
+
+    def begin_stage(self, stage_name, detail=None):
+        """Enter a named processing stage and immediately report its start progress."""
+        stage = PROCESSING_STAGES.get(stage_name)
+        if not stage:
+            logger.warning(f"Unknown stage: {stage_name}")
+            return
+        self._current_stage = stage_name
+        message = stage['label']
+        if detail:
+            message = f"{stage['label']} {detail}"
+        self.set_progress(stage['start'], message, force=True)
+
+    def update_frame_progress(self, current_frame, total_frames, extra_message=""):
+        """
+        Called from the detector's progress callback.
+        Maps frame position to the 'analyzing' stage range and throttles updates.
+        """
+        if total_frames <= 0:
+            return
+
+        stage = PROCESSING_STAGES['analyzing']
+        stage_range = stage['end'] - stage['start']
+
+        # Smooth fractional progress within the analyzing stage
+        fraction = current_frame / total_frames
+        progress = stage['start'] + fraction * stage_range
+
+        # Build a descriptive message
+        pct_done = int(fraction * 100)
+        fps_hint = extra_message if extra_message else ""
+        message = f"Analyzing frames... {pct_done}%"
+        if fps_hint:
+            message += f" · {fps_hint}"
+
+        self.set_progress(progress, message)
+
+    # ------------------------------------------------------------------
+    # Core storage / broadcast
+    # ------------------------------------------------------------------
+
+    def _store_progress(self, progress, message, status='processing',
+                        video_info=None, error_details=None):
+        """Persist progress to cache and in-memory store."""
         data = {
-            'progress': max(0, min(100, progress)),
+            'progress': max(0, min(100, round(progress, 1))),
             'message': message,
             'status': status,
             'timestamp': time.time(),
-            'video_id': self.video_id
+            'video_id': self.video_id,
+            'stage': self._current_stage,
         }
-        
         if video_info:
             data['video_info'] = video_info
         if error_details:
             data['error_details'] = error_details
-        
-        # Store in Django cache
+
         cache_key = f'video_progress_{self.video_id}'
         try:
             cache.set(cache_key, data, timeout=3600)
         except Exception as e:
             logger.error(f"❌ Error storing in cache: {e}")
-        
-        # Also store in memory as fallback
+
         progress_store[self.video_id] = data
         return data
-    
+
+    def _should_broadcast(self, progress):
+        """
+        Throttle broadcasts: skip if the last update was too recent
+        OR if the progress delta is negligible (< 0.5 pp).
+        Always broadcast at 0, 100, or on status changes.
+        """
+        now = time.time()
+        elapsed = now - self._last_update_time
+        delta = abs(progress - self._last_broadcast_progress)
+
+        if progress in (0, 100):
+            return True
+        if elapsed < self.MIN_UPDATE_INTERVAL:
+            return False
+        if delta < 0.5:
+            return False
+        return True
+
     def _broadcast_to_channels(self, event_type, data):
-        """Broadcast to WebSocket channels - ONLY in local mode"""
+        """Broadcast to WebSocket channels — only in local mode."""
         if settings.IS_CLOUD_DEPLOYMENT:
-            # Skip WebSocket broadcasting in cloud mode
             logger.debug(f"☁️ Skipping WebSocket broadcast in cloud mode: {event_type}")
             return
-        
+
         try:
-            # LAZY IMPORT - only import when needed and in local mode
             from channels.layers import get_channel_layer
             from asgiref.sync import async_to_sync
-            
+
             channel_layer = get_channel_layer()
             if not channel_layer:
                 logger.warning(f"⚠️ Channel layer is None for video {self.video_id}")
                 return
-            
-            message = {
-                'type': event_type,
-                **data
-            }
-            
-            logger.info(f"📡 Broadcasting {event_type} for video {self.video_id}")
-            
-            # Send to specific video channel
+
+            message = {'type': event_type, **data}
+
             video_channel = f'video_progress_{self.video_id}'
             async_to_sync(channel_layer.group_send)(video_channel, message)
-            logger.info(f"✅ Sent to video channel: {video_channel}")
-            
-            # Send to general progress channel
             async_to_sync(channel_layer.group_send)('general_progress', message)
-            logger.info(f"✅ Sent to general_progress channel")
-            
+
         except Exception as e:
             logger.error(f"❌ Error broadcasting to channels: {e}")
-    
-    def set_progress(self, progress, message="Processing..."):
-        """Update and optionally broadcast progress"""
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_progress(self, progress, message="Processing...", force=False):
+        """
+        Update progress.  Pass force=True to bypass throttling
+        (e.g. at stage boundaries).
+        """
         try:
-            data = self._store_progress(progress, message, status='processing')
+            clamped = max(0.0, min(100.0, float(progress)))
+
+            if not force and not self._should_broadcast(clamped):
+                # Still update the store so polling clients see fresh data,
+                # but skip the WebSocket push.
+                self._store_progress(clamped, message)
+                return
+
+            data = self._store_progress(clamped, message, status='processing')
+
             self._broadcast_to_channels('progress_update', {
                 'progress': data['progress'],
                 'message': data['message'],
-                'video_id': self.video_id
+                'video_id': self.video_id,
+                'stage': self._current_stage,
             })
-            logger.info(f"📊 Progress updated: {self.video_id} - {progress}% - {message}")
+
+            self._last_update_time = time.time()
+            self._last_broadcast_progress = clamped
+
+            logger.info(f"📊 Progress: {self.video_id} – {clamped:.1f}% – {message}")
         except Exception as e:
             logger.error(f"❌ Error setting progress for {self.video_id}: {e}")
-    
+
     def complete_processing(self, message="Processing completed!", video_info=None):
-        """Signal completion and broadcast if in local mode"""
+        """Signal completion."""
         try:
-            data = self._store_progress(100, message, status='completed', video_info=video_info)
-            
+            self._current_stage = 'finalizing'
+            data = self._store_progress(100, message, status='completed',
+                                        video_info=video_info)
+
             completion_data = {
                 'video_id': self.video_id,
                 'message': message,
                 'progress': 100,
-                'status': 'completed'
+                'status': 'completed',
             }
             if video_info:
                 completion_data['video_info'] = video_info
-            
+
             self._broadcast_to_channels('processing_complete', completion_data)
             logger.info(f"🎉 Processing completed for {self.video_id}")
-            
-            # Clean up after 10 seconds
+
             import threading
             def cleanup():
                 time.sleep(10)
-                cache_key = f'video_progress_{self.video_id}'
-                cache.delete(cache_key)
-                if self.video_id in progress_store:
-                    del progress_store[self.video_id]
-                logger.info(f"🧹 Cleaned up progress data for {self.video_id}")
-            
-            cleanup_thread = threading.Thread(target=cleanup, daemon=True)
-            cleanup_thread.start()
-            
+                cache.delete(f'video_progress_{self.video_id}')
+                progress_store.pop(self.video_id, None)
+                logger.info(f"🧹 Cleaned up progress for {self.video_id}")
+
+            threading.Thread(target=cleanup, daemon=True).start()
+
         except Exception as e:
             logger.error(f"❌ Error completing processing for {self.video_id}: {e}")
-    
+
     def fail_processing(self, message="Processing failed!", error_details=None):
-        """Signal failure and broadcast if in local mode"""
+        """Signal failure."""
         try:
-            data = self._store_progress(0, message, status='failed', error_details=error_details)
-            
+            data = self._store_progress(0, message, status='failed',
+                                        error_details=error_details)
+
             failure_data = {
                 'video_id': self.video_id,
                 'message': message,
                 'progress': 0,
-                'status': 'failed'
+                'status': 'failed',
             }
             if error_details:
                 failure_data['error_details'] = error_details
-            
+
             self._broadcast_to_channels('processing_failed', failure_data)
             logger.error(f"❌ Processing failed for {self.video_id}: {message}")
-            
-            # Clean up after 30 seconds
+
             import threading
             def cleanup():
                 time.sleep(30)
-                cache_key = f'video_progress_{self.video_id}'
-                cache.delete(cache_key)
-                if self.video_id in progress_store:
-                    del progress_store[self.video_id]
-                logger.info(f"🧹 Cleaned up failed progress data for {self.video_id}")
-            
-            cleanup_thread = threading.Thread(target=cleanup, daemon=True)
-            cleanup_thread.start()
-            
+                cache.delete(f'video_progress_{self.video_id}')
+                progress_store.pop(self.video_id, None)
+
+            threading.Thread(target=cleanup, daemon=True).start()
+
         except Exception as e:
-            logger.error(f"❌ Error setting failure status for {self.video_id}: {e}")
-    
+            logger.error(f"❌ Error setting failure for {self.video_id}: {e}")
+
     def get_current_progress(self):
-        """Get current progress from cache or memory"""
+        """Retrieve latest progress from cache or memory."""
         cache_key = f'video_progress_{self.video_id}'
         progress_data = cache.get(cache_key)
-        
+
         if progress_data and isinstance(progress_data, dict):
             if time.time() - progress_data.get('timestamp', 0) <= 600:
                 return progress_data
-        
+
         data = progress_store.get(self.video_id)
         if data and time.time() - data.get('timestamp', 0) <= 600:
             return data
-        
+
         return {
             'progress': 0,
             'message': 'No progress data available',
-            'status': 'unknown'
+            'status': 'unknown',
         }
-    
+
     @classmethod
     def clear_progress(cls, video_id):
-        """Clear progress data for a specific video"""
         video_id = str(video_id)
-        cache_key = f'video_progress_{video_id}'
-        cache.delete(cache_key)
-        if video_id in progress_store:
-            del progress_store[video_id]
-        logger.info(f"🧹 Cleared progress data for video {video_id}")
-    
+        cache.delete(f'video_progress_{video_id}')
+        progress_store.pop(video_id, None)
+        logger.info(f"🧹 Cleared progress for video {video_id}")
+
     @classmethod
     def clear_all_progress(cls):
-        """Clear all progress data"""
         try:
             cache_keys = cache.keys('video_progress_*') if hasattr(cache, 'keys') else []
             for key in cache_keys:
@@ -223,5 +300,3 @@ class ProgressTracker:
             logger.warning(f"Could not clear cache keys: {e}")
         progress_store.clear()
         logger.info("🧹 Cleared all progress data")
-
-# Remove the VideoProgressAPI class from here - it should be in api_views.py
