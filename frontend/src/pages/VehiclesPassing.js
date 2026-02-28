@@ -21,7 +21,6 @@ ChartJS.register(
   Legend
 );
 
-// API Base URL Configuration
 const API_BASE_URL = process.env.NODE_ENV === 'development' 
   ? 'http://127.0.0.1:8000' 
   : '';
@@ -65,7 +64,6 @@ function VehiclesPassing() {
       setLoading(true);
       console.log("🔄 Fetching vehicle data with filters:", { timePeriod, locationFilter, dateRange, selectedGroup });
       
-      // Build query parameters based on backend structure
       const params = new URLSearchParams();
       
       if (selectedGroup) {
@@ -85,12 +83,9 @@ function VehiclesPassing() {
       console.log("✅ Vehicle data received:", apiData);
       
       if (apiData && typeof apiData === 'object') {
-        // Handle different possible API response structures
         let mappedData;
         
-        // Check if the response has the expected structure from your backend
         if (apiData.today || apiData.yesterday || apiData.week || apiData.month) {
-          // This is the aggregated format with time periods
           const currentPeriodData = apiData[timePeriod] || {};
           
           mappedData = {
@@ -101,7 +96,7 @@ function VehiclesPassing() {
             tricycles: currentPeriodData.tricycles || currentPeriodData.bicycle_count || 0,
             other: currentPeriodData.other || currentPeriodData.other_count || 0,
             total: currentPeriodData.total || currentPeriodData.total_vehicles || 0,
-            directional_total: currentPeriodData.directional_count || 0,
+            directional_total: currentPeriodData.directional_count || currentPeriodData.directional_total || 0,
             summary: apiData.summary || {
               total_analyses: 0,
               average_daily: 0,
@@ -109,13 +104,12 @@ function VehiclesPassing() {
             }
           };
         } else {
-          // This is a single analysis/group format
           mappedData = {
             cars: apiData.car_count || apiData.cars || 0,
             trucks: apiData.truck_count || apiData.trucks || 0,
             motorcycles: apiData.motorcycle_count || apiData.motorcycles || 0,
-            jeeps: apiData.bus_count || apiData.jeeps || 0,  // bus_count in DB = jeep
-            tricycles: apiData.bicycle_count || apiData.tricycles || 0, // bicycle_count = tricycle
+            jeeps: apiData.bus_count || apiData.jeeps || 0,
+            tricycles: apiData.bicycle_count || apiData.tricycles || 0,
             other: apiData.other_count || apiData.other || 0,
             total: apiData.total_vehicles || apiData.total || 0,
             directional_total: apiData.directional_count || apiData.directional_total || 0,
@@ -131,7 +125,6 @@ function VehiclesPassing() {
           };
         }
         
-        // Calculate total if not provided
         if (mappedData.total === 0) {
           mappedData.total = mappedData.cars + mappedData.trucks + mappedData.motorcycles + 
                              mappedData.jeeps + mappedData.tricycles + mappedData.other;
@@ -139,26 +132,20 @@ function VehiclesPassing() {
         
         setVehicleData(mappedData);
         
-        // If location is selected and has groups, fetch them
         if (locationFilter !== "all") {
           fetchDateGroups(locationFilter);
         }
         
         setError(null);
       } else {
-        console.log("❌ Invalid API response structure");
         setVehicleData(getEmptyVehicleData());
         setError("Invalid data format from server");
       }
       
     } catch (err) {
       console.error("🔴 API error:", err);
-      console.error("🔴 Error response:", err.response);
-      
       const errorMsg = err.response?.data?.error || err.message || "Failed to load vehicle data";
       setError(`API Error: ${errorMsg}`);
-      
-      // Set fallback empty data
       setVehicleData(getEmptyVehicleData());
     } finally {
       setLoading(false);
@@ -202,15 +189,10 @@ function VehiclesPassing() {
     );
   }
 
-  // Use current data or empty defaults
   const currentData = vehicleData || getEmptyVehicleData();
   const totalVehicles = currentData.total || 0;
   const directionalTotal = currentData.directional_total || 0;
 
-  // Log the data to verify it's being populated
-  console.log("📊 Current vehicle data for display:", currentData);
-
-  // Bar chart data for Vehicle Type Distribution only
   const barChartData = {
     labels: ['Cars', 'Trucks', 'Motorcycles', 'Jeeps', 'Tricycles', 'Other'],
     datasets: [
@@ -244,6 +226,15 @@ function VehiclesPassing() {
       }
     ]
   };
+
+  const vehicleRows = [
+    { type: 'Cars',        count: currentData.cars        || 0 },
+    { type: 'Trucks',      count: currentData.trucks      || 0 },
+    { type: 'Motorcycles', count: currentData.motorcycles || 0 },
+    { type: 'Jeeps',       count: currentData.jeeps       || 0 },
+    { type: 'Tricycles',   count: currentData.tricycles   || 0 },
+    { type: 'Other',       count: currentData.other       || 0 },
+  ];
 
   return (
     <div className="main-content">
@@ -364,7 +355,7 @@ function VehiclesPassing() {
                 <option value="">All Groups</option>
                 {dateGroups.map(group => (
                   <option key={group.id} value={group.id}>
-                    {group.date} - {group.get_time_range?.() || 'No time range'}
+                    {group.date}
                   </option>
                 ))}
               </select>
@@ -432,7 +423,6 @@ function VehiclesPassing() {
           </div>
         </div>
         
-        {/* Show message when no vehicle data */}
         {totalVehicles === 0 && (
           <div style={{
             textAlign: 'center',
@@ -451,12 +441,12 @@ function VehiclesPassing() {
       {/* Vehicle Statistics Grid */}
       <div className="stats-grid">
         {[
-          { label: 'Cars', value: currentData.cars, color: '#3b82f6' },
-          { label: 'Trucks', value: currentData.trucks, color: '#ef4444' },
+          { label: 'Cars',        value: currentData.cars,        color: '#3b82f6' },
+          { label: 'Trucks',      value: currentData.trucks,      color: '#ef4444' },
           { label: 'Motorcycles', value: currentData.motorcycles, color: '#f59e0b' },
-          { label: 'Jeeps', value: currentData.jeeps, color: '#10b981' },
-          { label: 'Tricycles', value: currentData.tricycles, color: '#8b5cf6' },
-          { label: 'Other', value: currentData.other, color: '#6b7280' }
+          { label: 'Jeeps',       value: currentData.jeeps,       color: '#10b981' },
+          { label: 'Tricycles',   value: currentData.tricycles,   color: '#8b5cf6' },
+          { label: 'Other',       value: currentData.other,       color: '#6b7280' }
         ].map((item, index) => (
           <div className="stat-card" key={index}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -481,7 +471,7 @@ function VehiclesPassing() {
         ))}
       </div>
 
-      {/* Vehicle Type Distribution Chart - Main Chart */}
+      {/* Vehicle Type Distribution Chart */}
       <div style={{ marginBottom: '32px' }}>
         <div className="dashboard-card">
           <div className="card-header">
@@ -505,7 +495,7 @@ function VehiclesPassing() {
                         label: function(context) {
                           let label = context.dataset.label || '';
                           let value = context.raw || 0;
-                          let percentage = ((value / totalVehicles) * 100).toFixed(1);
+                          let percentage = totalVehicles > 0 ? ((value / totalVehicles) * 100).toFixed(1) : '0.0';
                           return `${label}: ${value.toLocaleString()} (${percentage}%)`;
                         }
                       }
@@ -556,35 +546,20 @@ function VehiclesPassing() {
               <tr>
                 <th>Vehicle Type</th>
                 <th>Count</th>
-                <th>Percentage</th>
-                <th>Directional Count</th>
-                <th>% of Directional</th>
+                <th>Percentage of Total</th>
               </tr>
             </thead>
             <tbody>
-              {[
-                { type: 'Cars', data: currentData.cars },
-                { type: 'Trucks', data: currentData.trucks },
-                { type: 'Motorcycles', data: currentData.motorcycles },
-                { type: 'Jeeps', data: currentData.jeeps },
-                { type: 'Tricycles', data: currentData.tricycles },
-                { type: 'Other', data: currentData.other }
-              ].map((vehicle, index) => {
-                const percentage = totalVehicles > 0 ? ((vehicle.data || 0) / totalVehicles * 100).toFixed(1) : '0.0';
-                const directionalPercentage = directionalTotal > 0 ? ((vehicle.data || 0) / directionalTotal * 100).toFixed(1) : '0.0';
-                
+              {vehicleRows.map((vehicle, index) => {
+                const percentage = totalVehicles > 0
+                  ? ((vehicle.count / totalVehicles) * 100).toFixed(1)
+                  : '0.0';
+
                 return (
                   <tr key={index}>
                     <td style={{ fontWeight: '600' }}>{vehicle.type}</td>
-                    <td>{(vehicle.data || 0).toLocaleString()}</td>
+                    <td>{vehicle.count.toLocaleString()}</td>
                     <td>{percentage}%</td>
-                    <td>
-                      {directionalTotal > 0 
-                        ? Math.round((vehicle.data || 0) * (directionalTotal / totalVehicles)).toLocaleString()
-                        : 'N/A'
-                      }
-                    </td>
-                    <td>{directionalPercentage}%</td>
                   </tr>
                 );
               })}
@@ -592,8 +567,6 @@ function VehiclesPassing() {
               <tr style={{ backgroundColor: '#f9fafb', fontWeight: 'bold' }}>
                 <td>TOTAL</td>
                 <td>{totalVehicles.toLocaleString()}</td>
-                <td>100%</td>
-                <td>{directionalTotal.toLocaleString()}</td>
                 <td>100%</td>
               </tr>
             </tbody>

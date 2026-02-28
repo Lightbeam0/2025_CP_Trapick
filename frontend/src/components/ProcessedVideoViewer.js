@@ -23,17 +23,15 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
         setError(null);
 
         if (type === 'session') {
-          // Fetch session group data with videos
+          // Fetch session group data with videos — same call as before
           const groupResponse = await axios.get(`${API_BASE_URL}/api/location-groups/${videoId}/`);
           const groupData = groupResponse.data;
           
-          setItemInfo(groupData);
+          setItemInfo(groupData); 
           
-          // Get videos with their full analysis data
           const videosWithAnalysis = groupData.videos || [];
           setSessionVideos(videosWithAnalysis);
           
-          // Select first video by default
           if (videosWithAnalysis.length > 0) {
             const firstVideo = videosWithAnalysis[0];
             setSelectedVideo(firstVideo);
@@ -42,7 +40,7 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
           }
           
         } else {
-          // Single video mode
+          // Single video mode — same call as before
           const analysisResponse = await axios.get(`${API_BASE_URL}/api/analysis/${videoId}/`);
           setAnalysisData(analysisResponse.data);
           setItemInfo(analysisResponse.data);
@@ -69,25 +67,35 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
     setVideoLoadError(null);
   };
 
-  // Add download function
   const handleDownloadVideo = () => {
     if (type === 'session' && selectedVideo) {
-      // Download selected video from session
-      const downloadUrl = `${API_BASE_URL}/api/video/${selectedVideo.id}/download/`;
-      window.open(downloadUrl, '_blank');
+      window.open(`${API_BASE_URL}/api/video/${selectedVideo.id}/download/`, '_blank');
     } else {
-      // Download single video
-      const downloadUrl = `${API_BASE_URL}/api/video/${videoId}/download/`;
-      window.open(downloadUrl, '_blank');
+      window.open(`${API_BASE_URL}/api/video/${videoId}/download/`, '_blank');
     }
   };
 
+  // Normalise the active analysis regardless of which API shape it came from.
+  // Session videos:    video.analysis = { total_vehicles, congestion_level, car_count, ... }
+  //                    (from LocationDateGroupDetailAPI)
+  // Single video:      AnalysisResultsAPI returns { status, analysis: { total_vehicles,
+  //                    vehicle_breakdown, processing_time, congestion_level, traffic_pattern,
+  //                    analyzed_at, location }, video_info: { filename, ... } }
+  const getActiveAnalysis = () => {
+    if (type === 'session') {
+      return selectedVideo?.analysis || null;
+    }
+    // For single video unwrap the nested .analysis if present
+    return analysisData?.analysis || analysisData || null;
+  };
+
   const renderQuickStats = () => {
-    const data = type === 'session' && selectedVideo?.analysis 
-      ? selectedVideo.analysis 
-      : analysisData;
-    
+    const data = getActiveAnalysis();
     if (!data) return null;
+
+    // processing_time is the field name in AnalysisSummarySerializer;
+    // processing_time_seconds is used in the session analysis object
+    const procTime = data.processing_time_seconds ?? data.processing_time ?? 0;
 
     return (
       <div className="quick-stats-container">
@@ -105,7 +113,7 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
           <div className="quick-stat-icon">⏱️</div>
           <div className="quick-stat-content">
             <div className="quick-stat-value">
-              {(data.processing_time_seconds || 0).toFixed(1)}<span className="quick-stat-unit">s</span>
+              {Number(procTime).toFixed(1)}<span className="quick-stat-unit">s</span>
             </div>
             <div className="quick-stat-label">Processing Time</div>
           </div>
@@ -145,7 +153,7 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
           <div className="quick-stat-icon">📊</div>
           <div className="quick-stat-content">
             <div className="quick-stat-value">
-              {(data.average_traffic || 0).toFixed(1)}
+              {Number(data.average_traffic || 0).toFixed(1)}
             </div>
             <div className="quick-stat-label">Avg Traffic</div>
           </div>
@@ -155,25 +163,35 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
   };
 
   const renderVehicleBreakdown = () => {
-    const data = type === 'session' && selectedVideo?.analysis 
-      ? selectedVideo.analysis 
-      : analysisData;
-    
+    const data = getActiveAnalysis();
     if (!data) return null;
 
+    // vehicle_breakdown from get_vehicle_breakdown() uses keys:
+    //   car, truck, motorcycle, jeep, tricycle, other, total, directional_total
+    // AnalysisSummarySerializer also passes vehicle_breakdown through unchanged.
+    // Flat fallbacks (car_count etc.) cover the session analysis shape from
+    // LocationDateGroupDetailAPI which only sets the flat count fields.
     const breakdown = data.vehicle_breakdown || {};
     const modelInfo = data.model_info || {};
     
     const vehicles = [
-      { key: 'car', label: 'Cars', icon: '🚗', count: breakdown.car || data.car_count || 0, color: '#3b82f6' },
-      { key: 'truck', label: 'Trucks', icon: '🚚', count: breakdown.truck || data.truck_count || 0, color: '#f59e0b' },
-      { key: 'motorcycle', label: 'Motorcycles', icon: '🏍️', count: breakdown.motorcycle || data.motorcycle_count || 0, color: '#ef4444' },
-      { key: 'bus', label: 'Buses', icon: '🚌', count: breakdown.bus || data.bus_count || 0, color: '#8b5cf6' },
-      { key: 'bicycle', label: 'Bicycles', icon: '🚲', count: breakdown.bicycle || data.bicycle_count || 0, color: '#10b981' },
-      { key: 'other', label: 'Others', icon: '🚛', count: breakdown.other || data.other_count || 0, color: '#6b7280' }
+      { key: 'car',        label: 'Cars',        icon: '🚗',
+        count: breakdown.car        ?? data.car_count        ?? 0, color: '#3b82f6' },
+      { key: 'truck',      label: 'Trucks',       icon: '🚚',
+        count: breakdown.truck      ?? data.truck_count      ?? 0, color: '#f59e0b' },
+      { key: 'motorcycle', label: 'Motorcycles',  icon: '🏍️',
+        count: breakdown.motorcycle ?? data.motorcycle_count ?? 0, color: '#ef4444' },
+      // jeep is stored in bus_count in the DB; tricycle in bicycle_count
+      { key: 'jeep',       label: 'Jeep',         icon: '🚌',
+        count: breakdown.jeep    ?? breakdown.bus     ?? data.bus_count     ?? 0, color: '#8b5cf6' },
+      { key: 'tricycle',   label: 'Tricycles',    icon: '🚲',
+        count: breakdown.tricycle ?? breakdown.bicycle ?? data.bicycle_count ?? 0, color: '#10b981' },
+      { key: 'other',      label: 'Others',       icon: '🚛',
+        count: breakdown.other   ?? data.other_count  ?? 0, color: '#6b7280' },
     ].filter(v => v.count > 0);
 
     const total = data.total_vehicles || vehicles.reduce((sum, v) => sum + v.count, 0);
+    const procTime = data.processing_time_seconds ?? data.processing_time ?? 0;
 
     return (
       <div className="analysis-section">
@@ -214,7 +232,7 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
           </div>
           <div className="summary-item">
             <span className="summary-label">Processing Time</span>
-            <span className="summary-value">{(data.processing_time_seconds || 0).toFixed(1)}s</span>
+            <span className="summary-value">{Number(procTime).toFixed(1)}s</span>
           </div>
           <div className="summary-item">
             <span className="summary-label">FPS</span>
@@ -243,7 +261,7 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
             >
               <div className="session-video-header">
                 <div className="session-video-title">
-                  {video.title}
+                  {video.title || video.filename}
                 </div>
                 {selectedVideo?.id === video.id && (
                   <div className="session-video-selected">Now Playing</div>
@@ -280,13 +298,12 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
           <h3>Processed Video with Detection Overlay</h3>
           {type === 'session' && selectedVideo && (
             <p className="video-playing-info">
-              Now Playing: <strong>{selectedVideo.title}</strong> 
+              Now Playing: <strong>{selectedVideo.title || selectedVideo.filename}</strong> 
               <span className="video-time">({selectedVideo.start_time} - {selectedVideo.end_time})</span>
             </p>
           )}
         </div>
         <div className="video-header-right">
-          {/* Download button added here */}
           <button 
             onClick={handleDownloadVideo} 
             className="download-video-btn"
@@ -376,6 +393,21 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
     );
   }
 
+  // Header title resolution:
+  // Session: LocationDateGroupDetailAPI returns { location: {id, name}, date, time_range, ... }
+  //          The original code read itemInfo?.group?.location?.display_name which was always
+  //          undefined because there is no nested "group" key — it's top-level.
+  // Single:  AnalysisResultsAPI returns { status, analysis:{...}, video_info:{filename,...} }
+  const sessionLocationName =
+    itemInfo?.location?.name ||           // actual API shape
+    itemInfo?.group?.location?.display_name || // guard for any wrapper
+    'Loading...';
+
+  const singleVideoTitle =
+    itemInfo?.video_info?.title ||
+    itemInfo?.analysis?.video_info?.title ||
+    'Loading...';
+
   return (
     <div className="main-content">
       {/* Header */}
@@ -383,17 +415,17 @@ const ProcessedVideoViewer = ({ videoId, type, onClose }) => {
         <div className="header-content">
           <h1>
             {type === 'session' 
-              ? `Session: ${itemInfo?.group?.location?.display_name || 'Loading...'}`
-              : `Video: ${analysisData?.video_info?.title || 'Loading...'}`
+              ? `Session: ${sessionLocationName}`
+              : `Video: ${singleVideoTitle}`
             }
           </h1>
           {type === 'session' && itemInfo && (
             <div className="header-subtitle">
-              <span>{new Date(itemInfo.group?.date).toLocaleDateString()}</span>
+              <span>{new Date(itemInfo.date).toLocaleDateString()}</span>
               <span className="header-divider">•</span>
               <span>{sessionVideos.length} videos</span>
               <span className="header-divider">•</span>
-              <span>{itemInfo.group?.time_range}</span>
+              <span>{itemInfo.time_range || itemInfo.group?.time_range}</span>
             </div>
           )}
         </div>
