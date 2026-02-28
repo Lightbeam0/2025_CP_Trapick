@@ -1,6 +1,8 @@
 # ml/directional_detectors/__init__.py
 
 import os
+from functools import lru_cache
+
 from .vertical_top_bottom import VerticalTopBottomDetector
 from .vertical_bottom_top import VerticalBottomTopDetector
 from .horizontal_left_right import HorizontalLeftRightDetector
@@ -35,29 +37,44 @@ DETECTOR_NAMES = {
     'diagonal_sw_ne': "Diagonal SW→NE",
 }
 
+
 def _get_default_model_path():
     """
     Constructs the default path to the custom trained model.
-    Resolves relative to this file's location: ml/directional_detectors -> ml -> project_root -> runs/detect/...
+    Resolves relative to this file's location:
+      ml/directional_detectors -> ml -> project_root -> runs/detect/...
     """
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     return os.path.join(BASE_DIR, 'runs', 'detect', 'custom_model', 'weights', 'best.pt')
 
-def get_detector(direction_name, model_path=None):
+
+# FIX #11: Cache loaded detector instances at the process level so the YOLO
+# model (2-5 second load time) is paid only once per worker process per
+# (detector_type, model_path) combination.
+#
+# IMPORTANT — Celery prefork safety:
+#   lru_cache is populated AFTER the worker forks, so each forked worker
+#   maintains its own independent cache.  GPU tensors are not shared across
+#   processes, which is the correct behaviour.
+#
+# maxsize=4 covers all realistic combinations (one profile per location type).
+@lru_cache(maxsize=4)
+def _load_cached_detector(direction_name: str, model_path: str):
     """
-    Factory function to create a directional detector instance.
-    
+    Return a cached detector instance.  The YOLO model is loaded from disk
+    only on the first call for a given (direction_name, model_path) pair.
+
     Args:
-        direction_name (str): One of the available direction keys (e.g., 'vertical_top_bottom').
-        model_path (str, optional): Path to the YOLO model weights. 
-                                    If None, defaults to 'runs/detect/custom_model/weights/best.pt'.
-        
+        direction_name: One of the DIRECTIONAL_DETECTORS keys.
+        model_path:     Absolute path to the .pt weights file.
+
     Returns:
-        Instance of the requested detector class.
-        
-    Raises:
-        ValueError: If direction_name is not recognized.
-        NotImplementedError: If a placeholder detector is requested.
+        Detector instance (shared across calls with the same arguments).
+
+    Note:
+        Callers that mutate detector state (e.g. setting ROI or resetting
+        tracking) must call detector.reset_tracking_state() before each video
+        so the shared instance starts clean.
     """
     if direction_name not in DIRECTIONAL_DETECTORS:
         available = list(DIRECTIONAL_DETECTORS.keys())
@@ -65,35 +82,43 @@ def get_detector(direction_name, model_path=None):
             f"Unknown direction: {direction_name}. "
             f"Available directions: {available}"
         )
-    
-    # Resolve model path
-    if model_path is None:
-        model_path = _get_default_model_path()
-    
-    detector_class = DIRECTIONAL_DETECTORS[direction_name]
-    
-    # Check if it's a placeholder (for non-directional types added dynamically)
-    if detector_class == _placeholder_detector:
-        raise NotImplementedError(f"Detector '{direction_name}' is not implemented in the directional module.")
-    
-    return detector_class(model_path)
 
-def _placeholder_detector(model_path='yolov8l.pt'):
-    """Placeholder for non-directional detectors that might be referenced but not implemented here."""
-    raise NotImplementedError("This detector type is not implemented in directional_detectors")
+    detector_class = DIRECTIONAL_DETECTORS[direction_name]
+    instance = detector_class(model_path)
+    return instance
+
+
+def get_detector(direction_name, model_path=None):
+    """
+    Factory function to create (or return a cached) directional detector.
+
+    Args:
+        direction_name (str): One of the available direction keys.
+        model_path (str, optional): Path to YOLO weights.  Defaults to
+                                    runs/detect/custom_model/weights/best.pt.
+
+    Returns:
+        Detector instance (may be cached — caller must reset state before use).
+
+    Raises:
+        ValueError: If direction_name is not recognized.
+    """
+    resolved_path = model_path or _get_default_model_path()
+    return _load_cached_detector(direction_name, resolved_path)
 
 
 def list_available_detectors():
     """List all available directional detectors with descriptions"""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("🔄 AVAILABLE DIRECTIONAL DETECTORS")
-    print("="*70)
-    
+    print("=" * 70)
+
     for key, name in DETECTOR_NAMES.items():
         print(f"🔹 {key}: {name}")
-    
-    print("="*70)
+
+    print("=" * 70)
     return list(DIRECTIONAL_DETECTORS.keys())
+
 
 # Convenience imports
 __all__ = [
@@ -107,6 +132,7 @@ __all__ = [
     'DiagonalSWNEDetector',
     'BaseDirectionalDetector',
     'get_detector',
+    '_load_cached_detector',
     'list_available_detectors',
     'DIRECTIONAL_DETECTORS',
     'DETECTOR_NAMES',

@@ -1,13 +1,12 @@
 // src/pages/VehiclesPassing.js
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import { Bar, Pie } from "react-chartjs-2";
+import { Bar } from "react-chartjs-2";
 import { 
   Chart as ChartJS, 
   CategoryScale, 
   LinearScale, 
-  BarElement, 
-  ArcElement,
+  BarElement,
   Title, 
   Tooltip, 
   Legend 
@@ -17,7 +16,6 @@ ChartJS.register(
   CategoryScale, 
   LinearScale, 
   BarElement,
-  ArcElement,
   Title, 
   Tooltip, 
   Legend
@@ -36,11 +34,13 @@ function VehiclesPassing() {
   const [locationFilter, setLocationFilter] = useState("all");
   const [locations, setLocations] = useState([]);
   const [dateRange, setDateRange] = useState("last_7_days");
+  const [selectedGroup, setSelectedGroup] = useState(null);
+  const [dateGroups, setDateGroups] = useState([]);
 
   useEffect(() => {
-    fetchVehicleData();
     fetchLocations();
-  }, [timePeriod, locationFilter, dateRange]);
+    fetchVehicleData();
+  }, [timePeriod, locationFilter, dateRange, selectedGroup]);
 
   const fetchLocations = async () => {
     try {
@@ -51,16 +51,30 @@ function VehiclesPassing() {
     }
   };
 
+  const fetchDateGroups = async (locationId) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/locations/${locationId}/groups/`);
+      setDateGroups(response.data);
+    } catch (err) {
+      console.error("Error fetching date groups:", err);
+    }
+  };
+
   const fetchVehicleData = async () => {
     try {
       setLoading(true);
-      console.log("🔄 Fetching vehicle data with filters:", { timePeriod, locationFilter, dateRange });
+      console.log("🔄 Fetching vehicle data with filters:", { timePeriod, locationFilter, dateRange, selectedGroup });
       
-      // Build query parameters
+      // Build query parameters based on backend structure
       const params = new URLSearchParams();
-      if (timePeriod && timePeriod !== "all") params.append('period', timePeriod);
-      if (locationFilter && locationFilter !== "all") params.append('location_id', locationFilter);
-      if (dateRange && dateRange !== "all") params.append('date_range', dateRange);
+      
+      if (selectedGroup) {
+        params.append('group_id', selectedGroup);
+      } else {
+        if (locationFilter && locationFilter !== "all") params.append('location_id', locationFilter);
+        if (timePeriod && timePeriod !== "all") params.append('period', timePeriod);
+        if (dateRange && dateRange !== "all") params.append('date_range', dateRange);
+      }
       
       const url = `${API_BASE_URL}/api/vehicles/?${params}`;
       console.log("📡 API URL:", url);
@@ -71,26 +85,69 @@ function VehiclesPassing() {
       console.log("✅ Vehicle data received:", apiData);
       
       if (apiData && typeof apiData === 'object') {
-        // Ensure all required fields exist
-        const validatedData = {
-          today: apiData.today || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-          yesterday: apiData.yesterday || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-          week: apiData.week || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-          month: apiData.month || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-          summary: apiData.summary || { total_analyses: 0, average_daily: 0, data_source: 'No data available' }
-        };
+        // Handle different possible API response structures
+        let mappedData;
         
-        setVehicleData(validatedData);
+        // Check if the response has the expected structure from your backend
+        if (apiData.today || apiData.yesterday || apiData.week || apiData.month) {
+          // This is the aggregated format with time periods
+          const currentPeriodData = apiData[timePeriod] || {};
+          
+          mappedData = {
+            cars: currentPeriodData.cars || currentPeriodData.car_count || 0,
+            trucks: currentPeriodData.trucks || currentPeriodData.truck_count || 0,
+            motorcycles: currentPeriodData.motorcycles || currentPeriodData.motorcycle_count || 0,
+            jeeps: currentPeriodData.jeeps || currentPeriodData.bus_count || 0,
+            tricycles: currentPeriodData.tricycles || currentPeriodData.bicycle_count || 0,
+            other: currentPeriodData.other || currentPeriodData.other_count || 0,
+            total: currentPeriodData.total || currentPeriodData.total_vehicles || 0,
+            directional_total: currentPeriodData.directional_count || 0,
+            summary: apiData.summary || {
+              total_analyses: 0,
+              average_daily: 0,
+              data_source: 'Traffic Analysis Database'
+            }
+          };
+        } else {
+          // This is a single analysis/group format
+          mappedData = {
+            cars: apiData.car_count || apiData.cars || 0,
+            trucks: apiData.truck_count || apiData.trucks || 0,
+            motorcycles: apiData.motorcycle_count || apiData.motorcycles || 0,
+            jeeps: apiData.bus_count || apiData.jeeps || 0,  // bus_count in DB = jeep
+            tricycles: apiData.bicycle_count || apiData.tricycles || 0, // bicycle_count = tricycle
+            other: apiData.other_count || apiData.other || 0,
+            total: apiData.total_vehicles || apiData.total || 0,
+            directional_total: apiData.directional_count || apiData.directional_total || 0,
+            location: apiData.location_name || apiData.location,
+            date: apiData.analysis_date || apiData.date,
+            summary: {
+              total_analyses: apiData.total_analyses || 1,
+              average_daily: apiData.average_daily || 0,
+              data_source: apiData.data_source || 'Traffic Analysis',
+              peak_hour: apiData.peak_hour,
+              congestion_level: apiData.congestion_level
+            }
+          };
+        }
+        
+        // Calculate total if not provided
+        if (mappedData.total === 0) {
+          mappedData.total = mappedData.cars + mappedData.trucks + mappedData.motorcycles + 
+                             mappedData.jeeps + mappedData.tricycles + mappedData.other;
+        }
+        
+        setVehicleData(mappedData);
+        
+        // If location is selected and has groups, fetch them
+        if (locationFilter !== "all") {
+          fetchDateGroups(locationFilter);
+        }
+        
         setError(null);
       } else {
         console.log("❌ Invalid API response structure");
-        setVehicleData({
-          today: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-          yesterday: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-          week: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-          month: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-          summary: { total_analyses: 0, average_daily: 0, data_source: 'Invalid response format' }
-        });
+        setVehicleData(getEmptyVehicleData());
         setError("Invalid data format from server");
       }
       
@@ -101,33 +158,28 @@ function VehiclesPassing() {
       const errorMsg = err.response?.data?.error || err.message || "Failed to load vehicle data";
       setError(`API Error: ${errorMsg}`);
       
-      // Set fallback data
-      setVehicleData({
-        today: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-        yesterday: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-        week: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-        month: { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 },
-        summary: { 
-          total_analyses: 0, 
-          average_daily: 0, 
-          data_source: 'Check if videos have been processed and analyzed',
-          total_vehicles: 0,
-          unique_days: 0
-        }
-      });
+      // Set fallback empty data
+      setVehicleData(getEmptyVehicleData());
     } finally {
       setLoading(false);
     }
   };
 
-  const calculateChange = (current, previous) => {
-    if (!previous || previous === 0) return { value: 0, isPositive: true };
-    const change = ((current - previous) / previous) * 100;
-    return {
-      value: change,
-      isPositive: change >= 0
-    };
-  };
+  const getEmptyVehicleData = () => ({
+    cars: 0,
+    trucks: 0,
+    motorcycles: 0,
+    jeeps: 0,
+    tricycles: 0,
+    other: 0,
+    total: 0,
+    directional_total: 0,
+    summary: { 
+      total_analyses: 0, 
+      average_daily: 0, 
+      data_source: 'Check if videos have been processed and analyzed'
+    }
+  });
 
   if (loading) {
     return (
@@ -150,73 +202,43 @@ function VehiclesPassing() {
     );
   }
 
-  const currentData = vehicleData?.[timePeriod] || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 };
-  const previousData = timePeriod === "today" 
-    ? (vehicleData?.yesterday || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 })
-    : (vehicleData?.today || { cars: 0, trucks: 0, buses: 0, motorcycles: 0, bicycles: 0, others: 0 });
+  // Use current data or empty defaults
+  const currentData = vehicleData || getEmptyVehicleData();
+  const totalVehicles = currentData.total || 0;
+  const directionalTotal = currentData.directional_total || 0;
 
-  const carsChange = calculateChange(currentData.cars || 0, previousData?.cars || 0);
-  const trucksChange = calculateChange(currentData.trucks || 0, previousData?.trucks || 0);
-  const busesChange = calculateChange(currentData.buses || 0, previousData?.buses || 0);
-  const motorcyclesChange = calculateChange(currentData.motorcycles || 0, previousData?.motorcycles || 0);
-  const bicyclesChange = calculateChange(currentData.bicycles || 0, previousData?.bicycles || 0);
-  const othersChange = calculateChange(currentData.others || 0, previousData?.others || 0);
+  // Log the data to verify it's being populated
+  console.log("📊 Current vehicle data for display:", currentData);
 
-  const totalVehicles = Object.values(currentData).reduce((sum, count) => sum + (count || 0), 0);
-
+  // Bar chart data for Vehicle Type Distribution only
   const barChartData = {
-    labels: ['Cars', 'Trucks', 'Buses', 'Motorcycles', 'Bicycles', 'Others'],
+    labels: ['Cars', 'Trucks', 'Motorcycles', 'Jeeps', 'Tricycles', 'Other'],
     datasets: [
       {
         label: 'Vehicle Count',
         data: [
           currentData.cars || 0,
           currentData.trucks || 0,
-          currentData.buses || 0,
           currentData.motorcycles || 0,
-          currentData.bicycles || 0,
-          currentData.others || 0
+          currentData.jeeps || 0,
+          currentData.tricycles || 0,
+          currentData.other || 0
         ],
         backgroundColor: [
           'rgba(54, 162, 235, 0.7)',
           'rgba(255, 99, 132, 0.7)',
-          'rgba(75, 192, 192, 0.7)',
           'rgba(255, 159, 64, 0.7)',
+          'rgba(75, 192, 192, 0.7)',
           'rgba(153, 102, 255, 0.7)',
           'rgba(201, 203, 207, 0.7)'
         ],
         borderColor: [
           'rgb(54, 162, 235)',
           'rgb(255, 99, 132)',
-          'rgb(75, 192, 192)',
           'rgb(255, 159, 64)',
+          'rgb(75, 192, 192)',
           'rgb(153, 102, 255)',
           'rgb(201, 203, 207)'
-        ],
-        borderWidth: 1
-      }
-    ]
-  };
-
-  const pieChartData = {
-    labels: ['Cars', 'Trucks', 'Buses', 'Motorcycles', 'Bicycles', 'Others'],
-    datasets: [
-      {
-        data: [
-          currentData.cars || 0,
-          currentData.trucks || 0,
-          currentData.buses || 0,
-          currentData.motorcycles || 0,
-          currentData.bicycles || 0,
-          currentData.others || 0
-        ],
-        backgroundColor: [
-          'rgba(54, 162, 235, 0.7)',
-          'rgba(255, 99, 132, 0.7)',
-          'rgba(75, 192, 192, 0.7)',
-          'rgba(255, 159, 64, 0.7)',
-          'rgba(153, 102, 255, 0.7)',
-          'rgba(201, 203, 207, 0.7)'
         ],
         borderWidth: 1
       }
@@ -273,7 +295,10 @@ function VehiclesPassing() {
             <select 
               className="select-input"
               value={timePeriod}
-              onChange={(e) => setTimePeriod(e.target.value)}
+              onChange={(e) => {
+                setTimePeriod(e.target.value);
+                setSelectedGroup(null);
+              }}
               style={{ width: '100%' }}
             >
               <option value="today">Today</option>
@@ -289,7 +314,15 @@ function VehiclesPassing() {
             <select 
               className="select-input"
               value={locationFilter}
-              onChange={(e) => setLocationFilter(e.target.value)}
+              onChange={(e) => {
+                setLocationFilter(e.target.value);
+                setSelectedGroup(null);
+                if (e.target.value !== "all") {
+                  fetchDateGroups(e.target.value);
+                } else {
+                  setDateGroups([]);
+                }
+              }}
               style={{ width: '100%' }}
             >
               <option value="all">All Locations</option>
@@ -306,7 +339,10 @@ function VehiclesPassing() {
             <select 
               className="select-input"
               value={dateRange}
-              onChange={(e) => setDateRange(e.target.value)}
+              onChange={(e) => {
+                setDateRange(e.target.value);
+                setSelectedGroup(null);
+              }}
               style={{ width: '100%' }}
             >
               <option value="last_7_days">Last 7 Days</option>
@@ -315,10 +351,29 @@ function VehiclesPassing() {
               <option value="all">All Time</option>
             </select>
           </div>
+
+          {dateGroups.length > 0 && (
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500', fontSize: '14px' }}>Date Group</label>
+              <select 
+                className="select-input"
+                value={selectedGroup || ''}
+                onChange={(e) => setSelectedGroup(e.target.value || null)}
+                style={{ width: '100%' }}
+              >
+                <option value="">All Groups</option>
+                {dateGroups.map(group => (
+                  <option key={group.id} value={group.id}>
+                    {group.date} - {group.get_time_range?.() || 'No time range'}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* Data Source Info */}
-        {vehicleData?.summary && (
+        {currentData.summary && (
           <div style={{ 
             marginTop: '16px', 
             padding: '12px', 
@@ -327,9 +382,15 @@ function VehiclesPassing() {
             border: '1px solid #bae6fd'
           }}>
             <div style={{ fontSize: '14px', color: '#0369a1' }}>
-              <strong>Data Source:</strong> {vehicleData.summary.data_source || 'Traffic Analysis'} • 
-              <strong> Total Analyses:</strong> {vehicleData.summary.total_analyses || 0} • 
-              <strong> Avg Daily:</strong> {vehicleData.summary.average_daily?.toLocaleString() || 0} vehicles
+              <strong>Data Source:</strong> {currentData.summary.data_source} • 
+              <strong> Total Analyses:</strong> {currentData.summary.total_analyses || 0} • 
+              <strong> Total Vehicles:</strong> {totalVehicles.toLocaleString()}
+              {currentData.summary.average_daily > 0 && (
+                <> • <strong>Avg Daily:</strong> {currentData.summary.average_daily.toLocaleString()}</>
+              )}
+              {currentData.summary.congestion_level && (
+                <> • <strong>Congestion:</strong> {currentData.summary.congestion_level}</>
+              )}
             </div>
           </div>
         )}
@@ -350,17 +411,24 @@ function VehiclesPassing() {
             <p style={{ fontSize: '36px', fontWeight: 'bold', margin: '0 0 8px 0' }}>
               {totalVehicles.toLocaleString()}
             </p>
-            <p style={{ fontSize: '14px', opacity: 0.9, margin: 0 }}>
-              {vehicleData?.summary?.data_source || 'From processed traffic videos'}
-            </p>
+            {directionalTotal > 0 && (
+              <p style={{ fontSize: '14px', opacity: 0.9, margin: 0 }}>
+                {directionalTotal.toLocaleString()} vehicles counted directionally
+              </p>
+            )}
           </div>
           <div style={{ textAlign: 'right' }}>
             <p style={{ fontSize: '14px', opacity: 0.9, margin: '0 0 8px 0' }}>
               Period: {timePeriod.charAt(0).toUpperCase() + timePeriod.slice(1)}
             </p>
             <p style={{ fontSize: '16px', fontWeight: '600', margin: 0 }}>
-              {timePeriod === "today" ? "Live Data" : "Historical Data"}
+              {currentData.location || 'All Locations'}
             </p>
+            {currentData.date && (
+              <p style={{ fontSize: '12px', opacity: 0.8, margin: '4px 0 0 0' }}>
+                As of {new Date(currentData.date).toLocaleDateString()}
+              </p>
+            )}
           </div>
         </div>
         
@@ -382,168 +450,95 @@ function VehiclesPassing() {
 
       {/* Vehicle Statistics Grid */}
       <div className="stats-grid">
-        <div className="stat-card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div className="stat-value" style={{ color: (currentData.cars || 0) === 0 ? '#9ca3af' : '#2d3748' }}>
-                {(currentData.cars || 0).toLocaleString()}
+        {[
+          { label: 'Cars', value: currentData.cars, color: '#3b82f6' },
+          { label: 'Trucks', value: currentData.trucks, color: '#ef4444' },
+          { label: 'Motorcycles', value: currentData.motorcycles, color: '#f59e0b' },
+          { label: 'Jeeps', value: currentData.jeeps, color: '#10b981' },
+          { label: 'Tricycles', value: currentData.tricycles, color: '#8b5cf6' },
+          { label: 'Other', value: currentData.other, color: '#6b7280' }
+        ].map((item, index) => (
+          <div className="stat-card" key={index}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div className="stat-value" style={{ color: (item.value || 0) === 0 ? '#9ca3af' : '#2d3748' }}>
+                  {(item.value || 0).toLocaleString()}
+                </div>
+                <div className="stat-label">{item.label}</div>
               </div>
-              <div className="stat-label">Cars</div>
+              <div style={{ 
+                width: '40px', 
+                height: '40px', 
+                borderRadius: '8px',
+                backgroundColor: item.color,
+                opacity: 0.2
+              }} />
             </div>
-            {(currentData.cars || 0) > 0 ? (
-              <div className={`stat-change ${carsChange.isPositive ? 'positive-change' : 'negative-change'}`}>
-                {carsChange.isPositive ? '↗' : '↘'} {Math.abs(carsChange.value).toFixed(1)}%
-              </div>
-            ) : (
-              <div style={{ fontSize: '12px', color: '#9ca3af' }}>No data</div>
-            )}
-          </div>
-          <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
-            {((currentData.cars / totalVehicles) * 100 || 0).toFixed(1)}% of total
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div className="stat-value" style={{ color: (currentData.trucks || 0) === 0 ? '#9ca3af' : '#2d3748' }}>
-                {(currentData.trucks || 0).toLocaleString()}
-              </div>
-              <div className="stat-label">Trucks</div>
+            <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
+              {((item.value / totalVehicles) * 100 || 0).toFixed(1)}% of total
             </div>
-            {(currentData.trucks || 0) > 0 ? (
-              <div className={`stat-change ${trucksChange.isPositive ? 'positive-change' : 'negative-change'}`}>
-                {trucksChange.isPositive ? '↗' : '↘'} {Math.abs(trucksChange.value).toFixed(1)}%
-              </div>
-            ) : (
-              <div style={{ fontSize: '12px', color: '#9ca3af' }}>No data</div>
-            )}
           </div>
-          <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
-            {((currentData.trucks / totalVehicles) * 100 || 0).toFixed(1)}% of total
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div className="stat-value" style={{ color: (currentData.buses || 0) === 0 ? '#9ca3af' : '#2d3748' }}>
-                {(currentData.buses || 0).toLocaleString()}
-              </div>
-              <div className="stat-label">Buses</div>
-            </div>
-            {(currentData.buses || 0) > 0 ? (
-              <div className={`stat-change ${busesChange.isPositive ? 'positive-change' : 'negative-change'}`}>
-                {busesChange.isPositive ? '↗' : '↘'} {Math.abs(busesChange.value).toFixed(1)}%
-              </div>
-            ) : (
-              <div style={{ fontSize: '12px', color: '#9ca3af' }}>No data</div>
-            )}
-          </div>
-          <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
-            {((currentData.buses / totalVehicles) * 100 || 0).toFixed(1)}% of total
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div className="stat-value" style={{ color: (currentData.motorcycles || 0) === 0 ? '#9ca3af' : '#2d3748' }}>
-                {(currentData.motorcycles || 0).toLocaleString()}
-              </div>
-              <div className="stat-label">Motorcycles</div>
-            </div>
-            {(currentData.motorcycles || 0) > 0 ? (
-              <div className={`stat-change ${motorcyclesChange.isPositive ? 'positive-change' : 'negative-change'}`}>
-                {motorcyclesChange.isPositive ? '↗' : '↘'} {Math.abs(motorcyclesChange.value).toFixed(1)}%
-              </div>
-            ) : (
-              <div style={{ fontSize: '12px', color: '#9ca3af' }}>No data</div>
-            )}
-          </div>
-          <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
-            {((currentData.motorcycles / totalVehicles) * 100 || 0).toFixed(1)}% of total
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div className="stat-value" style={{ color: (currentData.bicycles || 0) === 0 ? '#9ca3af' : '#2d3748' }}>
-                {(currentData.bicycles || 0).toLocaleString()}
-              </div>
-              <div className="stat-label">Bicycles</div>
-            </div>
-            {(currentData.bicycles || 0) > 0 ? (
-              <div className={`stat-change ${bicyclesChange.isPositive ? 'positive-change' : 'negative-change'}`}>
-                {bicyclesChange.isPositive ? '↗' : '↘'} {Math.abs(bicyclesChange.value).toFixed(1)}%
-              </div>
-            ) : (
-              <div style={{ fontSize: '12px', color: '#9ca3af' }}>No data</div>
-            )}
-          </div>
-          <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
-            {((currentData.bicycles / totalVehicles) * 100 || 0).toFixed(1)}% of total
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div className="stat-value" style={{ color: (currentData.others || 0) === 0 ? '#9ca3af' : '#2d3748' }}>
-                {(currentData.others || 0).toLocaleString()}
-              </div>
-              <div className="stat-label">Other Vehicles</div>
-            </div>
-            {(currentData.others || 0) > 0 ? (
-              <div className={`stat-change ${othersChange.isPositive ? 'positive-change' : 'negative-change'}`}>
-                {othersChange.isPositive ? '↗' : '↘'} {Math.abs(othersChange.value).toFixed(1)}%
-              </div>
-            ) : (
-              <div style={{ fontSize: '12px', color: '#9ca3af' }}>No data</div>
-            )}
-          </div>
-          <div style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
-            {((currentData.others / totalVehicles) * 100 || 0).toFixed(1)}% of total
-          </div>
-        </div>
+        ))}
       </div>
 
-      {/* Charts Section */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '32px', marginBottom: '32px' }}>
+      {/* Vehicle Type Distribution Chart - Main Chart */}
+      <div style={{ marginBottom: '32px' }}>
         <div className="dashboard-card">
           <div className="card-header">
             <h3 className="card-title">Vehicle Type Distribution</h3>
-            <p style={{ fontSize: '14px', color: '#666' }}>Count by vehicle type</p>
+            <p style={{ fontSize: '14px', color: '#666' }}>
+              Total Vehicles: {totalVehicles.toLocaleString()} | 
+              Directional Count: {directionalTotal.toLocaleString()}
+            </p>
           </div>
-          <div style={{ height: '320px' }}>
-            <Bar 
-              data={barChartData} 
-              options={{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false } }
-              }}
-            />
-          </div>
-        </div>
-
-        <div className="dashboard-card">
-          <div className="card-header">
-            <h3 className="card-title">Vehicle Percentage Breakdown</h3>
-            <p style={{ fontSize: '14px', color: '#666' }}>Percentage of total traffic</p>
-          </div>
-          <div style={{ height: '320px' }}>
-            <Pie 
-              data={pieChartData} 
-              options={{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                  legend: { position: 'bottom' }
-                }
-              }}
-            />
+          <div style={{ height: '400px', padding: '20px' }}>
+            {totalVehicles > 0 ? (
+              <Bar 
+                data={barChartData} 
+                options={{
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  plugins: { 
+                    legend: { display: false },
+                    tooltip: {
+                      callbacks: {
+                        label: function(context) {
+                          let label = context.dataset.label || '';
+                          let value = context.raw || 0;
+                          let percentage = ((value / totalVehicles) * 100).toFixed(1);
+                          return `${label}: ${value.toLocaleString()} (${percentage}%)`;
+                        }
+                      }
+                    }
+                  },
+                  scales: {
+                    y: {
+                      beginAtZero: true,
+                      title: {
+                        display: true,
+                        text: 'Number of Vehicles'
+                      },
+                      ticks: {
+                        callback: function(value) {
+                          return value.toLocaleString();
+                        }
+                      }
+                    }
+                  }
+                }}
+              />
+            ) : (
+              <div style={{ 
+                height: '100%', 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center',
+                color: '#666',
+                fontSize: '16px'
+              }}>
+                No vehicle data available to display
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -561,48 +556,46 @@ function VehiclesPassing() {
               <tr>
                 <th>Vehicle Type</th>
                 <th>Count</th>
-                <th>Change</th>
                 <th>Percentage</th>
-                <th>Trend</th>
-                <th>Daily Average</th>
+                <th>Directional Count</th>
+                <th>% of Directional</th>
               </tr>
             </thead>
             <tbody>
               {[
-                { type: 'Cars', data: currentData.cars, change: carsChange },
-                { type: 'Trucks', data: currentData.trucks, change: trucksChange },
-                { type: 'Buses', data: currentData.buses, change: busesChange },
-                { type: 'Motorcycles', data: currentData.motorcycles, change: motorcyclesChange },
-                { type: 'Bicycles', data: currentData.bicycles, change: bicyclesChange },
-                { type: 'Others', data: currentData.others, change: othersChange }
-              ].map((vehicle, index) => (
-                <tr key={index}>
-                  <td style={{ fontWeight: '600' }}>{vehicle.type}</td>
-                  <td>{(vehicle.data || 0).toLocaleString()}</td>
-                  <td className={vehicle.change.isPositive ? 'positive-change' : 'negative-change'}>
-                    {vehicle.change.isPositive ? '+' : ''}{Math.abs(vehicle.change.value).toFixed(1)}%
-                  </td>
-                  <td>{(((vehicle.data || 0) / totalVehicles) * 100).toFixed(1)}%</td>
-                  <td>
-                    <span style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      padding: '2px 8px',
-                      borderRadius: '12px',
-                      fontSize: '12px',
-                      fontWeight: '500',
-                      backgroundColor: vehicle.change.isPositive ? '#d1fae5' : '#fee2e2',
-                      color: vehicle.change.isPositive ? '#065f46' : '#991b1b'
-                    }}>
-                      {vehicle.change.isPositive ? '↗ Increasing' : '↘ Decreasing'}
-                    </span>
-                  </td>
-                  <td>
-                    {vehicleData?.summary?.average_daily ? 
-                      Math.round((vehicle.data || 0) / (vehicleData.summary.average_daily / 6)) : 0}/day
-                  </td>
-                </tr>
-              ))}
+                { type: 'Cars', data: currentData.cars },
+                { type: 'Trucks', data: currentData.trucks },
+                { type: 'Motorcycles', data: currentData.motorcycles },
+                { type: 'Jeeps', data: currentData.jeeps },
+                { type: 'Tricycles', data: currentData.tricycles },
+                { type: 'Other', data: currentData.other }
+              ].map((vehicle, index) => {
+                const percentage = totalVehicles > 0 ? ((vehicle.data || 0) / totalVehicles * 100).toFixed(1) : '0.0';
+                const directionalPercentage = directionalTotal > 0 ? ((vehicle.data || 0) / directionalTotal * 100).toFixed(1) : '0.0';
+                
+                return (
+                  <tr key={index}>
+                    <td style={{ fontWeight: '600' }}>{vehicle.type}</td>
+                    <td>{(vehicle.data || 0).toLocaleString()}</td>
+                    <td>{percentage}%</td>
+                    <td>
+                      {directionalTotal > 0 
+                        ? Math.round((vehicle.data || 0) * (directionalTotal / totalVehicles)).toLocaleString()
+                        : 'N/A'
+                      }
+                    </td>
+                    <td>{directionalPercentage}%</td>
+                  </tr>
+                );
+              })}
+              {/* Total row */}
+              <tr style={{ backgroundColor: '#f9fafb', fontWeight: 'bold' }}>
+                <td>TOTAL</td>
+                <td>{totalVehicles.toLocaleString()}</td>
+                <td>100%</td>
+                <td>{directionalTotal.toLocaleString()}</td>
+                <td>100%</td>
+              </tr>
             </tbody>
           </table>
         </div>

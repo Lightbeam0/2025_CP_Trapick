@@ -2,7 +2,7 @@
 import React from "react";
 import {
   FaChartLine, FaCarSide, FaTrafficLight,
-  FaMagic, FaMapMarkerAlt, FaTimes,
+  FaMapMarkerAlt, FaTimes,
 } from "react-icons/fa";
 import { useLocation } from 'react-router-dom';
 import ProcessingResultModal from "./ProcessingResultModal";
@@ -61,7 +61,7 @@ function Sidebar({ isMobileOpen, onClose }) {
               { href: '/vehicles',    icon: <FaCarSide />,      label: 'Vehicles Passing' },
               { href: '/congested',   icon: <FaTrafficLight />, label: 'Congested Roads' },
               { href: '/locations',   icon: <FaMapMarkerAlt />, label: 'Locations' },
-              { href: '/predictions', icon: <FaMagic />,        label: 'Traffic Predictions' },
+              // Traffic Predictions link removed
             ].map(({ href, icon, label }) => (
               <li key={href}>
                 <a

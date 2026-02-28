@@ -1,63 +1,46 @@
 # ml/directional_detectors/diagonal_ne_sw.py
-import cv2
-import numpy as np
+"""
+Diagonal NE→SW — vehicles moving from NORTHEAST to SOUTHWEST.
+
+FIX #2: Removed self.valid_direction = (-1, 1) from __init__.
+         setup_counting_line() is the only source of truth.
+FIX #5: Counting line coordinates clamped to within-frame bounds (≤ 1.0).
+         Old code used 1.10× multipliers, placing the line off-screen and
+         causing vehicles near the edge to never trigger a crossing event.
+"""
 from .base_directional import BaseDirectionalDetector
 
 
 class DiagonalNESWDetector(BaseDirectionalDetector):
-    """Count vehicles moving from NORTHEAST to SOUTHWEST"""
-    
-    def __init__(self, model_path='yolov8l.pt'):
-        # Call parent's __init__ with proper direction name
+    """Count vehicles moving from NORTHEAST to SOUTHWEST."""
+
+    def __init__(self, model_path=None):
         super().__init__(direction_name="Diagonal NE→SW", model_path=model_path)
-        
-        # Direction-specific attributes
-        self.valid_direction = (-1, 1)  # Moving SW (decrease X, increase Y)
-    
+        # FIX #2: Do NOT set self.valid_direction here.
+        #         It will be set by setup_counting_line() on first frame.
+
     def setup_counting_line(self, frame_width, frame_height):
-        """Set diagonal counting line from NE to SW, positioned in LOWER RIGHT corner"""
-        # Diagonal line in the lower-right quadrant of the frame
-        # Line goes from upper-right area to lower-left area of that quadrant
-        line_start = (int(frame_width * 1.10), int(frame_height * 0.40))  # NE position (moved more right and higher)
-        line_end = (int(frame_width * 0.40), int(frame_height * 1.10))    # SW position (expanded length, lower-left)
-        
+        """
+        Diagonal counting line across the lower-right quadrant of the frame.
+
+        FIX #5: All coordinates are ≤ frame dimensions so the line is always
+        visible and vehicle paths reliably cross it.
+        """
+        # NE corner of the line (upper-right area)
+        line_start = (int(frame_width * 0.90), int(frame_height * 0.15))
+        # SW corner of the line (lower-left area)
+        line_end   = (int(frame_width * 0.15), int(frame_height * 0.85))
+
         # Valid direction: moving SW (decrease X, increase Y)
         valid_direction = (-1, 1)
-        
-        print(f"🎯 Counting line set (LOWER RIGHT quadrant):")
-        print(f"   Start (NE): {line_start} - at ({line_start[0]/frame_width*100:.1f}%, {line_start[1]/frame_height*100:.1f}%)")
-        print(f"   End (SW): {line_end} - at ({line_end[0]/frame_width*100:.1f}%, {line_end[1]/frame_height*100:.1f}%)")
-        print(f"   Direction: Southwest (X decreasing, Y increasing)")
-        print(f"   Coverage: Lower-right quadrant of frame")
-        
+
+        print(f"🎯 DiagonalNESW counting line:")
+        print(f"   Start (NE): {line_start}")
+        print(f"   End   (SW): {line_end}")
+        print(f"   Direction : Southwest (−X, +Y)")
+
         return line_start, line_end, valid_direction
-    
+
     def is_valid_direction(self, track_history, valid_direction_vector):
-        """Check if vehicle is moving SW (decreasing X, increasing Y)"""
-        if len(track_history) < 5:
-            return False
-        
-        points = list(track_history)
-        recent_points = points[-5:] if len(points) >= 5 else points
-        
-        # Calculate movement vectors
-        vectors = []
-        for i in range(len(recent_points)-1):
-            dx = recent_points[i+1][0] - recent_points[i][0]
-            dy = recent_points[i+1][1] - recent_points[i][1]
-            
-            # Only consider significant movements
-            if abs(dx) > 2 or abs(dy) > 2:
-                vectors.append((dx, dy))
-        
-        if not vectors:
-            return False
-        
-        # Check if majority of vectors align with SW direction
-        sw_vectors = 0
-        for dx, dy in vectors:
-            # For SW: dx should be negative, dy should be positive
-            if dx < 0 and dy > 0:
-                sw_vectors += 1
-        
-        return sw_vectors >= len(vectors) * 0.6
+        return self.enhanced_is_valid_direction(track_history, valid_direction_vector,
+                                                threshold=0.45)

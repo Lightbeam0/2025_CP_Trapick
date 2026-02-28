@@ -67,8 +67,12 @@ class ProcessingProfile(models.Model):
         return f"{self.display_name} ({self.get_road_type_display()})"
 
     def get_detector_instance(self):
-        """Get detector instance - simple approach"""
-        from ml.directional_detectors import get_detector
+        """
+        Get detector instance.
+        Uses a process-level LRU cache so the YOLO model is loaded only once
+        per (detector_type, model_path) combination per worker process.
+        """
+        from ml.directional_detectors import _load_cached_detector
 
         BASE_DIR = os.path.dirname(
             os.path.dirname(
@@ -84,7 +88,7 @@ class ProcessingProfile(models.Model):
         model_path = self.config_parameters.get('model_path', custom_model_path)
 
         try:
-            detector = get_detector(self.detector_type, model_path=model_path)
+            detector = _load_cached_detector(self.detector_type, model_path)
 
             if hasattr(detector, 'enable_congestion_detection'):
                 detector.enable_congestion_detection = self.enable_congestion_detection
@@ -181,10 +185,7 @@ class LocationDateGroup(models.Model):
         return self.videos.all().order_by('video_start_time')
 
     def get_time_range(self):
-        """
-        Returns a formatted string showing start time to end time.
-        Kept for backward compatibility.
-        """
+        """Returns a formatted string showing start time to end time."""
         videos = self.videos.filter(processing_status='completed').order_by('video_start_time')
 
         if not videos.exists():
@@ -205,9 +206,7 @@ class LocationDateGroup(models.Model):
         return f"{earliest.strftime('%H:%M')} - {latest.strftime('%H:%M')}"
 
     def get_detailed_time_range(self):
-        """
-        Calculate detailed time range showing actual coverage pattern.
-        """
+        """Calculate detailed time range showing actual coverage pattern."""
         videos = self.videos.filter(processing_status='completed').order_by('video_start_time')
 
         if not videos.exists():
@@ -385,24 +384,47 @@ class LocationDateGroup(models.Model):
             'segments': clean_segments,
         }
 
+    # FIX #9: Replace O(n) Python sum with a single DB aggregation query.
+    # Old get_total_vehicles() / get_directional_count() did two separate
+    # queryset iterations in Python.  This single method does one SQL query.
+    def get_aggregated_stats(self):
+        """Return total_vehicles and directional_count in a single DB query."""
+        from django.db.models import Sum
+        result = TrafficAnalysis.objects.filter(
+            video_file__location_date_group=self
+        ).aggregate(
+            total_vehicles=Sum('total_vehicles'),
+            directional_count=Sum('directional_count'),
+        )
+        return {
+            'total_vehicles': result['total_vehicles'] or 0,
+            'directional_count': result['directional_count'] or 0,
+        }
+
+    # Keep these as thin wrappers so existing call-sites don't break.
     def get_total_vehicles(self):
-        analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=self)
-        return sum(a.total_vehicles for a in analyses) if analyses else 0
+        return self.get_aggregated_stats()['total_vehicles']
 
     def get_directional_count(self):
-        analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=self)
-        return sum(a.directional_count for a in analyses) if analyses else 0
+        return self.get_aggregated_stats()['directional_count']
 
     def update_statistics(self):
-        analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=self)
-        if analyses:
-            self.total_directional_count = sum(a.directional_count for a in analyses)
-            total_duration = sum(a.duration_seconds for a in analyses if a.duration_seconds)
-            if total_duration > 0:
-                self.average_directional_flow = (self.total_directional_count / total_duration) * 3600
-            self.peak_directional_flow = max((a.peak_directional_flow for a in analyses), default=0)
-            self.calculate_coverage_metrics()
-            self.save()
+        from django.db.models import Sum, Max
+        agg = TrafficAnalysis.objects.filter(
+            video_file__location_date_group=self
+        ).aggregate(
+            total_dir=Sum('directional_count'),
+            total_dur=Sum('duration_seconds'),
+            peak=Max('peak_directional_flow'),
+        )
+
+        self.total_directional_count = agg['total_dir'] or 0
+        total_duration = agg['total_dur'] or 0
+        if total_duration > 0:
+            self.average_directional_flow = (self.total_directional_count / total_duration) * 3600
+        self.peak_directional_flow = agg['peak'] or 0
+        self.calculate_coverage_metrics()
+        self.save()
 
     def calculate_hourly_distribution(self):
         analyses = TrafficAnalysis.objects.filter(video_file__location_date_group=self)
@@ -1016,17 +1038,23 @@ def update_video_file_status(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender=Detection)
 def update_traffic_analysis_counts(sender, instance, created, **kwargs):
-    """Update TrafficAnalysis counts when new detections are added."""
+    """
+    FIX #8: Use F() expressions instead of COUNT(*) queries on every Detection save.
+    Old code fired a full COUNT(*) query per Detection insert — O(n) total queries
+    for n detections.  F() expressions issue a single atomic UPDATE instead.
+    """
     if not created or not instance.traffic_analysis:
         return
 
+    from django.db.models import F
+
     analysis = instance.traffic_analysis
 
+    # Build the incremental update dict
+    update_kwargs = {}
+
     if instance.counted_directionally:
-        analysis.directional_count = Detection.objects.filter(
-            traffic_analysis=analysis,
-            counted_directionally=True,
-        ).count()
+        update_kwargs['directional_count'] = F('directional_count') + 1
 
     vehicle_type_name = instance.vehicle_type.name.lower()
     count_field_map = {
@@ -1040,25 +1068,11 @@ def update_traffic_analysis_counts(sender, instance, created, **kwargs):
 
     if vehicle_type_name in count_field_map:
         field = count_field_map[vehicle_type_name]
-        setattr(
-            analysis,
-            field,
-            Detection.objects.filter(
-                traffic_analysis=analysis,
-                vehicle_type__name=vehicle_type_name,
-            ).count(),
-        )
+        update_kwargs[field] = F(field) + 1
+        update_kwargs['total_vehicles'] = F('total_vehicles') + 1
 
-    analysis.total_vehicles = (
-        analysis.car_count + analysis.truck_count +
-        analysis.motorcycle_count + analysis.bus_count +
-        analysis.bicycle_count + analysis.other_count
-    )
-    analysis.save(update_fields=[
-        'directional_count', 'car_count', 'truck_count',
-        'motorcycle_count', 'bus_count', 'bicycle_count',
-        'other_count', 'total_vehicles',
-    ])
+    if update_kwargs:
+        TrafficAnalysis.objects.filter(pk=analysis.pk).update(**update_kwargs)
 
 
 @receiver(post_save, sender=TrafficAnalysis)
@@ -1083,7 +1097,6 @@ def auto_group_video_after_analysis(sender, instance, created, **kwargs):
         with transaction.atomic():
             video = VideoFile.objects.select_for_update().get(pk=instance.video_file.pk)
 
-            # Skip if already correctly grouped and completed
             if video.location_date_group_id and video.processing_status == 'completed':
                 logger.info(
                     f"ℹ️ Video {video.id} already grouped and completed – skipping signal."
