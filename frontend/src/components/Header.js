@@ -52,7 +52,7 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
     }
   };
 
-  // 🔄 NEW: Handle sync to cloud
+  // 🔄 Handle sync to cloud
   const handleSyncToCloud = async () => {
     if (isSyncing) return;
     
@@ -71,7 +71,6 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
     setSyncStatus({ type: 'info', message: 'Checking sync status...' });
 
     try {
-      // First, check sync status
       const statusResponse = await axios.get('/api/sync/status/');
       
       console.log('📊 Sync Status:', statusResponse.data);
@@ -88,7 +87,6 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
         return;
       }
 
-      // Confirm with data counts
       const finalConfirm = window.confirm(
         `📊 Ready to Sync:\n\n` +
         `• ${locations} Location(s)\n` +
@@ -103,7 +101,6 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
         return;
       }
 
-      // Perform the sync
       setSyncStatus({ type: 'info', message: 'Syncing data to cloud...' });
       
       const syncResponse = await axios.post('/api/sync/execute/');
@@ -116,7 +113,6 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
           message: `✅ Sync Complete! ${syncResponse.data.results.analyses} analyses synced.` 
         });
         
-        // Show detailed results
         setTimeout(() => {
           alert(
             '🎉 Sync Successful!\n\n' +
@@ -149,7 +145,6 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
       setSyncStatus({ type: 'error', message: `❌ ${errorMessage}` });
     } finally {
       setIsSyncing(false);
-      // Clear status after 5 seconds
       setTimeout(() => setSyncStatus(null), 5000);
     }
   };
@@ -178,7 +173,7 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
 
       {/* Right Section */}
       <div className="header-right">
-        {/* 🔄 NEW: Sync to Cloud Button - ONLY for admin in LOCAL mode */}
+        {/* Sync to Cloud Button - ONLY for admin in LOCAL mode */}
         {showSyncButton && (
           <button
             onClick={handleSyncToCloud}
@@ -201,7 +196,7 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
           </button>
         )}
 
-        {/* Upload Video Button - ONLY shown in LOCAL (development), hidden in CLOUD (production) */}
+        {/* Upload Video Button - ONLY in LOCAL (development) mode */}
         {user && onUploadClick && !isCloudDeployment && (
           <button
             onClick={onUploadClick}
@@ -289,18 +284,21 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
               )}
             </>
           ) : (
-            <button
-              onClick={onLoginClick}
-              className="login-button"
-            >
-              <FaUserCircle size={16} className="login-icon" />
-              Sign In
-            </button>
+            // Sign In button — hidden in cloud deployment
+            !isCloudDeployment && (
+              <button
+                onClick={onLoginClick}
+                className="login-button"
+              >
+                <FaUserCircle size={16} className="login-icon" />
+                Sign In
+              </button>
+            )
           )}
         </div>
       </div>
 
-      {/* 🔄 NEW: Sync Status Notification */}
+      {/* Sync Status Notification */}
       {syncStatus && (
         <div className={`sync-notification ${syncStatus.type}`}>
           {syncStatus.message}
