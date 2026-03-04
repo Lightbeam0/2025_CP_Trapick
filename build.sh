@@ -74,6 +74,7 @@ python manage.py collectstatic --no-input --clear
 
 # 4. Run database migrations
 echo "🗄️  Running database migrations..."
+python manage.py migrate trapickapp zero --no-input
 python manage.py migrate --no-input
 
 # 5. Create default vehicle types (if needed)

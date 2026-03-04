@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 from ..enhanced_tracker import EnhancedByteTrackWrapper
 from ..base_detector import BaseDetector
-from ..congestion_module import CongestionModule
+from ..congestion_module import CongestionModule    
 
 _BYTETRACK_PATH = str(Path(__file__).parent.parent / 'bytetrack.yaml')
 _DEFAULT_MODEL  = str(
