@@ -302,7 +302,7 @@ const Header = ({ user, onLoginClick, onLogout, toggleSidebar, onUploadClick }) 
       {syncStatus && (
         <div className={`sync-notification ${syncStatus.type}`}>
           {syncStatus.message}
-        </div>
+        </div>   
       )}
     </header>
   );

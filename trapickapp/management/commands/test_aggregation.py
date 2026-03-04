@@ -1,7 +1,7 @@
 # trapickapp/management/commands/test_aggregation.py
 from django.core.management.base import BaseCommand
 from trapickapp.models import LocationDateGroup
-from trapickapp.data_services.aggregation_service import VideoAggregationService
+from services.aggregation_service import VideoAggregationService
 import json
 
 class Command(BaseCommand):

@@ -1,4 +1,3 @@
-# trapickapp/models.py
 from django.db import models
 from django.utils import timezone
 import uuid
@@ -58,6 +57,78 @@ class ProcessingProfile(models.Model):
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(default=timezone.now)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # ✅ NEW: Enhanced feature flags (Phase 1 — all default=False for compat)
+    # ──────────────────────────────────────────────────────────────────────
+    
+    enable_lane_detection = models.BooleanField(
+        default=False,
+        help_text="Enable per-lane vehicle assignment and statistics"
+    )
+    enable_turning_movement = models.BooleanField(
+        default=False,
+        help_text="Enable left/straight/right turning movement classification"
+    )
+    enable_stopped_vehicle_detection = models.BooleanField(
+        default=False,
+        help_text="Flag vehicles stopped > threshold for incident detection"
+    )
+    enable_night_enhancement = models.BooleanField(
+        default=False,
+        help_text="Apply contrast/brightness adjustment for low-light detection"
+    )
+    enable_trajectory_prediction = models.BooleanField(
+        default=False,
+        help_text="Enable Kalman prediction for lost track recovery"
+    )
+    
+    # ✅ ADD THESE MISSING FEATURE FLAGS
+    enable_enhanced_congestion = models.BooleanField(
+        default=False,
+        help_text="Enable flow metrics, congestion index, and advanced analytics"
+    )
+    enable_class_confidence_tracking = models.BooleanField(
+        default=False,
+        help_text="Track detection confidence trends per vehicle class"
+    )
+    
+    # ✅ ADD Multi-pass analysis flag
+    enable_multi_pass = models.BooleanField(
+        default=False,
+        help_text="Enable two-pass analysis for adaptive thresholds"
+    )
+    
+    # ✅ ADD Video stabilization flag
+    enable_stabilization = models.BooleanField(
+        default=False,
+        help_text="Apply video stabilization before processing"
+    )
+
+    # ✅ NEW: Lane configuration (JSON for flexibility)
+    lane_config = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Lane detection config: {'num_lanes': int, 'lane_width_px': int}"
+    )
+    
+    # ✅ NEW: Enhanced congestion sensitivity
+    congestion_sensitivity = models.CharField(
+        max_length=20,
+        choices=[
+            ('low', 'Low'),
+            ('medium', 'Medium'),
+            ('high', 'High'),
+        ],
+        default='medium',
+        help_text="Sensitivity for congestion detection thresholds"
+    )
+    
+    # ✅ NEW: Weather adaptation toggle
+    weather_adaptation = models.BooleanField(
+        default=True,
+        help_text="Adjust detection based on weather/light conditions"
+    )
+
     class Meta:
         ordering = ['road_type', 'display_name']
         verbose_name = "Processing Profile"
@@ -67,11 +138,6 @@ class ProcessingProfile(models.Model):
         return f"{self.display_name} ({self.get_road_type_display()})"
 
     def get_detector_instance(self):
-        """
-        Get detector instance.
-        Uses a process-level LRU cache so the YOLO model is loaded only once
-        per (detector_type, model_path) combination per worker process.
-        """
         from ml.directional_detectors import _load_cached_detector
 
         BASE_DIR = os.path.dirname(
@@ -96,9 +162,44 @@ class ProcessingProfile(models.Model):
             if hasattr(detector, 'congestion_threshold'):
                 detector.congestion_threshold = self.congestion_threshold
 
+            if hasattr(detector, 'configure_features'):
+                detector.configure_features(
+                    lane_detection=self.enable_lane_detection,
+                    turning_movement=self.enable_turning_movement,
+                    stopped_vehicle_detection=self.enable_stopped_vehicle_detection,
+                    night_enhancement=self.enable_night_enhancement,
+                    trajectory_prediction=self.enable_trajectory_prediction,
+                )
+
+            if hasattr(detector, 'congestion_module'):
+                sensitivity_map = {'low': 0.8, 'medium': 1.0, 'high': 1.2}
+                multiplier = sensitivity_map.get(self.congestion_sensitivity, 1.0)
+                detector.congestion_module._sensitivity_multiplier = multiplier
+
+            if hasattr(detector, 'congestion_module') and \
+                    hasattr(detector.congestion_module, 'config'):
+                detector.congestion_module.config['weather_adaptation_enabled'] = \
+                    self.weather_adaptation
+
+            if self.lane_config and hasattr(detector, 'lane_config'):
+                detector.lane_config = dict(self.lane_config)
+
+            _handled_keys = {
+                'model_path',
+                'enable_congestion_detection',
+                'congestion_threshold',
+                'enable_lane_detection',
+                'enable_turning_movement',
+                'enable_stopped_vehicle_detection',
+                'enable_night_enhancement',
+                'enable_trajectory_prediction',
+                'lane_config',
+                'congestion_sensitivity',
+                'weather_adaptation',
+            }
             if self.config_parameters:
                 for key, value in self.config_parameters.items():
-                    if key != 'model_path' and hasattr(detector, key):
+                    if key not in _handled_keys and hasattr(detector, key):
                         setattr(detector, key, value)
 
             return detector
@@ -385,8 +486,6 @@ class LocationDateGroup(models.Model):
         }
 
     # FIX #9: Replace O(n) Python sum with a single DB aggregation query.
-    # Old get_total_vehicles() / get_directional_count() did two separate
-    # queryset iterations in Python.  This single method does one SQL query.
     def get_aggregated_stats(self):
         """Return total_vehicles and directional_count in a single DB query."""
         from django.db.models import Sum
@@ -401,7 +500,6 @@ class LocationDateGroup(models.Model):
             'directional_count': result['directional_count'] or 0,
         }
 
-    # Keep these as thin wrappers so existing call-sites don't break.
     def get_total_vehicles(self):
         return self.get_aggregated_stats()['total_vehicles']
 
@@ -561,6 +659,13 @@ class VideoFile(models.Model):
                 'name': self.processing_profile.display_name,
                 'detector_type': self.processing_profile.get_detector_type_display(),
                 'congestion_detection': self.processing_profile.enable_congestion_detection,
+                # ✅ Include enhanced feature flags
+                'enhanced_features': {
+                    'lane_detection': self.processing_profile.enable_lane_detection,
+                    'turning_movement': self.processing_profile.enable_turning_movement,
+                    'stopped_vehicle': self.processing_profile.enable_stopped_vehicle_detection,
+                    'night_enhancement': self.processing_profile.enable_night_enhancement,
+                } if hasattr(self.processing_profile, 'enable_lane_detection') else None,
             }
         return None
 
@@ -579,7 +684,6 @@ class TrafficAnalysis(models.Model):
     analyzed_at = models.DateTimeField(default=timezone.now)
 
     # Vehicle type counts
-    # Note: bus_count stores 'jeep', bicycle_count stores 'tricycle' for custom model
     car_count = models.IntegerField(default=0)
     truck_count = models.IntegerField(default=0)
     motorcycle_count = models.IntegerField(default=0)
@@ -632,6 +736,67 @@ class TrafficAnalysis(models.Model):
     frame_data = models.JSONField(default=list, blank=True)
     congestion_events = models.JSONField(default=list, blank=True)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # ✅ NEW: Enhanced metrics (Phase 1 — all nullable for backward compat)
+    # ──────────────────────────────────────────────────────────────────────
+    
+    # Speed metrics
+    avg_speed_kmh = models.FloatField(null=True, blank=True, help_text="Average speed across all vehicles (km/h)")
+    p85_speed_kmh = models.FloatField(null=True, blank=True, help_text="85th percentile speed (km/h)")
+    max_speed_kmh = models.FloatField(null=True, blank=True, help_text="Maximum observed speed (km/h)")
+    
+    # Lane/turning/stopped vehicle metrics
+    lane_statistics = models.JSONField(default=dict, blank=True, help_text="Per-lane vehicle counts and stats")
+    turning_movements = models.JSONField(default=dict, blank=True, help_text="Left/straight/right turn counts by class")
+    stopped_vehicles_count = models.IntegerField(default=0, help_text="Count of vehicles stopped > threshold")
+    
+    # Enhanced congestion metrics
+    congestion_index = models.FloatField(null=True, blank=True, help_text="Composite congestion index (0.0-1.0)")
+    queue_length_meters = models.FloatField(null=True, blank=True, help_text="Estimated queue length in meters")
+    incident_risk_score = models.FloatField(null=True, blank=True, help_text="Predicted incident risk (0.0-1.0)")
+    congestion_trend = models.CharField(
+        max_length=20,
+        choices=[
+            ('worsening', 'Worsening'),
+            ('improving', 'Improving'),
+            ('stable', 'Stable'),
+        ],
+        null=True, blank=True,
+        help_text="Congestion trend direction"
+    )
+
+    # ✅ ADD missing enhanced fields (ML v4.2 Report)
+    # Tracker performance metrics
+    tracker_stats = models.JSONField(
+        default=dict, 
+        blank=True,
+        help_text="Enhanced tracker performance statistics"
+    )
+    
+    # Congestion trend analysis
+    congestion_timeline = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Timeline of congestion scores throughout video"
+    )
+    
+    # Vehicle trajectories (summary)
+    trajectory_summary = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Summary of vehicle trajectories and paths"
+    )
+    
+    # Feature flags used for this analysis (for audit)
+    features_used = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Which enhanced features were enabled during processing"
+    )
+    
+    # ✅ NEW: Version tracking for migration logic
+    detector_version = models.CharField(max_length=20, default='v4.0', help_text="Detector version that generated this analysis")
+
     class Meta:
         verbose_name = "Traffic Analysis"
         verbose_name_plural = "Traffic Analyses"
@@ -641,6 +806,9 @@ class TrafficAnalysis(models.Model):
             models.Index(fields=['video_file']),
             models.Index(fields=['congestion_level']),
             models.Index(fields=['directional_count']),
+            # ✅ Add indexes for new enhanced fields if frequently queried
+            models.Index(fields=['congestion_index']),
+            models.Index(fields=['incident_risk_score']),
         ]
 
     def __str__(self):
@@ -677,6 +845,13 @@ class TrafficAnalysis(models.Model):
                 'severe': self.congestion_severe_time,
             },
             'dominant_level': self.congestion_level,
+            # ✅ Include enhanced congestion metrics if available
+            'enhanced': {
+                'index': self.congestion_index,
+                'queue_length': self.queue_length_meters,
+                'incident_risk': self.incident_risk_score,
+                'trend': self.congestion_trend,
+            } if self.congestion_index is not None else None,
         }
 
     def get_analysis_type(self):
@@ -699,6 +874,37 @@ class TrafficAnalysis(models.Model):
             'tracked_classes': metrics.get('tracked_classes', []),
             'is_directional': 'directional' in metrics.get('detector_type', '').lower(),
             'is_congestion': 'congestion' in metrics.get('detector_type', '').lower(),
+            # ✅ Include detector version
+            'detector_version': getattr(self, 'detector_version', 'v4.0'),
+        }
+
+    # ✅ NEW: Helper method to get all enhanced metrics safely
+    def get_enhanced_metrics(self):
+        """
+        Get all enhanced metrics in one dict.
+        Safe: returns None values if fields not populated.
+        """
+        return {
+            'speeds': {
+                'avg': self.avg_speed_kmh,
+                'p85': self.p85_speed_kmh,
+                'max': self.max_speed_kmh
+            },
+            'lanes': self.lane_statistics or {},
+            'turning': self.turning_movements or {},
+            'stopped_vehicles': self.stopped_vehicles_count,
+            'congestion': {
+                'index': self.congestion_index,
+                'queue_length': self.queue_length_meters,
+                'incident_risk': self.incident_risk_score,
+                'trend': self.congestion_trend
+            },
+            # ✅ ADD NEW: ML v4.2 Report Fields
+            'tracker_stats': self.tracker_stats or {},
+            'congestion_timeline': self.congestion_timeline or [],
+            'trajectory_summary': self.trajectory_summary or {},
+            'features_used': self.features_used or {},
+            'detector_version': self.detector_version,
         }
 
 
@@ -727,6 +933,14 @@ class DirectionalAnalysis(models.Model):
 
     analyzed_at = models.DateTimeField(auto_now_add=True)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # ✅ NEW: Lane/turning specific fields (Phase 1 — nullable JSON)
+    # ──────────────────────────────────────────────────────────────────────
+    
+    lane_counts = models.JSONField(default=dict, blank=True, help_text="Per-lane vehicle counts for this direction")
+    turning_counts = models.JSONField(default=dict, blank=True, help_text="Turning movement counts: {class: {turn_type: count}}")
+    lane_speeds = models.JSONField(default=dict, blank=True, help_text="Per-lane speed statistics")
+
     class Meta:
         verbose_name = "Directional Analysis"
         verbose_name_plural = "Directional Analyses"
@@ -741,6 +955,15 @@ class DirectionalAnalysis(models.Model):
             self.directional_motorcycle_count + self.directional_bus_count +
             self.directional_bicycle_count
         )
+
+    # ✅ NEW: Helper method for lane/turning summary
+    def get_lane_summary(self):
+        """Get lane-based summary safely"""
+        return {
+            'counts': self.lane_counts or {},
+            'speeds': self.lane_speeds or {},
+            'turning': self.turning_counts or {},
+        }
 
 
 class CongestionEvent(models.Model):
@@ -867,6 +1090,14 @@ class FrameAnalysis(models.Model):
     congestion_level = models.CharField(max_length=20, default='none')
     stationary_vehicles = models.IntegerField(default=0)
     detection_data = models.JSONField(default=dict)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # ✅ NEW: Frame-level enhanced fields (Phase 1 — nullable)
+    # ──────────────────────────────────────────────────────────────────────
+    
+    avg_speed_frame = models.FloatField(null=True, blank=True, help_text="Average speed for this frame (km/h)")
+    lane_assignments = models.JSONField(default=dict, blank=True, help_text="Vehicle track_id → lane mapping")
+    stopped_vehicles_frame = models.IntegerField(default=0, help_text="Count of stopped vehicles in this frame")
 
     class Meta:
         unique_together = ['traffic_analysis', 'frame_number']
@@ -995,6 +1226,7 @@ class TrafficPrediction(models.Model):
 
 
 class SystemConfig(models.Model):
+    """System-wide configuration key-value store"""
     key = models.CharField(max_length=100, unique=True)
     value = models.JSONField(default=dict)
     description = models.TextField(blank=True)
@@ -1008,7 +1240,7 @@ class SystemConfig(models.Model):
 
 
 # ============================================================
-# SIGNAL HANDLERS
+# SIGNAL HANDLERS — PRESERVED UNCHANGED
 # ============================================================
 
 from django.db.models.signals import post_save

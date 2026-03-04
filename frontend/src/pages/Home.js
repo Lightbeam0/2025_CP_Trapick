@@ -12,6 +12,7 @@ import {
   Title,
   Tooltip,
   Legend,
+  Filler,  // ✅ FIX: Register Filler plugin to support fill: true on line charts
 } from "chart.js";
 
 ChartJS.register(
@@ -22,7 +23,8 @@ ChartJS.register(
   BarElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
+  Filler,  // ✅ FIX: Must be registered for fill: true to work
 );
 
 const API_BASE_URL =
@@ -416,12 +418,28 @@ function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [selectedPeakDay, setSelectedPeakDay] = useState("Monday");
 
-  // Fetch locations
+  // ✅ FIX: Fetch locations with graceful error handling — a 500 here
+  // previously caused the entire dashboard to break. Now it logs the
+  // error and leaves the locations list empty so the rest of the page loads.
   useEffect(() => {
     axios
       .get(`${API_BASE_URL}/api/locations/`)
-      .then((res) => setLocations(res.data))
-      .catch((err) => console.error("Failed to fetch locations:", err));
+      .then((res) => {
+        // ✅ FIX: API may return {error, locations:[]} shape on 500 — handle both
+        const data = res.data;
+        if (Array.isArray(data)) {
+          setLocations(data);
+        } else if (data && Array.isArray(data.locations)) {
+          setLocations(data.locations);
+        } else {
+          setLocations([]);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch locations:", err);
+        // ✅ FIX: Don't propagate — just show an empty dropdown
+        setLocations([]);
+      });
   }, []);
 
   // Fetch overview + peak hours
@@ -490,11 +508,6 @@ function Home() {
     return loc ? loc.display_name : "Selected Location";
   };
 
-  const formatTimeRange = (t) => {
-    if (!t) return "No data";
-    return t;
-  };
-
   // ── Loading / Error / No-data guards ────────────────────────────────────────
   if (loading) {
     return (
@@ -551,7 +564,7 @@ function Home() {
         backgroundColor: "rgba(59, 130, 246, 0.08)",
         borderColor: "rgba(59, 130, 246, 1)",
         borderWidth: 3,
-        fill: true,
+        fill: true,  // ✅ Now works because Filler plugin is registered
         tension: 0.4,
         pointBackgroundColor: "rgba(59, 130, 246, 1)",
         pointBorderColor: "#fff",
@@ -718,7 +731,7 @@ function Home() {
         )}
       </div>
 
-      {/* Summary cards — 2 cards: Vehicles Per Day + Weekly Total */}
+      {/* Summary cards */}
       <div
         style={{
           display: "grid",
@@ -865,7 +878,7 @@ function Home() {
         </div>
       </div>
 
-      {/* ── PHASE 4: Daily Traffic Flow (Hourly Distribution) ─────────────────── */}
+      {/* ── Daily Traffic Flow (Hourly Distribution) ─────────────────── */}
       <div className="dashboard-card" style={{ marginTop: "32px" }}>
         <div
           style={{

@@ -1,5 +1,4 @@
 # ml/directional_detectors/__init__.py
-
 import os
 from functools import lru_cache
 
@@ -39,42 +38,54 @@ DETECTOR_NAMES = {
 
 
 def _get_default_model_path():
-    """
-    Constructs the default path to the custom trained model.
-    Resolves relative to this file's location:
-      ml/directional_detectors -> ml -> project_root -> runs/detect/...
-    """
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     return os.path.join(BASE_DIR, 'runs', 'detect', 'custom_model', 'weights', 'best.pt')
 
 
-# FIX #11: Cache loaded detector instances at the process level so the YOLO
-# model (2-5 second load time) is paid only once per worker process per
-# (detector_type, model_path) combination.
+# FIX-IN1: Cache only the YOLO model, not the stateful detector instance.
 #
-# IMPORTANT — Celery prefork safety:
-#   lru_cache is populated AFTER the worker forks, so each forked worker
-#   maintains its own independent cache.  GPU tensors are not shared across
-#   processes, which is the correct behaviour.
+# The original _load_cached_detector cached the full detector object. Since
+# lru_cache returns the exact same Python object on every call, two concurrent
+# Celery tasks running on the same worker would share mutable state
+# (vehicle_status, counted_vehicles, total_count, frame_data, etc.), causing
+# counts to be corrupted mid-analysis.
 #
-# maxsize=4 covers all realistic combinations (one profile per location type).
+# Solution: Cache the YOLO model weights (the slow part — 2-5 s disk load)
+# and create a fresh detector instance on every get_detector() call (the fast
+# part — in-memory object creation only). The fresh instance receives the
+# already-loaded model object, so no extra disk I/O occurs.
+#
+# Celery prefork safety: lru_cache is populated after the worker forks, so
+# each forked worker maintains its own independent model cache. GPU tensors
+# are not shared across processes. ✅
+
 @lru_cache(maxsize=4)
+def _load_cached_model(model_path: str):
+    """
+    Load and cache a YOLO model by path.
+
+    Returns the YOLO model object (shared — read-only during inference).
+    Loading only happens once per (model_path, worker process) combination.
+    """
+    from ultralytics import YOLO
+    import torch
+
+    model = YOLO(model_path)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model.to(device)
+    return model
+
+
 def _load_cached_detector(direction_name: str, model_path: str):
     """
-    Return a cached detector instance.  The YOLO model is loaded from disk
-    only on the first call for a given (direction_name, model_path) pair.
+    Return a fresh detector instance backed by the cached YOLO model.
 
-    Args:
-        direction_name: One of the DIRECTIONAL_DETECTORS keys.
-        model_path:     Absolute path to the .pt weights file.
+    FIX-IN1: This function no longer caches detector instances. Each call
+    returns a new, clean detector object that shares the cached (pre-loaded)
+    YOLO model. This eliminates the concurrency hazard while preserving the
+    original latency benefit.
 
-    Returns:
-        Detector instance (shared across calls with the same arguments).
-
-    Note:
-        Callers that mutate detector state (e.g. setting ROI or resetting
-        tracking) must call detector.reset_tracking_state() before each video
-        so the shared instance starts clean.
+    Kept as a public symbol for callers that imported it directly.
     """
     if direction_name not in DIRECTIONAL_DETECTORS:
         available = list(DIRECTIONAL_DETECTORS.keys())
@@ -83,22 +94,33 @@ def _load_cached_detector(direction_name: str, model_path: str):
             f"Available directions: {available}"
         )
 
+    # Ensure the model is loaded/cached
+    cached_model = _load_cached_model(model_path)
+
+    # Create a fresh stateful detector instance
     detector_class = DIRECTIONAL_DETECTORS[direction_name]
     instance = detector_class(model_path)
+
+    # Replace its freshly-loaded model with the cached one (no extra disk I/O)
+    instance.model = cached_model
+
     return instance
 
 
 def get_detector(direction_name, model_path=None):
     """
-    Factory function to create (or return a cached) directional detector.
+    Factory function to create a directional detector backed by a cached model.
+
+    Each call returns a FRESH detector instance (clean state — safe for
+    concurrent Celery tasks), but the underlying YOLO model object is shared
+    from the process-level cache (no repeated disk loads).
 
     Args:
         direction_name (str): One of the available direction keys.
-        model_path (str, optional): Path to YOLO weights.  Defaults to
-                                    runs/detect/custom_model/weights/best.pt.
+        model_path (str, optional): Path to YOLO weights.
 
     Returns:
-        Detector instance (may be cached — caller must reset state before use).
+        Fresh detector instance with cached model loaded.
 
     Raises:
         ValueError: If direction_name is not recognized.
@@ -108,7 +130,7 @@ def get_detector(direction_name, model_path=None):
 
 
 def list_available_detectors():
-    """List all available directional detectors with descriptions"""
+    """List all available directional detectors with descriptions."""
     print("\n" + "=" * 70)
     print("🔄 AVAILABLE DIRECTIONAL DETECTORS")
     print("=" * 70)
@@ -133,6 +155,7 @@ __all__ = [
     'BaseDirectionalDetector',
     'get_detector',
     '_load_cached_detector',
+    '_load_cached_model',
     'list_available_detectors',
     'DIRECTIONAL_DETECTORS',
     'DETECTOR_NAMES',

@@ -1,19 +1,9 @@
-# trapickapp/services/aggregation_service.py
-"""
-Video Aggregation Service
-Handles intelligent aggregation of data from multiple video segments
-Features:
-- Overlap detection and resolution
-- Gap analysis
-- Weighted aggregation based on segment duration
-- Confidence scoring
-"""
-
+#trapickapp/services/aggregation_service.py
 import logging
 from collections import defaultdict
 from datetime import datetime, time, timedelta
 from django.utils import timezone
-from django.db.models import Sum, Avg
+from django.db.models import Sum, Avg, Count
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -22,6 +12,7 @@ logger = logging.getLogger(__name__)
 class VideoAggregationService:
     """
     Service for intelligently aggregating data from multiple video segments
+    Now with enhanced metrics support (Phase 1 + ML v4.2 Report fields)
     """
     
     def __init__(self, location_date_group):
@@ -108,7 +99,16 @@ class VideoAggregationService:
                     'vehicles': vehicles,
                     'vehicles_per_minute': vehicles_per_minute,
                     'vehicle_breakdown': vehicle_breakdown,
-                    'congestion_level': analysis.congestion_level if hasattr(video, 'traffic_analysis') else 'unknown'
+                    'congestion_level': analysis.congestion_level if hasattr(video, 'traffic_analysis') else 'unknown',
+                    # ✅ NEW: Include enhanced metrics if available
+                    'avg_speed': analysis.avg_speed_kmh if hasattr(analysis, 'avg_speed_kmh') else None,
+                    'lane_stats': analysis.lane_statistics if hasattr(analysis, 'lane_statistics') else {},
+                    'turning_movements': analysis.turning_movements if hasattr(analysis, 'turning_movements') else {},
+                    # ✅ ADD NEW: ML v4.2 Report Fields
+                    'tracker_stats': analysis.tracker_stats if hasattr(analysis, 'tracker_stats') else {},
+                    'congestion_timeline': analysis.congestion_timeline if hasattr(analysis, 'congestion_timeline') else [],
+                    'trajectory_summary': analysis.trajectory_summary if hasattr(analysis, 'trajectory_summary') else {},
+                    'features_used': analysis.features_used if hasattr(analysis, 'features_used') else {},
                 })
         
         # Sort by start time
@@ -369,7 +369,11 @@ class VideoAggregationService:
             'vehicles': 0,
             'minutes_recorded': 0,
             'segments': 0,
-            'confidence': 0
+            'confidence': 0,
+            # ✅ NEW: Enhanced metrics per hour
+            'avg_speed': 0,
+            'total_speed_samples': 0,
+            'lane_usage': defaultdict(int),
         } for hour in range(24)}
         
         for video in self.videos:
@@ -392,6 +396,9 @@ class VideoAggregationService:
             
             vehicles_per_minute = analysis.total_vehicles / duration
             
+            # ✅ NEW: Enhanced metrics per minute
+            speed_per_minute = analysis.avg_speed_kmh if analysis.avg_speed_kmh else 0
+            
             # Distribute across hours
             current_minute = start_minutes
             while current_minute < end_minutes:
@@ -408,18 +415,35 @@ class VideoAggregationService:
                     hourly_data[hour]['vehicles'] += vehicles_per_minute * minutes_in_hour
                     hourly_data[hour]['minutes_recorded'] += minutes_in_hour
                     hourly_data[hour]['segments'] += 1
+                    
+                    # ✅ NEW: Aggregate enhanced metrics
+                    if speed_per_minute:
+                        hourly_data[hour]['avg_speed'] += speed_per_minute * minutes_in_hour
+                        hourly_data[hour]['total_speed_samples'] += minutes_in_hour
                 
                 current_minute += minutes_in_hour
         
-        # Calculate confidence for each hour
+        # Calculate confidence and averages for each hour
         max_minutes = 60  # Maximum possible minutes in an hour
         for hour in hourly_data:
             if hourly_data[hour]['minutes_recorded'] > 0:
                 coverage_percentage = (hourly_data[hour]['minutes_recorded'] / max_minutes) * 100
                 hourly_data[hour]['confidence'] = round(min(100, coverage_percentage), 1)
                 hourly_data[hour]['vehicles'] = round(hourly_data[hour]['vehicles'])
+                
+                # ✅ NEW: Calculate average speed for the hour
+                if hourly_data[hour]['total_speed_samples'] > 0:
+                    hourly_data[hour]['avg_speed'] = round(
+                        hourly_data[hour]['avg_speed'] / hourly_data[hour]['total_speed_samples'], 1
+                    )
+                else:
+                    hourly_data[hour]['avg_speed'] = None
             else:
                 hourly_data[hour]['confidence'] = 0
+                hourly_data[hour]['avg_speed'] = None
+            
+            # Convert defaultdict to dict for JSON serialization
+            hourly_data[hour]['lane_usage'] = dict(hourly_data[hour]['lane_usage'])
         
         return hourly_data
     
@@ -447,7 +471,9 @@ class VideoAggregationService:
                 'time_range': f"{morning_peak_hour:02d}:00 - {morning_peak_hour + 1:02d}:00",
                 'vehicles': morning_hours[morning_peak_hour]['vehicles'],
                 'confidence': morning_hours[morning_peak_hour]['confidence'],
-                'minutes_recorded': morning_hours[morning_peak_hour]['minutes_recorded']
+                'minutes_recorded': morning_hours[morning_peak_hour]['minutes_recorded'],
+                # ✅ NEW: Include average speed at peak hour
+                'avg_speed': morning_hours[morning_peak_hour]['avg_speed'],
             }
         
         if evening_hours:
@@ -457,7 +483,9 @@ class VideoAggregationService:
                 'time_range': f"{evening_peak_hour:02d}:00 - {evening_peak_hour + 1:02d}:00",
                 'vehicles': evening_hours[evening_peak_hour]['vehicles'],
                 'confidence': evening_hours[evening_peak_hour]['confidence'],
-                'minutes_recorded': evening_hours[evening_peak_hour]['minutes_recorded']
+                'minutes_recorded': evening_hours[evening_peak_hour]['minutes_recorded'],
+                # ✅ NEW: Include average speed at peak hour
+                'avg_speed': evening_hours[evening_peak_hour]['avg_speed'],
             }
         
         return {
@@ -485,7 +513,15 @@ class VideoAggregationService:
                 'vehicles_per_minute': round(seg['vehicles_per_minute'], 1),
                 'filename': seg['filename'],
                 'video_id': seg['video_id'],
-                'has_analysis': seg['vehicles'] > 0
+                'has_analysis': seg['vehicles'] > 0,
+                # ✅ NEW: Include enhanced data in timeline
+                'avg_speed': seg.get('avg_speed'),
+                'congestion_level': seg.get('congestion_level', 'unknown'),
+                # ✅ ADD NEW: ML v4.2 Report Fields
+                'tracker_stats': seg.get('tracker_stats', {}),
+                'congestion_timeline': seg.get('congestion_timeline', []),
+                'trajectory_summary': seg.get('trajectory_summary', {}),
+                'features_used': seg.get('features_used', {}),
             })
         
         return {
@@ -495,6 +531,349 @@ class VideoAggregationService:
             'total_duration': analysis['total_duration_minutes'],
             'coverage_quality': analysis['coverage_quality']
         }
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # ✅ NEW: Enhanced aggregation methods (Phase 1 + ML v4.2 Report)
+    # ──────────────────────────────────────────────────────────────────────────
+    
+    def get_tracker_performance_summary(self):
+        """
+        Get tracker performance metrics across videos
+        
+        Returns:
+            Dictionary with aggregated tracker statistics
+        """
+        tracker_stats = []
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.tracker_stats:
+                tracker_stats.append(video.traffic_analysis.tracker_stats)
+        
+        if not tracker_stats:
+            return {}
+        
+        # Aggregate numeric fields safely
+        def safe_mean(values, key, default=0):
+            valid = [v.get(key, default) for v in values if isinstance(v.get(key), (int, float))]
+            return np.mean(valid) if valid else default
+        
+        def safe_sum(values, key, default=0):
+            valid = [v.get(key, default) for v in values if isinstance(v.get(key), (int, float))]
+            return sum(valid)
+        
+        return {
+            'avg_prediction_confidence': round(safe_mean(tracker_stats, 'avg_prediction_confidence'), 2),
+            'total_ghost_recoveries': safe_sum(tracker_stats, 'ghost_recoveries'),
+            'avg_track_length': round(safe_mean(tracker_stats, 'avg_track_length'), 1),
+            'total_tracks': safe_sum(tracker_stats, 'total_tracks'),
+            'avg_id_switches': round(safe_mean(tracker_stats, 'id_switches'), 1),
+            'reid_success_rate': round(safe_mean(tracker_stats, 'reid_success_rate') * 100, 1) if any('reid_success_rate' in s for s in tracker_stats) else None,
+            'sample_count': len(tracker_stats),
+        }
+    
+    def get_congestion_timeline_aggregated(self):
+        """
+        Aggregate congestion timelines across videos
+        
+        Returns:
+            List of aggregated timeline entries with absolute timestamps
+        """
+        all_timelines = []
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.congestion_timeline:
+                timeline = video.traffic_analysis.congestion_timeline
+                # Adjust timestamps relative to video start
+                if video.video_start_time:
+                    base_seconds = video.video_start_time.hour * 3600 + video.video_start_time.minute * 60
+                    for entry in timeline:
+                        adjusted = dict(entry)
+                        adjusted['absolute_time'] = base_seconds + entry.get('timestamp', 0)
+                        adjusted['video_id'] = str(video.id)
+                        adjusted['filename'] = video.filename
+                        all_timelines.append(adjusted)
+        
+        # Sort by absolute time
+        all_timelines.sort(key=lambda x: x.get('absolute_time', 0))
+        
+        return all_timelines
+    
+    def get_trajectory_summary_aggregated(self):
+        """
+        Aggregate trajectory summaries across videos
+        
+        Returns:
+            Dictionary with combined trajectory statistics
+        """
+        trajectory_summaries = []
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.trajectory_summary:
+                trajectory_summaries.append(video.traffic_analysis.trajectory_summary)
+        
+        if not trajectory_summaries:
+            return {}
+        
+        # Merge common fields
+        merged = {
+            'total_trajectories': sum(s.get('total_trajectories', 0) for s in trajectory_summaries),
+            'avg_trajectory_length': np.mean([s.get('avg_trajectory_length', 0) for s in trajectory_summaries if s.get('avg_trajectory_length')]),
+            'common_paths': self._merge_common_paths(trajectory_summaries),
+            'turning_patterns': self._merge_turning_patterns(trajectory_summaries),
+        }
+        
+        return {k: v for k, v in merged.items() if v is not None}
+    
+    def _merge_common_paths(self, summaries):
+        """Merge common path data from multiple trajectory summaries"""
+        path_counts = defaultdict(int)
+        for summary in summaries:
+            for path, count in summary.get('common_paths', {}).items():
+                path_counts[path] += count
+        # Return top 10 most common paths
+        return dict(sorted(path_counts.items(), key=lambda x: x[1], reverse=True)[:10])
+    
+    def _merge_turning_patterns(self, summaries):
+        """Merge turning pattern data from multiple trajectory summaries"""
+        turning = defaultdict(lambda: defaultdict(int))
+        for summary in summaries:
+            for entry_point, turns in summary.get('turning_patterns', {}).items():
+                for turn_type, count in turns.items():
+                    turning[entry_point][turn_type] += count
+        return {k: dict(v) for k, v in turning.items()}
+    
+    def _aggregate_features_used(self):
+        """
+        Aggregate feature flags used across all videos
+        
+        Returns:
+            Dictionary with feature usage summary
+        """
+        feature_counts = defaultdict(int)
+        total_videos = 0
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.features_used:
+                total_videos += 1
+                features = video.traffic_analysis.features_used
+                for feature, enabled in features.items():
+                    if enabled:
+                        feature_counts[feature] += 1
+        
+        if total_videos == 0:
+            return {}
+        
+        return {
+            feature: {
+                'enabled_count': count,
+                'percentage': round(count / total_videos * 100, 1)
+            }
+            for feature, count in feature_counts.items()
+        }
+    
+    def get_speed_profile(self):
+        """
+        Get speed profile across all analyses
+        
+        Returns:
+            Dictionary with speed statistics
+        """
+        speeds = []
+        p85_speeds = []
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.avg_speed_kmh:
+                analysis = video.traffic_analysis
+                speeds.append(analysis.avg_speed_kmh)
+                if analysis.p85_speed_kmh:
+                    p85_speeds.append(analysis.p85_speed_kmh)
+        
+        if not speeds:
+            return {}
+        
+        return {
+            'overall_avg_speed': round(np.mean(speeds), 1),
+            'overall_p85_speed': round(np.mean(p85_speeds), 1) if p85_speeds else None,
+            'min_speed': round(min(speeds), 1),
+            'max_speed': round(max(speeds), 1),
+            'speed_distribution': self._get_speed_distribution(speeds),
+            'time_of_day_speeds': self._get_speed_by_time(),
+        }
+    
+    def _get_speed_distribution(self, speeds):
+        """Get speed distribution histogram"""
+        if not speeds:
+            return {}
+        
+        # Create histogram bins
+        bins = [0, 10, 20, 30, 40, 50, 60, 80, 100]
+        hist = {}
+        for i in range(len(bins)-1):
+            label = f"{bins[i]}-{bins[i+1]}"
+            count = sum(1 for s in speeds if bins[i] <= s < bins[i+1])
+            hist[label] = count
+        
+        return hist
+    
+    def _get_speed_by_time(self):
+        """Get average speed by time of day"""
+        speeds_by_hour = defaultdict(list)
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.avg_speed_kmh:
+                if video.video_start_time:
+                    hour = video.video_start_time.hour
+                    speeds_by_hour[hour].append(video.traffic_analysis.avg_speed_kmh)
+        
+        return {
+            hour: round(sum(speeds)/len(speeds), 1)
+            for hour, speeds in speeds_by_hour.items()
+        }
+    
+    def get_lane_distribution(self):
+        """
+        Get lane usage statistics
+        
+        Returns:
+            Dictionary with per-lane counts and percentages
+        """
+        lane_counts = defaultdict(int)
+        total_vehicles_with_lane = 0
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.lane_statistics:
+                lane_stats = video.traffic_analysis.lane_statistics
+                for lane, count in lane_stats.items():
+                    lane_counts[lane] += count
+                    total_vehicles_with_lane += count
+        
+        if total_vehicles_with_lane == 0:
+            return {}
+        
+        return {
+            lane: {
+                'count': count,
+                'percentage': round(count / total_vehicles_with_lane * 100, 1)
+            }
+            for lane, count in lane_counts.items()
+        }
+    
+    def get_turning_patterns(self):
+        """
+        Get turning movement patterns
+        
+        Returns:
+            Dictionary with turn counts by vehicle class
+        """
+        turning_totals = defaultdict(lambda: defaultdict(int))
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.turning_movements:
+                turns = video.traffic_analysis.turning_movements
+                for vehicle_class, movements in turns.items():
+                    for turn_type, count in movements.items():
+                        turning_totals[vehicle_class][turn_type] += count
+        
+        # Convert nested defaultdict to dict
+        result = {}
+        for vehicle_class, movements in turning_totals.items():
+            result[vehicle_class] = dict(movements)
+        
+        return result
+    
+    def get_incident_timeline(self):
+        """
+        Get timeline of incidents/hotspots
+        
+        Returns:
+            List of incident events
+        """
+        incidents = []
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis'):
+                analysis = video.traffic_analysis
+                
+                # Check for high incident risk
+                if analysis.incident_risk_score and analysis.incident_risk_score > 0.5:
+                    incidents.append({
+                        'video_id': str(video.id),
+                        'timestamp': analysis.analyzed_at.isoformat(),
+                        'risk_score': round(analysis.incident_risk_score, 2),
+                        'queue_length': analysis.queue_length_meters,
+                        'location': self.location.display_name,
+                        'congestion_index': analysis.congestion_index,
+                    })
+                
+                # Check for stopped vehicles
+                if analysis.stopped_vehicles_count > 3:
+                    incidents.append({
+                        'video_id': str(video.id),
+                        'timestamp': analysis.analyzed_at.isoformat(),
+                        'type': 'multiple_stopped_vehicles',
+                        'stopped_count': analysis.stopped_vehicles_count,
+                        'location': self.location.display_name,
+                    })
+        
+        return incidents
+    
+    def get_congestion_summary_enhanced(self):
+        """
+        Get enhanced congestion summary
+        
+        Returns:
+            Dictionary with congestion metrics
+        """
+        indices = []
+        queue_lengths = []
+        risks = []
+        
+        for video in self.videos:
+            if hasattr(video, 'traffic_analysis'):
+                analysis = video.traffic_analysis
+                if analysis.congestion_index:
+                    indices.append(analysis.congestion_index)
+                if analysis.queue_length_meters:
+                    queue_lengths.append(analysis.queue_length_meters)
+                if analysis.incident_risk_score:
+                    risks.append(analysis.incident_risk_score)
+        
+        return {
+            'avg_congestion_index': round(np.mean(indices), 2) if indices else None,
+            'max_queue_length': round(max(queue_lengths), 1) if queue_lengths else None,
+            'avg_queue_length': round(np.mean(queue_lengths), 1) if queue_lengths else None,
+            'avg_incident_risk': round(np.mean(risks), 2) if risks else None,
+            'trend': self._get_congestion_trend(),
+        }
+    
+    def _get_congestion_trend(self):
+        """Analyze congestion trend over time"""
+        if len(self.videos) < 3:
+            return 'stable'
+        
+        # Get videos with congestion index
+        videos_with_index = [
+            v for v in self.videos 
+            if hasattr(v, 'traffic_analysis') and v.traffic_analysis.congestion_index
+        ]
+        
+        if len(videos_with_index) < 3:
+            return 'stable'
+        
+        # Sort by time
+        sorted_videos = sorted(videos_with_index, key=lambda v: v.video_start_time or v.uploaded_at)
+        indices = [v.traffic_analysis.congestion_index for v in sorted_videos]
+        
+        # Simple trend detection
+        first_third = np.mean(indices[:len(indices)//3])
+        last_third = np.mean(indices[-len(indices)//3:])
+        
+        if last_third > first_third * 1.2:
+            return 'worsening'
+        elif last_third < first_third * 0.8:
+            return 'improving'
+        else:
+            return 'stable'
     
     def get_aggregation_summary(self):
         """
@@ -506,6 +885,19 @@ class VideoAggregationService:
         weighted = self.weighted_aggregation()
         peaks = self.peak_hour_analysis()
         timeline = self.generate_timeline_view()
+        
+        # ✅ NEW: Enhanced summaries
+        speed_profile = self.get_speed_profile()
+        lane_distribution = self.get_lane_distribution()
+        turning_patterns = self.get_turning_patterns()
+        incidents = self.get_incident_timeline()
+        congestion_enhanced = self.get_congestion_summary_enhanced()
+        
+        # ✅ ADD NEW: ML v4.2 Report aggregations
+        tracker_performance = self.get_tracker_performance_summary()
+        congestion_timeline = self.get_congestion_timeline_aggregated()
+        trajectory_summary = self.get_trajectory_summary_aggregated()
+        features_used = self._aggregate_features_used()
         
         return {
             'location': {
@@ -520,5 +912,18 @@ class VideoAggregationService:
                 'total_segments': len(self.videos),
                 'segments_with_data': sum(1 for v in self.videos if hasattr(v, 'traffic_analysis')),
                 'coverage_quality': timeline['coverage_quality']
+            },
+            # ✅ NEW: Enhanced sections
+            'enhanced': {
+                'speed_profile': speed_profile,
+                'lane_distribution': lane_distribution,
+                'turning_patterns': turning_patterns,
+                'incidents': incidents,
+                'congestion': congestion_enhanced,
+                # ✅ ADD NEW: ML v4.2 Report Fields
+                'tracker_performance': tracker_performance,
+                'congestion_timeline': congestion_timeline,
+                'trajectory_summary': trajectory_summary,
+                'features_used': features_used,
             }
         }

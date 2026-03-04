@@ -1,16 +1,5 @@
 # ml/base_detector.py
-"""
-Base Detector Class for Vehicle Counting and Congestion Detection (v2.1)
 
-Fixes vs v2:
-  - FIX #7:  Dead calculate_congestion_level() removed.  It was never called
-             for directional detectors (CongestionModule is used instead) and
-             contained stale None-speed logic.
-  - FIX #10: _run_first_pass() now uses model.predict() instead of
-             model.track() so ByteTrack state is not initialised/wasted for
-             the statistics-only first pass.
-  - FIX #12: frame_data is now a deque(maxlen=1000) ring buffer.
-"""
 
 import cv2
 import numpy as np
@@ -33,14 +22,6 @@ CUSTOM_MODEL_PATH = str(
 class BaseDetector(ABC):
     """
     Abstract base class for all directional traffic detectors.
-
-    Key Features:
-    - Vehicle detection and tracking with custom YOLO model
-    - Directional counting logic
-    - Congestion detection
-    - Video stabilization (optional)
-    - Multi-pass adaptive analysis (optional)
-    - Results generation and storage
     """
 
     CUSTOM_CLASS_NAMES = {
@@ -80,7 +61,7 @@ class BaseDetector(ABC):
 
         self.congestion_events  = []
         self.current_congestion = None
-        # FIX #12: Ring buffer — never stores more than 1 000 entries
+        # FIX #12: Ring buffer
         self.frame_data = deque(maxlen=1000)
 
         self.frame_count      = 0
@@ -203,11 +184,7 @@ class BaseDetector(ABC):
     def _run_first_pass(self, video_path, total_frames):
         """
         Quick first pass to estimate traffic density.
-
         FIX #10: Uses model.predict() instead of model.track().
-        The first pass only needs raw box counts per frame — there is no reason
-        to initialise ByteTrack state (which is discarded anyway) and pay the
-        associated matching overhead.
         """
         print("🔄 Running First Pass (Statistics Gathering)...")
         cap = cv2.VideoCapture(str(video_path))
@@ -222,7 +199,6 @@ class BaseDetector(ABC):
                 break
 
             if f_idx % sample_interval == 0:
-                # FIX #10: predict (no tracking) — cheaper and correct for density estimation
                 results = self.model.predict(
                     frame,
                     conf=0.6,
@@ -294,11 +270,7 @@ class BaseDetector(ABC):
 
         return None
 
-    # FIX #7: calculate_congestion_level() has been REMOVED.
-    # It was dead code — directional detectors use CongestionModule.detect_congestion()
-    # and the base class method was never called from any active code path.
-    # If you need a simple per-frame congestion estimate outside of CongestionModule,
-    # add it as a standalone utility function rather than a method on BaseDetector.
+    # FIX #7: calculate_congestion_level() has been REMOVED (dead code).
 
     def track_congestion_event(self, congestion_info, fps):
         current_time  = self.frame_count / fps if fps > 0 else 0
@@ -348,7 +320,7 @@ class BaseDetector(ABC):
             'stationary_vehicles': congestion_info['stationary_vehicles'],
             'counted_vehicles': self.total_count,
         }
-        # FIX #12: append to ring buffer (auto-evicts oldest when full)
+        # FIX #12: append to ring buffer
         self.frame_data.append(frame_entry)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -373,6 +345,8 @@ class BaseDetector(ABC):
 
     # ──────────────────────────────────────────────────────────────────────────
     # Main pipeline
+    # FIX-BD1: Open main cap FIRST, read total_frames, pass to _run_first_pass.
+    #          This reduces VideoCapture opens from 3 to 2 during multi-pass.
     # ──────────────────────────────────────────────────────────────────────────
 
     def analyze_video(self, video_path, progress_callback=None, save_output=True, **kwargs):
@@ -388,14 +362,8 @@ class BaseDetector(ABC):
 
         if self.stabilizer_enabled:
             print("🎥 Video stabilization ENABLED")
-        if self.multi_pass_enabled:
-            print("🔄 Multi-pass analysis ENABLED")
-            cap_temp     = cv2.VideoCapture(str(video_path))
-            total_frames_tmp = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap_temp.release()
-            stats = self._run_first_pass(video_path, total_frames_tmp)  # FIX #10
-            self._apply_multi_pass_tuning(stats)
 
+        # FIX-BD1: Open cap first so we can reuse total_frames for first pass
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise Exception(f"❌ Cannot open video file: {video_path}")
@@ -407,6 +375,17 @@ class BaseDetector(ABC):
         duration     = total_frames / fps if fps > 0 else 0
 
         print(f"📊 Video: {width}×{height}  {fps:.2f}fps  {total_frames}f  {duration:.1f}s")
+
+        if self.multi_pass_enabled:
+            # FIX-BD1: Rewind instead of re-opening. Pass total_frames directly.
+            print("🔄 Multi-pass analysis ENABLED")
+            cap.release()  # Release so _run_first_pass can open cleanly
+            stats = self._run_first_pass(video_path, total_frames)
+            self._apply_multi_pass_tuning(stats)
+            # Re-open for main pass
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                raise Exception(f"❌ Cannot re-open video file: {video_path}")
 
         self.setup_counting_line(width, height)
 
@@ -504,9 +483,13 @@ class BaseDetector(ABC):
                 congestion_summary['total_duration'] / len(self.congestion_events)
             )
 
+        # FIX-BD2: Guard against proc_time=0 to avoid ZeroDivisionError
+        safe_proc_time = proc_time if proc_time > 0 else 1e-6
+        safe_duration  = duration  if duration  > 0 else 1e-6
+
         detection_efficiency = {
-            'frames_per_second': total_frames / proc_time if proc_time > 0 else 0,
-            'processing_ratio':  proc_time / duration    if duration  > 0 else 0,
+            'frames_per_second':  total_frames / safe_proc_time,
+            'processing_ratio':   safe_proc_time / safe_duration,
             'vehicles_per_frame': self.total_count / total_frames if total_frames > 0 else 0,
         }
 
@@ -576,7 +559,9 @@ class BaseDetector(ABC):
 
     def export_results(self, output_path=None):
         import json
-        report = self.generate_report(self.frame_count, self.processing_time, self.fps)
+        # FIX-BD2: Pass safe non-zero values so detection_efficiency never divides by zero
+        proc_time = self.processing_time if self.processing_time > 0 else 1e-6
+        report = self.generate_report(self.frame_count, proc_time, self.fps)
         if output_path:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, 'w') as f:

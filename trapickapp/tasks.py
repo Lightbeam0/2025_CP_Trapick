@@ -11,7 +11,7 @@ from django.conf import settings
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 
-from .models import VideoFile, TrafficAnalysis, Location, LocationDateGroup
+from .models import VideoFile, TrafficAnalysis, Location, LocationDateGroup, DirectionalAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -538,11 +538,48 @@ def process_video_task(self, video_id, location_id=None):
                 'events_by_level': events_by_level,
                 'location_name': location.display_name,
                 'location_id': location.id,
-                'processing_profile': location.processing_profile.display_name if location.processing_profile else 'Default'
+                'processing_profile': location.processing_profile.display_name if location.processing_profile else 'Default',
+                # ✅ NEW: Include feature flags and version for frontend
+                'features_enabled': metadata.get('features_enabled', {}),
+                'detector_version': metadata.get('version', 'v4.0'),
             }
 
             frame_data = report.get('raw_data', {}).get('frame_data', [])
             congestion_events = events_by_level
+
+            # ✅ NEW: Extract enhanced metrics if available (backward compatible)
+            enhanced_metrics = report.get('enhanced_metrics', {})
+            lane_statistics = enhanced_metrics.get('lane_statistics', {})
+            turning_movements = enhanced_metrics.get('turning_movements', {})
+            stopped_vehicles_count = enhanced_metrics.get('stopped_vehicles', {}).get('active_stopped', 0)
+            speed_metrics = enhanced_metrics.get('speed_results', {})
+            congestion_enhanced = enhanced_metrics.get('congestion', {})
+            detector_version = metadata.get('version', enhanced_metrics.get('detector_version', 'v4.0'))
+
+            # ✅ ADD NEW: Extract ALL enhanced metrics for ML v4.2 Report
+            # Tracker stats
+            tracker_stats = enhanced_metrics.get('tracker_stats', {})
+            
+            # Congestion timeline
+            congestion_timeline = [
+                {
+                    'frame': f.get('frame_number'),
+                    'timestamp': f.get('timestamp'),
+                    'score': f.get('congestion_score'),
+                    'level': f.get('congestion_level')
+                }
+                for f in report.get('raw_data', {}).get('frame_data', [])
+                if f.get('congestion_level') != 'none'
+            ]
+            
+            # Features used
+            features_used = enhanced_metrics.get('features_used', {})
+            
+            # Trajectory summary
+            trajectory_summary = enhanced_metrics.get('trajectory_summary', {})
+
+            # ✅ NEW: Extract directional details if available
+            directional_details = enhanced_metrics.get('directional_details', {})
 
             from django.db.models.signals import post_save
             from .models import auto_group_video_after_analysis, update_video_file_status
@@ -572,7 +609,24 @@ def process_video_task(self, video_id, location_id=None):
                         analysis_data=analysis_data,
                         metrics_summary=convert_numpy_types(metrics_summary),
                         frame_data=convert_numpy_types(frame_data),
-                        congestion_events=convert_numpy_types(congestion_events)
+                        congestion_events=convert_numpy_types(congestion_events),
+                        # ✅ NEW: Enhanced fields (all nullable for backward compat)
+                        avg_speed_kmh=speed_metrics.get('avg'),
+                        p85_speed_kmh=speed_metrics.get('p85'),
+                        max_speed_kmh=speed_metrics.get('max'),
+                        lane_statistics=convert_numpy_types(lane_statistics),
+                        turning_movements=convert_numpy_types(turning_movements),
+                        stopped_vehicles_count=stopped_vehicles_count,
+                        congestion_index=congestion_enhanced.get('index'),
+                        queue_length_meters=congestion_enhanced.get('queue_length'),
+                        incident_risk_score=congestion_enhanced.get('incident_risk'),
+                        congestion_trend=congestion_enhanced.get('trend'),
+                        detector_version=detector_version,
+                        # ✅ ADD NEW: ML v4.2 Report Fields
+                        tracker_stats=convert_numpy_types(tracker_stats),
+                        congestion_timeline=convert_numpy_types(congestion_timeline),
+                        trajectory_summary=convert_numpy_types(trajectory_summary),
+                        features_used=convert_numpy_types(features_used),
                     )
                 )
             finally:
@@ -580,6 +634,64 @@ def process_video_task(self, video_id, location_id=None):
                 post_save.connect(update_video_file_status, sender=TrafficAnalysis)
 
             logger.info(f"{'✅ Created' if created else '🔄 Updated'} directional analysis for video {video_id}")
+
+            # ✅ NEW: Save enhanced directional details if available
+            if directional_details:
+                try:
+                    DirectionalAnalysis.objects.update_or_create(
+                        traffic_analysis=analysis,
+                        defaults={
+                            'direction_name': directional_details.get('direction_name', metadata.get('direction', '')),
+                            'direction_angle': directional_details.get('direction_angle', 0),
+                            'line_start_x': directional_details.get('line_start_x', 0),
+                            'line_start_y': directional_details.get('line_start_y', 0),
+                            'line_end_x': directional_details.get('line_end_x', 0),
+                            'line_end_y': directional_details.get('line_end_y', 0),
+                            'directional_car_count': directional_details.get('car_count', vehicle_breakdown.get('car', 0)),
+                            'directional_truck_count': directional_details.get('truck_count', vehicle_breakdown.get('truck', 0)),
+                            'directional_motorcycle_count': directional_details.get('motorcycle_count', vehicle_breakdown.get('motorcycle', 0)),
+                            'directional_bus_count': directional_details.get('jeep_count', vehicle_breakdown.get('jeep', 0)),
+                            'directional_bicycle_count': directional_details.get('tricycle_count', vehicle_breakdown.get('tricycle', 0)),
+                            # ✅ NEW: Enhanced directional fields (JSON, nullable)
+                            'lane_counts': convert_numpy_types(directional_details.get('lane_counts', {})),
+                            'turning_counts': convert_numpy_types(directional_details.get('turning_counts', {})),
+                            'lane_speeds': convert_numpy_types(directional_details.get('lane_speeds', {})),
+                        }
+                    )
+                    logger.debug(f"📊 Saved enhanced directional details for analysis {analysis.id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not save directional details (non-fatal): {e}")
+
+            # ✅ NEW: Save frame-level enhanced data if available
+            frame_analytics = enhanced_metrics.get('frame_analytics', [])
+            if frame_analytics and hasattr(analysis, 'frame_analyses'):
+                try:
+                    from .models import FrameAnalysis
+                    for frame_entry in frame_analytics:
+                        FrameAnalysis.objects.update_or_create(
+                            traffic_analysis=analysis,
+                            frame_number=frame_entry.get('frame_number'),
+                            defaults={
+                                'timestamp_seconds': frame_entry.get('timestamp_seconds'),
+                                'car_count': frame_entry.get('car_count', 0),
+                                'truck_count': frame_entry.get('truck_count', 0),
+                                'motorcycle_count': frame_entry.get('motorcycle_count', 0),
+                                'bus_count': frame_entry.get('bus_count', 0),
+                                'bicycle_count': frame_entry.get('bicycle_count', 0),
+                                'total_vehicles': frame_entry.get('total_vehicles', 0),
+                                'directional_count': frame_entry.get('directional_count', 0),
+                                'congestion_level': frame_entry.get('congestion_level', 'none'),
+                                'stationary_vehicles': frame_entry.get('stationary_vehicles', 0),
+                                'detection_data': convert_numpy_types(frame_entry.get('detection_data', {})),
+                                # ✅ NEW: Frame-level enhanced fields
+                                'avg_speed_frame': frame_entry.get('avg_speed'),
+                                'lane_assignments': convert_numpy_types(frame_entry.get('lane_assignments', {})),
+                                'stopped_vehicles_frame': frame_entry.get('stopped_vehicles', 0),
+                            }
+                        )
+                    logger.debug(f"📊 Saved {len(frame_analytics)} frame analytics entries")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not save frame analytics (non-fatal): {e}")
 
         else:
             logger.warning("⚠️ Unknown report format, creating basic analysis")
