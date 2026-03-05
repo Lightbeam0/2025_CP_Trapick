@@ -1290,7 +1290,7 @@ function LandingPage({ user, onGetStarted }) {
           opacity: 0.8,
           margin: 0
         }}>
-          © 2024 Traffic Monitor. All rights reserved.
+          © 2026 Traffic Monitor. All rights reserved.
         </p>
       </footer>
 
