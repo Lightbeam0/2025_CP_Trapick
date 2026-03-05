@@ -15,13 +15,13 @@ const CONGESTION_META = {
   low:      { label: 'Low',      bg: '#d1fae5', color: '#065f46', dot: '#10b981', bar: '#10b981' },
   very_low: { label: 'Very Low', bg: '#e0f2fe', color: '#075985', dot: '#38bdf8', bar: '#38bdf8' },
   none:     { label: 'None',     bg: '#f3f4f6', color: '#374151', dot: '#9ca3af', bar: '#9ca3af' },
-  Unknown:  { label: 'Unknown',  bg: '#f3f4f6', color: '#6b7280', dot: '#9ca3af', bar: '#9ca3af' },
+  unknown:  { label: 'Unknown',  bg: '#f3f4f6', color: '#6b7280', dot: '#9ca3af', bar: '#9ca3af' },
 };
 
 function getCongestionMeta(level) {
   if (!level) return CONGESTION_META.none;
   const key = level.toLowerCase().replace(/\s+/g, '_');
-  return CONGESTION_META[key] || CONGESTION_META.Unknown;
+  return CONGESTION_META[key] || CONGESTION_META.unknown;
 }
 
 const TREND_META = {
@@ -35,314 +35,142 @@ function getTrendMeta(trend) {
   return TREND_META[trend?.toLowerCase()] || TREND_META.stable;
 }
 
-// ── Static fallback data (shown when API has no records yet) ──────────────────
-
-const STATIC_DATA = [
-  {
-    road: 'Baliwasan Road',
-    area: 'Baliwasan Area',
-    time: '7:30 - 9:00 AM',
-    congestion_level: 'high',
-    vehicles_per_hour: 2450,
-    trend: 'increasing',
-    is_static: true,
-  },
-  {
-    road: 'San Roque Highway',
-    area: 'San Roque Area',
-    time: '7:45 - 9:15 AM',
-    congestion_level: 'high',
-    vehicles_per_hour: 1950,
-    trend: 'stable',
-    is_static: true,
-  },
-  {
-    road: 'Camino Nuevo Street',
-    area: 'Camino Nuevo',
-    time: '8:00 - 9:30 AM',
-    congestion_level: 'medium',
-    vehicles_per_hour: 1320,
-    trend: 'decreasing',
-    is_static: true,
-  },
-  {
-    road: 'Divisoria Boulevard',
-    area: 'City Proper',
-    time: '5:00 - 6:30 PM',
-    congestion_level: 'medium',
-    vehicles_per_hour: 1110,
-    trend: 'increasing',
-    is_static: true,
-  },
-  {
-    road: 'Veterans Avenue',
-    area: 'Pettit Barracks',
-    time: '7:00 - 8:30 AM',
-    congestion_level: 'low',
-    vehicles_per_hour: 740,
-    trend: 'stable',
-    is_static: true,
-  },
-  {
-    road: 'Governor Lim Ave',
-    area: 'Tetuan District',
-    time: '4:30 - 6:00 PM',
-    congestion_level: 'low',
-    vehicles_per_hour: 610,
-    trend: 'decreasing',
-    is_static: true,
-  },
-];
+/**
+ * Formats a date string from the backend into a readable form.
+ * Handles:
+ *   "2025-01-15"          → "January 15, 2025"
+ *   "Jan 15, 2025"        → "January 15, 2025"
+ *   "2025-01-15T00:00:00" → "January 15, 2025"
+ */
+function formatDate(raw) {
+  if (!raw) return '—';
+  try {
+    // Append time component so Date() doesn't shift by timezone offset
+    const iso = raw.includes('T') ? raw : `${raw}T00:00:00`;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return raw; // unparseable — return as-is
+    return d.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  } catch {
+    return raw;
+  }
+}
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
 
-const styles = {
+const s = {
   page: {
     minHeight: '100vh',
     background: '#f8fafc',
     padding: '32px 36px',
     fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
   },
-  header: {
-    marginBottom: '36px',
-  },
+  header: { marginBottom: '36px' },
   headerTitle: {
-    fontSize: '28px',
-    fontWeight: '700',
-    color: '#0f172a',
-    margin: '0 0 6px 0',
-    letterSpacing: '-0.5px',
+    fontSize: '28px', fontWeight: '700', color: '#0f172a',
+    margin: '0 0 6px 0', letterSpacing: '-0.5px',
   },
-  headerSub: {
-    color: '#64748b',
-    margin: 0,
-    fontSize: '15px',
-  },
+  headerSub: { color: '#64748b', margin: 0, fontSize: '15px' },
   topBar: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '24px',
-    flexWrap: 'wrap',
-    gap: '12px',
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: '24px', flexWrap: 'wrap', gap: '12px',
   },
-  sectionTitle: {
-    fontSize: '20px',
-    fontWeight: '600',
-    color: '#1e293b',
-    margin: 0,
-  },
-  controls: {
-    display: 'flex',
-    gap: '10px',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-  },
+  sectionTitle: { fontSize: '20px', fontWeight: '600', color: '#1e293b', margin: 0 },
+  controls: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' },
   select: {
-    padding: '8px 14px',
-    borderRadius: '8px',
-    border: '1.5px solid #e2e8f0',
-    background: '#fff',
-    color: '#334155',
-    fontSize: '14px',
-    fontWeight: '500',
-    cursor: 'pointer',
-    outline: 'none',
+    padding: '8px 14px', borderRadius: '8px', border: '1.5px solid #e2e8f0',
+    background: '#fff', color: '#334155', fontSize: '14px', fontWeight: '500',
+    cursor: 'pointer', outline: 'none',
   },
   refreshBtn: {
-    padding: '8px 16px',
-    borderRadius: '8px',
-    border: '1.5px solid #e2e8f0',
-    background: '#fff',
-    color: '#334155',
-    fontSize: '14px',
-    fontWeight: '500',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    transition: 'background 0.15s',
+    padding: '8px 16px', borderRadius: '8px', border: '1.5px solid #e2e8f0',
+    background: '#fff', color: '#334155', fontSize: '14px', fontWeight: '500',
+    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
   },
   statsRow: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    gap: '16px',
-    marginBottom: '28px',
+    gap: '16px', marginBottom: '28px',
   },
   statCard: {
-    background: '#fff',
-    border: '1.5px solid #e2e8f0',
-    borderRadius: '12px',
-    padding: '18px 20px',
+    background: '#fff', border: '1.5px solid #e2e8f0',
+    borderRadius: '12px', padding: '18px 20px',
   },
   statLabel: {
-    fontSize: '12px',
-    fontWeight: '600',
-    color: '#94a3b8',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-    marginBottom: '6px',
+    fontSize: '12px', fontWeight: '600', color: '#94a3b8',
+    textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px',
   },
-  statValue: {
-    fontSize: '26px',
-    fontWeight: '700',
-    color: '#0f172a',
-    lineHeight: 1,
-  },
-  statSub: {
-    fontSize: '12px',
-    color: '#64748b',
-    marginTop: '4px',
-  },
+  statValue: { fontSize: '26px', fontWeight: '700', color: '#0f172a', lineHeight: 1 },
+  statSub:   { fontSize: '12px', color: '#64748b', marginTop: '4px' },
   card: {
-    background: '#fff',
-    borderRadius: '14px',
-    border: '1.5px solid #e2e8f0',
-    overflow: 'hidden',
-    boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+    background: '#fff', borderRadius: '14px', border: '1.5px solid #e2e8f0',
+    overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
   },
   cardHeader: {
-    padding: '20px 24px 16px',
-    borderBottom: '1px solid #f1f5f9',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    padding: '20px 24px 16px', borderBottom: '1px solid #f1f5f9',
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
   },
-  cardTitle: {
-    fontSize: '16px',
-    fontWeight: '600',
-    color: '#1e293b',
-    margin: 0,
-  },
-  badge: {
-    fontSize: '12px',
-    padding: '3px 10px',
-    borderRadius: '20px',
-    fontWeight: '600',
-  },
-  tableWrap: {
-    overflowX: 'auto',
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-  },
+  cardTitle: { fontSize: '16px', fontWeight: '600', color: '#1e293b', margin: 0 },
+  badge:     { fontSize: '12px', padding: '3px 10px', borderRadius: '20px', fontWeight: '600' },
+  tableWrap: { overflowX: 'auto' },
+  table:     { width: '100%', borderCollapse: 'collapse' },
   th: {
-    padding: '12px 20px',
-    textAlign: 'left',
-    fontSize: '12px',
-    fontWeight: '600',
-    color: '#64748b',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-    background: '#f8fafc',
-    borderBottom: '1px solid #e2e8f0',
-    whiteSpace: 'nowrap',
+    padding: '12px 20px', textAlign: 'left', fontSize: '12px',
+    fontWeight: '600', color: '#64748b', textTransform: 'uppercase',
+    letterSpacing: '0.05em', background: '#f8fafc',
+    borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap',
   },
   td: {
-    padding: '16px 20px',
-    fontSize: '14px',
-    color: '#334155',
-    borderBottom: '1px solid #f1f5f9',
-    verticalAlign: 'middle',
+    padding: '16px 20px', fontSize: '14px', color: '#334155',
+    borderBottom: '1px solid #f1f5f9', verticalAlign: 'middle',
   },
-  roadName: {
-    fontWeight: '600',
-    color: '#0f172a',
-    fontSize: '14px',
-  },
-  areaName: {
-    fontSize: '12px',
-    color: '#64748b',
-    marginTop: '2px',
-  },
+  roadName: { fontWeight: '600', color: '#0f172a', fontSize: '14px' },
+  areaName: { fontSize: '12px', color: '#64748b', marginTop: '2px' },
   congestionBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '6px',
-    padding: '4px 12px',
-    borderRadius: '20px',
-    fontSize: '12px',
-    fontWeight: '600',
-    whiteSpace: 'nowrap',
+    display: 'inline-flex', alignItems: 'center', gap: '6px',
+    padding: '4px 12px', borderRadius: '20px',
+    fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap',
   },
-  dot: {
-    width: '7px',
-    height: '7px',
-    borderRadius: '50%',
-    flexShrink: 0,
-  },
-  trendCell: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '5px',
-    fontSize: '13px',
-    fontWeight: '500',
-  },
-  vphBar: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '4px',
-    minWidth: '120px',
-  },
-  vphNum: {
-    fontWeight: '700',
-    color: '#0f172a',
-    fontSize: '14px',
-  },
-  barTrack: {
-    height: '4px',
-    borderRadius: '4px',
-    background: '#e2e8f0',
-    overflow: 'hidden',
-  },
-  emptyState: {
-    textAlign: 'center',
-    padding: '64px 32px',
-    color: '#94a3b8',
-  },
-  banner: (color) => ({
-    background: color === 'warn' ? '#fffbeb' : '#f0fdf4',
-    border: `1px solid ${color === 'warn' ? '#fde68a' : '#bbf7d0'}`,
-    color: color === 'warn' ? '#78350f' : '#14532d',
-    padding: '12px 16px',
-    borderRadius: '8px',
-    fontSize: '13px',
-    marginBottom: '20px',
-    display: 'flex',
-    gap: '8px',
-    alignItems: 'flex-start',
+  dot:      { width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0 },
+  trendCell:{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '13px', fontWeight: '500' },
+  vphBar:   { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '120px' },
+  vphNum:   { fontWeight: '700', color: '#0f172a', fontSize: '14px' },
+  barTrack: { height: '4px', borderRadius: '4px', background: '#e2e8f0', overflow: 'hidden' },
+  emptyState: { textAlign: 'center', padding: '64px 32px', color: '#94a3b8' },
+  banner: (type) => ({
+    background: type === 'warn' ? '#fffbeb' : '#f0fdf4',
+    border: `1px solid ${type === 'warn' ? '#fde68a' : '#bbf7d0'}`,
+    color: type === 'warn' ? '#78350f' : '#14532d',
+    padding: '12px 16px', borderRadius: '8px', fontSize: '13px',
+    marginBottom: '20px', display: 'flex', gap: '8px', alignItems: 'flex-start',
   }),
   loadBox: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: '320px',
-    flexDirection: 'column',
-    gap: '14px',
-    color: '#64748b',
-    fontSize: '15px',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    height: '320px', flexDirection: 'column', gap: '14px',
+    color: '#64748b', fontSize: '15px',
   },
   spinner: {
-    width: '32px',
-    height: '32px',
-    border: '3px solid #e2e8f0',
-    borderTop: '3px solid #3b82f6',
-    borderRadius: '50%',
-    animation: 'spin 0.8s linear infinite',
+    width: '32px', height: '32px',
+    border: '3px solid #e2e8f0', borderTop: '3px solid #3b82f6',
+    borderRadius: '50%', animation: 'spin 0.8s linear infinite',
   },
 };
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export default function CongestedRoads() {
-  const [timeFilter, setTimeFilter] = useState('all');
+  const [timeFilter,  setTimeFilter]  = useState('all');
   const [levelFilter, setLevelFilter] = useState('all');
-  const [liveData, setLiveData] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [apiError, setApiError] = useState(null);
-  const [usingStatic, setUsingStatic] = useState(false);
+  const [sortBy,      setSortBy]      = useState('congestion');
+  const [liveData,    setLiveData]    = useState([]);
+  const [loading,     setLoading]     = useState(true);
+  const [apiError,    setApiError]    = useState(null);
   const [lastFetched, setLastFetched] = useState(null);
+
+  const LEVEL_ORDER = { severe: 0, high: 1, medium: 2, low: 3, very_low: 4, none: 5 };
 
   // ── Fetch ────────────────────────────────────────────────────────────────────
 
@@ -350,91 +178,71 @@ export default function CongestedRoads() {
     setLoading(true);
     setApiError(null);
     try {
-      // Primary: real congestion endpoint
-      const res = await axios.get(`${API_BASE_URL}/api/congestion/`);
-      let rows = res.data;
+      const res  = await axios.get(`${API_BASE_URL}/api/congestion/`);
+      const rows = res.data;
 
       if (Array.isArray(rows) && rows.length > 0) {
-        // Normalise field names (API returns snake_case keys)
         const normalised = rows.map(item => ({
-          road: item.road || item.road_name || 'Unknown Road',
-          area: item.area || item.location || 'Unknown Area',
-          time: item.time || item.peak_time || '—',
-          congestion_level: (item.congestion_level || item.congestionLevel || 'Unknown').toLowerCase(),
-          vehicles_per_hour: item.vehicles_per_hour || item.vehiclesPerHour || 0,
-          trend: item.trend || 'stable',
-          is_static: false,
+          road:              item.road              || item.road_name || 'Unknown Road',
+          area:              item.area              || item.location  || 'Unknown Area',
+          time:              item.time              || '—',
+          video_date:        item.video_date        || '',
+          congestion_level:  (item.congestion_level || 'none').toLowerCase(),
+          vehicles_per_hour: item.vehicles_per_hour || 0,
+          total_vehicles:    item.total_vehicles    || 0,
+          trend:             item.trend             || 'stable',
+          congestion_index:  item.congestion_index  ?? null,
+          analysis_id:       item.analysis_id       || null,
         }));
         setLiveData(normalised);
-        setUsingStatic(false);
+        setApiError(null);
       } else {
-        // API returned empty — try to build from TrafficAnalysis overview
-        const overviewRes = await axios.get(`${API_BASE_URL}/api/analyze/`);
-        const overview = overviewRes.data;
-
-        // Build synthetic rows from peak_hours_data if present
-        const areas = overview?.peak_hours_data || overview?.areas || [];
-        if (areas.length > 0) {
-          const synthesised = areas.map(area => ({
-            road: `${area.name || 'Unknown'} Road`,
-            area: area.name || 'Unknown Area',
-            time: area.morning_peak || '—',
-            congestion_level: area.morning_volume > 1000 ? 'high' : area.morning_volume > 500 ? 'medium' : 'low',
-            vehicles_per_hour: area.morning_volume || 0,
-            trend: 'stable',
-            is_static: false,
-          }));
-          setLiveData(synthesised);
-          setUsingStatic(false);
-        } else {
-          // Fall back to static demo data
-          setLiveData(STATIC_DATA);
-          setUsingStatic(true);
-        }
+        // No data case - set empty array instead of static data
+        setLiveData([]);
+        setApiError('No congestion data available. Please upload and process videos first.');
       }
     } catch (err) {
       console.error('Congestion API error:', err);
-      setApiError('Could not reach the server. Showing sample demonstration data.');
-      setLiveData(STATIC_DATA);
-      setUsingStatic(true);
+      setApiError('Could not reach the server. Please check your connection and try again.');
+      setLiveData([]); // Set empty array on error
     } finally {
       setLoading(false);
       setLastFetched(new Date());
     }
   }, []);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  // ── Filtering ────────────────────────────────────────────────────────────────
+  // ── Filter & sort ─────────────────────────────────────────────────────────────
 
-  const visibleData = liveData.filter(row => {
-    if (levelFilter !== 'all' && row.congestion_level !== levelFilter) return false;
-    if (timeFilter === 'morning') {
-      const t = (row.time || '').toLowerCase();
-      return t.includes('am') || t.includes('morning') || t.match(/^[0-9]:/) || t.startsWith('0');
-    }
-    if (timeFilter === 'evening') {
-      const t = (row.time || '').toLowerCase();
-      return t.includes('pm') || t.includes('evening') || t.includes('afternoon');
-    }
-    return true;
-  });
+  const visibleData = [...liveData]
+    .filter(row => {
+      if (levelFilter !== 'all' && row.congestion_level !== levelFilter) return false;
+      if (timeFilter === 'morning') return (row.time || '').toLowerCase().includes('am');
+      if (timeFilter === 'evening') return (row.time || '').toLowerCase().includes('pm');
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'congestion')
+        return (LEVEL_ORDER[a.congestion_level] ?? 9) - (LEVEL_ORDER[b.congestion_level] ?? 9);
+      if (sortBy === 'vph')
+        return b.vehicles_per_hour - a.vehicles_per_hour;
+      if (sortBy === 'date')
+        return (b.video_date || '').localeCompare(a.video_date || '');
+      return 0;
+    });
 
-  // ── Stats ────────────────────────────────────────────────────────────────────
+  // ── Stats ─────────────────────────────────────────────────────────────────────
 
-  const totalRoads   = visibleData.length;
-  const highCount    = visibleData.filter(r => ['high', 'severe'].includes(r.congestion_level)).length;
-  const mediumCount  = visibleData.filter(r => r.congestion_level === 'medium').length;
-  const avgVph       = totalRoads > 0
+  const totalRoads  = visibleData.length;
+  const highCount   = visibleData.filter(r => ['high', 'severe'].includes(r.congestion_level)).length;
+  const mediumCount = visibleData.filter(r => r.congestion_level === 'medium').length;
+  const maxVph      = totalRoads > 0 ? Math.max(...visibleData.map(r => r.vehicles_per_hour || 0)) : 1;
+  const avgVph      = totalRoads > 0
     ? Math.round(visibleData.reduce((s, r) => s + (r.vehicles_per_hour || 0), 0) / totalRoads)
     : 0;
-  const maxVph       = totalRoads > 0
-    ? Math.max(...visibleData.map(r => r.vehicles_per_hour || 0))
-    : 1;
 
-  // ── Render ───────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
     <>
@@ -443,42 +251,39 @@ export default function CongestedRoads() {
         tr:hover > td { background: #f8fafc !important; }
       `}</style>
 
-      <div style={styles.page}>
+      <div style={s.page}>
 
-        {/* ── Header ── */}
-        <header style={styles.header}>
-          <h1 style={styles.headerTitle}>Traffic Monitor</h1>
-          <p style={styles.headerSub}>Congestion status and peak traffic information from processed videos</p>
+        {/* Header */}
+        <header style={s.header}>
+          <h1 style={s.headerTitle}>Traffic Monitor</h1>
+          <p style={s.headerSub}>Congestion levels from processed video analyses</p>
         </header>
 
-        {/* ── Banners ── */}
+        {/* Error Banner */}
         {apiError && (
-          <div style={styles.banner('warn')}>
+          <div style={s.banner('warn')}>
             <span>⚠️</span>
             <span>{apiError}</span>
           </div>
         )}
-        {!apiError && usingStatic && (
-          <div style={styles.banner('warn')}>
-            <span>ℹ️</span>
-            <span>No live traffic analyses found. Process videos to populate real congestion data. The table below shows sample data for demonstration.</span>
-          </div>
-        )}
-        {!usingStatic && !loading && (
-          <div style={styles.banner('ok')}>
+
+        {/* Success Banner */}
+        {!apiError && !loading && liveData.length > 0 && (
+          <div style={s.banner('ok')}>
             <span>✅</span>
             <span>
-              Showing live data from {liveData.length} analysed location{liveData.length !== 1 ? 's' : ''}.
-              {lastFetched && ` Last updated: ${lastFetched.toLocaleTimeString()}`}
+              Showing real congestion levels from {liveData.length} video
+              {liveData.length !== 1 ? ' analyses' : ' analysis'}.
+              {lastFetched && ` Last refreshed: ${lastFetched.toLocaleTimeString()}`}
             </span>
           </div>
         )}
 
-        {/* ── Top bar: title + controls ── */}
-        <div style={styles.topBar}>
-          <h2 style={styles.sectionTitle}>Congested Roads</h2>
-          <div style={styles.controls}>
-            <select style={styles.select} value={levelFilter} onChange={e => setLevelFilter(e.target.value)}>
+        {/* Controls */}
+        <div style={s.topBar}>
+          <h2 style={s.sectionTitle}>Road Congestion Overview</h2>
+          <div style={s.controls}>
+            <select style={s.select} value={levelFilter} onChange={e => setLevelFilter(e.target.value)}>
               <option value="all">All Levels</option>
               <option value="severe">Severe</option>
               <option value="high">High</option>
@@ -487,114 +292,146 @@ export default function CongestedRoads() {
               <option value="very_low">Very Low</option>
               <option value="none">None</option>
             </select>
-            <select style={styles.select} value={timeFilter} onChange={e => setTimeFilter(e.target.value)}>
-              <option value="all">All Day</option>
-              <option value="morning">Morning</option>
-              <option value="evening">Evening / Afternoon</option>
+            <select style={s.select} value={timeFilter} onChange={e => setTimeFilter(e.target.value)}>
+              <option value="all">All Times</option>
+              <option value="morning">Morning (AM)</option>
+              <option value="evening">Evening / PM</option>
             </select>
-            <button
-              style={styles.refreshBtn}
-              onClick={fetchData}
-              title="Refresh data"
-            >
-              🔄 Refresh
+            <select style={s.select} value={sortBy} onChange={e => setSortBy(e.target.value)}>
+              <option value="congestion">Sort: Congestion</option>
+              <option value="vph">Sort: Vehicles / hr</option>
+              <option value="date">Sort: Date</option>
+            </select>
+            <button style={s.refreshBtn} onClick={fetchData} disabled={loading} title="Refresh">
+              {loading ? '⟳ Loading...' : '↻ Refresh'}
             </button>
           </div>
         </div>
 
-        {/* ── Stat Cards ── */}
-        {!loading && (
-          <div style={styles.statsRow}>
-            <div style={styles.statCard}>
-              <div style={styles.statLabel}>Roads Monitored</div>
-              <div style={styles.statValue}>{totalRoads}</div>
-              <div style={styles.statSub}>{usingStatic ? 'sample entries' : 'from video analyses'}</div>
+        {/* Stat Cards - only show if there's data */}
+        {!loading && liveData.length > 0 && (
+          <div style={s.statsRow}>
+            <div style={s.statCard}>
+              <div style={s.statLabel}>Analyses Shown</div>
+              <div style={s.statValue}>{totalRoads}</div>
+              <div style={s.statSub}>from processed videos</div>
             </div>
-            <div style={styles.statCard}>
-              <div style={styles.statLabel}>Highly Congested</div>
-              <div style={{ ...styles.statValue, color: highCount > 0 ? '#dc2626' : '#0f172a' }}>{highCount}</div>
-              <div style={styles.statSub}>high or severe level</div>
+            <div style={s.statCard}>
+              <div style={s.statLabel}>High / Severe</div>
+              <div style={{ ...s.statValue, color: highCount > 0 ? '#dc2626' : '#0f172a' }}>
+                {highCount}
+              </div>
+              <div style={s.statSub}>congestion events</div>
             </div>
-            <div style={styles.statCard}>
-              <div style={styles.statLabel}>Moderate</div>
-              <div style={{ ...styles.statValue, color: mediumCount > 0 ? '#d97706' : '#0f172a' }}>{mediumCount}</div>
-              <div style={styles.statSub}>medium level</div>
+            <div style={s.statCard}>
+              <div style={s.statLabel}>Medium</div>
+              <div style={{ ...s.statValue, color: mediumCount > 0 ? '#d97706' : '#0f172a' }}>
+                {mediumCount}
+              </div>
+              <div style={s.statSub}>congestion events</div>
             </div>
-            <div style={styles.statCard}>
-              <div style={styles.statLabel}>Avg Vehicles/Hour</div>
-              <div style={styles.statValue}>{avgVph.toLocaleString()}</div>
-              <div style={styles.statSub}>across visible roads</div>
+            <div style={s.statCard}>
+              <div style={s.statLabel}>Avg Vehicles / hr</div>
+              <div style={s.statValue}>{avgVph.toLocaleString()}</div>
+              <div style={s.statSub}>across visible rows</div>
             </div>
           </div>
         )}
 
-        {/* ── Main Table Card ── */}
-        <div style={styles.card}>
-          <div style={styles.cardHeader}>
-            <h3 style={styles.cardTitle}>Road Congestion Overview</h3>
-            {usingStatic ? (
-              <span style={{ ...styles.badge, background: '#fef3c7', color: '#92400e' }}>Sample Data</span>
-            ) : (
-              <span style={{ ...styles.badge, background: '#d1fae5', color: '#065f46' }}>Live Data</span>
+        {/* Main Table */}
+        <div style={s.card}>
+          <div style={s.cardHeader}>
+            <h3 style={s.cardTitle}>Congestion Details</h3>
+            {liveData.length > 0 && (
+              <span style={{ ...s.badge, background: '#d1fae5', color: '#065f46' }}>Live Data</span>
             )}
           </div>
 
           {loading ? (
-            <div style={styles.loadBox}>
-              <div style={styles.spinner} />
+            <div style={s.loadBox}>
+              <div style={s.spinner} />
               <span>Loading congestion data…</span>
             </div>
           ) : visibleData.length === 0 ? (
-            <div style={styles.emptyState}>
+            <div style={s.emptyState}>
               <div style={{ fontSize: '40px', marginBottom: '12px' }}>🛣️</div>
-              <div style={{ fontWeight: '600', color: '#374151', marginBottom: '6px' }}>No roads match your filters</div>
-              <div style={{ fontSize: '13px' }}>Try adjusting the congestion level or time-of-day filter.</div>
+              <div style={{ fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
+                {liveData.length === 0 ? 'No congestion data available' : 'No records match your filters'}
+              </div>
+              <div style={{ fontSize: '13px' }}>
+                {liveData.length === 0 
+                  ? 'Upload and process videos to see congestion data.'
+                  : 'Adjust the congestion level or time filter above.'}
+              </div>
             </div>
           ) : (
-            <div style={styles.tableWrap}>
-              <table style={styles.table}>
+            <div style={s.tableWrap}>
+              <table style={s.table}>
                 <thead>
                   <tr>
-                    <th style={styles.th}>Road / Area</th>
-                    <th style={styles.th}>Peak Time</th>
-                    <th style={styles.th}>Congestion Level</th>
-                    <th style={styles.th}>Vehicles / Hour</th>
-                    <th style={styles.th}>Trend</th>
-                    <th style={styles.th}>Source</th>
+                    <th style={s.th}>Location</th>
+                    <th style={s.th}>Date</th>
+                    <th style={s.th}>Time Range</th>
+                    <th style={s.th}>Congestion Level</th>
+                    <th style={s.th}>Vehicles / Hour</th>
+                    <th style={s.th}>Trend</th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleData.map((row, idx) => {
-                    const cMeta = getCongestionMeta(row.congestion_level);
-                    const tMeta = getTrendMeta(row.trend);
-                    const barPct = maxVph > 0 ? Math.min(100, (row.vehicles_per_hour / maxVph) * 100) : 0;
+                    const cMeta  = getCongestionMeta(row.congestion_level);
+                    const tMeta  = getTrendMeta(row.trend);
+                    const barPct = maxVph > 0
+                      ? Math.min(100, (row.vehicles_per_hour / maxVph) * 100)
+                      : 0;
 
                     return (
-                      <tr key={idx}>
-                        <td style={styles.td}>
-                          <div style={styles.roadName}>{row.road}</div>
-                          <div style={styles.areaName}>{row.area}</div>
+                      <tr key={row.analysis_id || idx}>
+
+                        {/* Location */}
+                        <td style={s.td}>
+                          <div style={s.roadName}>{row.road}</div>
+                          <div style={s.areaName}>{row.area}</div>
                         </td>
 
-                        <td style={styles.td}>
-                          <span style={{ fontVariantNumeric: 'tabular-nums' }}>{row.time}</span>
-                        </td>
-
-                        <td style={styles.td}>
-                          <span style={{
-                            ...styles.congestionBadge,
-                            background: cMeta.bg,
-                            color: cMeta.color,
-                          }}>
-                            <span style={{ ...styles.dot, background: cMeta.dot }} />
-                            {cMeta.label}
+                        {/* Date — properly formatted */}
+                        <td style={s.td}>
+                          <span style={{ fontSize: '13px', color: '#475569' }}>
+                            {formatDate(row.video_date)}
                           </span>
                         </td>
 
-                        <td style={styles.td}>
-                          <div style={styles.vphBar}>
-                            <span style={styles.vphNum}>{(row.vehicles_per_hour || 0).toLocaleString()}</span>
-                            <div style={styles.barTrack}>
+                        {/* Time range */}
+                        <td style={s.td}>
+                          <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: '13px' }}>
+                            {row.time}
+                          </span>
+                        </td>
+
+                        {/* Congestion level badge */}
+                        <td style={s.td}>
+                          <span style={{
+                            ...s.congestionBadge,
+                            background: cMeta.bg,
+                            color:      cMeta.color,
+                          }}>
+                            <span style={{ ...s.dot, background: cMeta.dot }} />
+                            {cMeta.label}
+                          </span>
+                          {row.congestion_index != null && (
+                            <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '3px' }}>
+                              Index: {(row.congestion_index * 100).toFixed(0)}%
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Vehicles / hour bar */}
+                        <td style={s.td}>
+                          <div style={s.vphBar}>
+                            <span style={s.vphNum}>
+                              {(row.vehicles_per_hour || 0).toLocaleString()}
+                            </span>
+                            <div style={s.barTrack}>
                               <div style={{
                                 height: '100%',
                                 width: `${barPct}%`,
@@ -603,23 +440,22 @@ export default function CongestedRoads() {
                                 transition: 'width 0.6s ease',
                               }} />
                             </div>
+                            {row.total_vehicles > 0 && (
+                              <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                                {row.total_vehicles.toLocaleString()} total detected
+                              </span>
+                            )}
                           </div>
                         </td>
 
-                        <td style={styles.td}>
-                          <span style={{ ...styles.trendCell, color: tMeta.color }}>
+                        {/* Trend */}
+                        <td style={s.td}>
+                          <span style={{ ...s.trendCell, color: tMeta.color }}>
                             <span style={{ fontSize: '16px' }}>{tMeta.icon}</span>
                             {tMeta.label}
                           </span>
                         </td>
 
-                        <td style={styles.td}>
-                          {row.is_static ? (
-                            <span style={{ fontSize: '12px', color: '#94a3b8', fontStyle: 'italic' }}>Sample</span>
-                          ) : (
-                            <span style={{ fontSize: '12px', color: '#22c55e', fontWeight: '600' }}>Live</span>
-                          )}
-                        </td>
                       </tr>
                     );
                   })}
@@ -628,7 +464,6 @@ export default function CongestedRoads() {
             </div>
           )}
         </div>
-
       </div>
     </>
   );

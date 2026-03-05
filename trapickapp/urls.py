@@ -80,4 +80,6 @@ urlpatterns = [
     path('api/peak-hours/enhanced/',api_views.EnhancedPeakHoursAPI.as_view(),name='enhanced_peak_hours'),
     path('api/data-quality/report/',api_views.DataQualityReportAPI.as_view(),name='data_quality_report'),
     path('api/videos/<uuid:video_id>/reset-reprocess/', api_views.VideoResetAndReprocessAPI.as_view(), name='video_reset_reprocess'),
+    path('api/videos/time-slots/', api_views.VideoTimeSlotsAPI.as_view(), name='video-time-slots'),
+    path('api/videos/check-conflict/', api_views.VideoCheckConflictAPI.as_view(), name='video-check-conflict'),
 ]

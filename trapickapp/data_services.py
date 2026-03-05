@@ -166,42 +166,87 @@ def get_fallback_data(reason):
         }
     }
         
+
 def calculate_real_congestion_data(location_id='all'):
+    """
+    Return congestion rows from TrafficAnalysis records so the CongestedRoads
+    page shows the levels that were actually detected in processed videos.
+    """
     try:
         base_query = Q()
         if location_id != 'all' and location_id is not None:
             base_query &= Q(location_id=location_id)
-        
-        recent_analyses = TrafficAnalysis.objects.filter(
-            base_query,
-            location__isnull=False
-        ).select_related('location').order_by('-analyzed_at')[:10]
-        
+
+        # Pull all completed analyses that have a location assigned.
+        # Use select_related to avoid N+1 queries.
+        analyses = (
+            TrafficAnalysis.objects
+            .filter(base_query, location__isnull=False)
+            .select_related('location', 'video_file')
+            .order_by('-analyzed_at')
+        )
+
         congestion_data = []
-        
-        for analysis in recent_analyses:
-            video_duration_hours = analysis.video_file.duration_seconds / 3600 if analysis.video_file and analysis.video_file.duration_seconds else 1
-            vehicles_per_hour = analysis.total_vehicles / video_duration_hours if video_duration_hours > 0 else 0
-            
-            congestion_level = analysis.congestion_level.capitalize()
-            
-            trend = 'stable'
-            if analysis.traffic_pattern == 'increasing':
-                trend = 'increasing'
-            elif analysis.traffic_pattern == 'decreasing':
-                trend = 'decreasing'
-            
+
+        for analysis in analyses:
+            video = analysis.video_file
+
+            # Build a human-readable time range from the video's stored times.
+            if video and video.video_start_time and video.video_end_time:
+                time_str = (
+                    f"{video.video_start_time.strftime('%I:%M %p')} – "
+                    f"{video.video_end_time.strftime('%I:%M %p')}"
+                )
+            elif video and video.video_start_time:
+                time_str = video.video_start_time.strftime('%I:%M %p')
+            else:
+                time_str = analysis.analyzed_at.strftime('%I:%M %p')
+
+            # Vehicles-per-hour from the video's actual duration.
+            duration_hours = 0
+            if video and video.duration_seconds and video.duration_seconds > 0:
+                duration_hours = video.duration_seconds / 3600
+            elif analysis.duration_seconds and analysis.duration_seconds > 0:
+                duration_hours = analysis.duration_seconds / 3600
+
+            vehicles_per_hour = (
+                int(analysis.total_vehicles / duration_hours)
+                if duration_hours > 0
+                else analysis.total_vehicles
+            )
+
+            # Traffic pattern → trend label
+            trend_map = {
+                'increasing':  'increasing',
+                'decreasing':  'decreasing',
+                'stable':      'stable',
+                'fluctuating': 'fluctuating',
+            }
+            trend = trend_map.get(analysis.traffic_pattern, 'stable')
+
+            # Video date label
+            video_date = ''
+            if video and video.video_date:
+                video_date = video.video_date.strftime('%b %d, %Y')
+
             congestion_data.append({
-                'road': f"{analysis.location.display_name} Road",
-                'area': analysis.location.display_name,
-                'time': analysis.analyzed_at.strftime('%I:%M %p'),
-                'congestion_level': congestion_level,
-                'vehicles_per_hour': int(vehicles_per_hour),
-                'trend': trend
+                'road':               analysis.location.display_name,
+                'area':               analysis.location.display_name,
+                'time':               time_str,
+                'video_date':         video_date,
+                'congestion_level':   analysis.congestion_level,   # exact stored value
+                'vehicles_per_hour':  vehicles_per_hour,
+                'total_vehicles':     analysis.total_vehicles,
+                'trend':              trend,
+                'analysis_id':        str(analysis.id),
+                # Enhanced fields (may be None on older analyses)
+                'congestion_index':   analysis.congestion_index,
+                'queue_length':       analysis.queue_length_meters,
+                'incident_risk':      analysis.incident_risk_score,
             })
-        
+
         return congestion_data
-        
+
     except Exception as e:
         print(f"Error calculating congestion data: {e}")
         import traceback

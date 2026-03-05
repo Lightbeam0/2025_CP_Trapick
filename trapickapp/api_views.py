@@ -22,6 +22,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.views.decorators.csrf import csrf_exempt
 
+from requests import request
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -67,118 +68,185 @@ from .serializers import *
 
 
 class VideoUploadAPI(APIView):
+    """
+    Upload a video for processing.
+
+    New behaviour (v2):
+      • Duration is auto-detected from the uploaded file using cv2.
+      • If start_time is supplied but end_time is omitted, end_time is
+        computed automatically from the detected duration.
+      • If a conflicting video already occupies the same
+        location + date + time-slot, the upload is REJECTED with HTTP 409
+        and full conflict details so the frontend can show a clear message.
+    """
+
     def post(self, request):
-        # ✅ ADD CLOUD MODE CHECK AT THE BEGINNING
+        # ── Cloud guard ────────────────────────────────────────────────────
         if settings.IS_CLOUD_DEPLOYMENT:
             return Response(
                 {'error': 'Video uploads are disabled in cloud deployment'},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
+        # ── Lazy import of validator utils ─────────────────────────────────
+        from .utils.time_slot_validator import (
+            get_video_duration_seconds,
+            compute_end_time,
+            check_time_slot_conflict,
+        )
+
         print("🔍 DEBUG: VideoUploadAPI called")
         print(f"🔍 Request FILES: {list(request.FILES.keys())}")
         print(f"🔍 Request POST data: {request.POST}")
 
         try:
+            # ── 1. File presence ───────────────────────────────────────────
             if 'video' not in request.FILES:
                 return Response(
                     {'error': 'No video file provided'},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             video_file = request.FILES['video']
             print(f"✅ Video file received: {video_file.name} ({video_file.size} bytes)")
 
-            # Validate file type
+            # ── 2. File-type & size validation ─────────────────────────────
             allowed_types = ['video/mp4', 'video/avi', 'video/mov', 'video/webm']
             if video_file.content_type not in allowed_types:
                 return Response(
                     {'error': 'Invalid file type. Please upload MP4, AVI, MOV, or WebM.'},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Validate file size
-            max_size = 2 * 1024 * 1024 * 1024  # 2GB
+            max_size = 2 * 1024 * 1024 * 1024  # 2 GB
             if video_file.size > max_size:
                 return Response(
-                    {'error': 'File too large. Maximum size is 2GB.'},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {'error': 'File too large. Maximum size is 2 GB.'},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Get form data
-            title = request.POST.get('title', video_file.name)
-            location_id = request.POST.get('location_id')
-            video_date = request.POST.get('video_date')
-            video_start_time_str = request.POST.get('start_time')
-            video_end_time_str = request.POST.get('end_time')
-            processing_profile_id = request.POST.get('processing_profile_id')
+            # ── 3. Form data ───────────────────────────────────────────────
+            title                  = request.POST.get('title', video_file.name)
+            location_id            = request.POST.get('location_id')
+            video_date             = request.POST.get('video_date')
+            video_start_time_str   = request.POST.get('start_time')
+            video_end_time_str     = request.POST.get('end_time')
+            processing_profile_id  = request.POST.get('processing_profile_id')
 
-            # Validate required fields
             if not location_id:
                 return Response(
                     {'error': 'Location is required'},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-
             if not video_date:
                 return Response(
                     {'error': 'Video recording date is required'},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Validate location exists
+            # ── 4. Validate location & profile ─────────────────────────────
             try:
                 location = Location.objects.get(id=location_id)
             except Location.DoesNotExist:
                 return Response(
                     {'error': 'Location not found'},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Validate processing profile if provided
             processing_profile = None
             if processing_profile_id:
                 try:
-                    processing_profile = ProcessingProfile.objects.get(id=processing_profile_id, active=True)
+                    processing_profile = ProcessingProfile.objects.get(
+                        id=processing_profile_id, active=True
+                    )
                 except ProcessingProfile.DoesNotExist:
                     return Response(
                         {'error': 'Processing profile not found or inactive'},
-                        status=status.HTTP_400_BAD_REQUEST
+                        status=status.HTTP_400_BAD_REQUEST,
                     )
 
-            # Save video file
+            # ── 5. Auto-detect video duration ──────────────────────────────
+            print("🎬 Detecting video duration...")
+            try:
+                detected_duration = get_video_duration_seconds(video_file)
+            except Exception as e:
+                print(f"⚠️ Duration detection failed (non-fatal): {e}")
+                detected_duration = None
+            print(f"   Duration detected: {detected_duration}s")
+
+            # ── 6. Parse / derive start & end times ────────────────────────
+            def _parse_time(s):
+                if not s:
+                    return None
+                try:
+                    fmt = '%H:%M:%S' if len(s) == 8 else '%H:%M'
+                    return datetime.strptime(s, fmt).time()
+                except ValueError:
+                    print(f"⚠️ Could not parse time '{s}'")
+                    return None
+
+            video_start_time_obj = _parse_time(video_start_time_str)
+            video_end_time_obj   = _parse_time(video_end_time_str)
+
+            # Auto-compute end time when start is known but end is missing
+            auto_end_computed = False
+            if video_start_time_obj and not video_end_time_obj and detected_duration:
+                video_end_time_obj = compute_end_time(video_start_time_obj, detected_duration)
+                auto_end_computed  = True
+                print(
+                    f"⏱️ Auto end time: {video_start_time_obj.strftime('%H:%M')} "
+                    f"+ {detected_duration:.0f}s → {video_end_time_obj.strftime('%H:%M')}"
+                )
+
+            # ── 7. Time-slot conflict check ────────────────────────────────
+            conflict_result = None
+            if video_start_time_obj and video_end_time_obj:
+                from datetime import datetime as _dt
+                try:
+                    parsed_date = _dt.strptime(video_date, '%Y-%m-%d').date()
+                except ValueError:
+                    return Response(
+                        {'error': 'Invalid date format. Use YYYY-MM-DD.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                conflict_result = check_time_slot_conflict(
+                    location_id=location_id,
+                    video_date=parsed_date,
+                    start_time=video_start_time_obj,
+                    end_time=video_end_time_obj,
+                )
+
+                if conflict_result['has_conflict']:
+                    print(f"❌ Time slot conflict: {conflict_result['message']}")
+                    return Response(
+                        {
+                            'error': 'Time slot conflict detected',
+                            'detail': conflict_result['message'],
+                            'conflicts': conflict_result['conflicts'],
+                            'proposed_slot': {
+                                'start': video_start_time_obj.strftime('%H:%M'),
+                                'end':   video_end_time_obj.strftime('%H:%M'),
+                                'date':  video_date,
+                                'location': location.display_name,
+                            },
+                            'suggestion': (
+                                'Please choose a different start time or date, '
+                                'or remove/edit the conflicting video first.'
+                            ),
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+                print("✅ No time slot conflicts found.")
+
+            # ── 8. Save video file to disk ─────────────────────────────────
             fs = FileSystemStorage()
             filename = fs.save(f'videos/{video_file.name}', video_file)
             video_path = fs.path(filename)
             print(f"💾 Video saved to: {video_path}")
 
-            # Parse time strings if provided
-            video_start_time_obj = None
-            video_end_time_obj = None
-
-            if video_start_time_str:
-                try:
-                    if len(video_start_time_str) == 8:  # HH:MM:SS
-                        video_start_time_obj = datetime.strptime(video_start_time_str, '%H:%M:%S').time()
-                    elif len(video_start_time_str) == 5:  # HH:MM
-                        video_start_time_obj = datetime.strptime(video_start_time_str, '%H:%M').time()
-                    else:
-                        print(f"Warning: Could not parse start time format: {video_start_time_str}")
-                except ValueError:
-                    print(f"Warning: Error parsing start time '{video_start_time_str}'")
-
-            if video_end_time_str:
-                try:
-                    if len(video_end_time_str) == 8:  # HH:MM:SS
-                        video_end_time_obj = datetime.strptime(video_end_time_str, '%H:%M:%S').time()
-                    elif len(video_end_time_str) == 5:  # HH:MM
-                        video_end_time_obj = datetime.strptime(video_end_time_str, '%H:%M').time()
-                    else:
-                        print(f"Warning: Could not parse end time format: {video_end_time_str}")
-                except ValueError:
-                    print(f"Warning: Error parsing end time '{video_end_time_str}'")
-
-            # Create video object
+            # ── 9. Create VideoFile record ─────────────────────────────────
             video_obj = VideoFile.objects.create(
                 filename=video_file.name,
                 file_path=filename,
@@ -186,91 +254,250 @@ class VideoUploadAPI(APIView):
                 video_date=video_date,
                 video_start_time=video_start_time_obj,
                 video_end_time=video_end_time_obj,
+                # Store detected duration early so it's visible before processing
+                duration_seconds=detected_duration,
                 processing_status='uploaded',
                 processing_progress=0,
                 processing_message='Upload complete, starting processing...',
                 uploaded_at=timezone.now(),
-                location_date_group=None  # Will be assigned after processing
+                location_date_group=None,
             )
 
-            # Set processing profile if provided
             if processing_profile:
                 video_obj.processing_profile = processing_profile
                 video_obj.save()
 
-            print(f"📄 Video record created: {video_obj.id}, Start: {video_obj.video_start_time}, End: {video_obj.video_end_time}")
+            print(
+                f"📄 Video record created: {video_obj.id} | "
+                f"Start: {video_obj.video_start_time} | "
+                f"End:   {video_obj.video_end_time} | "
+                f"Duration: {detected_duration}s"
+            )
 
-            # ✅ START PROCESSING - ONLY IN LOCAL MODE (but we already checked above)
+            # ── 10. Kick off Celery task ───────────────────────────────────
             try:
-                # ✅ LAZY IMPORT - only import when needed
                 from .tasks import process_video_task
                 task = process_video_task.delay(str(video_obj.id), location_id=location_id)
                 print(f"✅ Celery task started: {task.id} for video {video_obj.id}")
 
                 response_data = {
-                    'status': 'success',
-                    'message': 'Video uploaded and processing started',
-                    'video_id': str(video_obj.id),
+                    'status':    'success',
+                    'message':   'Video uploaded and processing started',
+                    'video_id':  str(video_obj.id),
                     'upload_id': str(video_obj.id),
-                    'id': str(video_obj.id),
-                    'task_id': task.id,
+                    'id':        str(video_obj.id),
+                    'task_id':   task.id,
                     'video_info': {
-                        'filename': video_file.name,
-                        'size': video_file.size,
-                        'type': video_file.content_type
-                    }
+                        'filename':          video_file.name,
+                        'size':              video_file.size,
+                        'type':              video_file.content_type,
+                        'detected_duration': detected_duration,
+                        'auto_end_computed': auto_end_computed,
+                    },
                 }
 
-                # Include start/end time in response if they were provided/parsed
                 if video_start_time_obj:
-                    response_data['video_info']['start_time'] = video_start_time_str
+                    response_data['video_info']['start_time'] = video_start_time_obj.strftime('%H:%M')
                 if video_end_time_obj:
-                    response_data['video_info']['end_time'] = video_end_time_str
+                    response_data['video_info']['end_time'] = video_end_time_obj.strftime('%H:%M')
                 if processing_profile:
                     response_data['processing_profile'] = {
-                        'id': processing_profile.id,
-                        'name': processing_profile.display_name,
-                        'detector_type': processing_profile.detector_type
+                        'id':            processing_profile.id,
+                        'name':          processing_profile.display_name,
+                        'detector_type': processing_profile.detector_type,
                     }
 
                 print(f"📤 Sending response with video_id: {video_obj.id}")
                 return Response(response_data)
 
             except Exception as e:
-                print(f"❌ Error starting Celery processing: {str(e)}")
+                print(f"❌ Error starting Celery processing: {e}")
                 video_obj.processing_status = 'failed'
                 video_obj.save()
                 return Response(
-                    {'error': f'Failed to start processing: {str(e)}'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    {'error': f'Failed to start processing: {e}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
         except ValidationError as ve:
             print(f"Validation error: {ve}")
             return Response(
-                {'error': f'Validation error: {str(ve)}'},
-                status=status.HTTP_400_BAD_REQUEST
+                {'error': f'Validation error: {ve}'},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         except Exception as e:
-            print(f"💥 UPLOAD ERROR: {str(e)}")
+            print(f"💥 UPLOAD ERROR: {e}")
             import traceback
             traceback.print_exc()
             return Response(
-                {'error': f'Upload failed: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'error': f'Upload failed: {e}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+        
+class VideoCheckConflictAPI(APIView):
+    """
+    Lightweight pre-upload conflict check.
+    """
+
+    def get(self, request):
+        from .utils.time_slot_validator import (
+            check_time_slot_conflict,
+            compute_end_time,
+        )
+
+        location_id       = request.GET.get('location_id')
+        video_date_str    = request.GET.get('video_date')
+        start_time_str    = request.GET.get('start_time')
+        end_time_str      = request.GET.get('end_time')
+        duration_str      = request.GET.get('duration_seconds')
+        exclude_video_id  = request.GET.get('exclude_video_id')
+
+        if not (location_id and video_date_str and start_time_str):
+            return Response(
+                {'error': 'location_id, video_date and start_time are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            video_date = datetime.strptime(video_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'error': 'Invalid video_date format. Use YYYY-MM-DD.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        def _parse_time(s):
+            if not s:
+                return None
+            try:
+                fmt = '%H:%M:%S' if len(s) == 8 else '%H:%M'
+                return datetime.strptime(s, fmt).time()
+            except ValueError:
+                return None
+
+        start_time = _parse_time(start_time_str)
+        end_time   = _parse_time(end_time_str)
+
+        if not start_time:
+            return Response(
+                {'error': 'Invalid start_time format. Use HH:MM.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        auto_end = False
+        if not end_time and duration_str:
+            try:
+                duration_seconds = float(duration_str)
+                end_time = compute_end_time(start_time, duration_seconds)
+                auto_end = True
+            except ValueError:
+                return Response(
+                    {'error': 'Invalid duration_seconds value.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if not end_time:
+            return Response(
+                {'error': 'Either end_time or duration_seconds must be provided.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = check_time_slot_conflict(
+            location_id=location_id,
+            video_date=video_date,
+            start_time=start_time,
+            end_time=end_time,
+            exclude_video_id=exclude_video_id,
+        )
+
+        return Response({
+            'has_conflict':   result['has_conflict'],
+            'conflicts':      result['conflicts'],
+            'message':        result['message'],
+            'proposed_slot': {
+                'start':    start_time.strftime('%H:%M'),
+                'end':      end_time.strftime('%H:%M'),
+                'date':     video_date_str,
+                'auto_end': auto_end,
+            },
+        })
+
+class VideoTimeSlotsAPI(APIView):
+    def get(self, request):
+        location_id    = request.GET.get('location_id')
+        video_date_str = request.GET.get('video_date')
+
+        if not (location_id and video_date_str):
+            return Response(
+                {'error': 'location_id and video_date are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            video_date = datetime.strptime(video_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'error': 'Invalid video_date format. Use YYYY-MM-DD.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            location = Location.objects.get(id=location_id)
+        except Location.DoesNotExist:
+            return Response(
+                {'error': 'Location not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        videos = VideoFile.objects.filter(
+            location_date_group__location_id=location_id,
+            video_date=video_date,
+            video_start_time__isnull=False,
+            video_end_time__isnull=False,
+            processing_status__in=['uploaded', 'processing', 'completed'],
+        ).order_by('video_start_time')
+
+        slots = []
+        for v in videos:
+            total_vehicles = 0
+            if hasattr(v, 'traffic_analysis'):
+                total_vehicles = v.traffic_analysis.total_vehicles
+
+            slots.append({
+                'video_id':       str(v.id),
+                'filename':       v.filename,
+                'title':          v.title or v.filename,
+                'start_time':     v.video_start_time.strftime('%H:%M'),
+                'end_time':       v.video_end_time.strftime('%H:%M'),
+                'duration_min':   round(
+                    (
+                        v.video_end_time.hour * 60 + v.video_end_time.minute
+                        - v.video_start_time.hour * 60 - v.video_start_time.minute
+                    ) % (24 * 60), 1
+                ),
+                'status':         v.processing_status,
+                'total_vehicles': total_vehicles,
+            })
+
+        return Response({
+            'location': {
+                'id':   location.id,
+                'name': location.display_name,
+            },
+            'date':           video_date_str,
+            'occupied_slots': slots,
+            'slot_count':     len(slots),
+        })
+
 
 
 class LocationDateGroupListAPI(APIView):
-    """Handle location-date groups"""
-    
     def get(self, request):
         groups = LocationDateGroup.objects.all().select_related('location').order_by('-date')
         serializer = LocationDateGroupSerializer(groups, many=True)
         return Response(serializer.data)
     
     def post(self, request):
-        """Create a new location-date group"""
         serializer = LocationDateGroupSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -279,8 +506,6 @@ class LocationDateGroupListAPI(APIView):
 
 
 class LocationDateGroupDetailAPI(APIView):
-    """Handle individual location-date group operations with coverage data"""
-    
     def get_object(self, group_id):
         try:
             return LocationDateGroup.objects.get(id=group_id)
@@ -292,19 +517,11 @@ class LocationDateGroupDetailAPI(APIView):
         if group is None:
             return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
         
-        # Get videos
         videos = group.videos.filter(processing_status='completed').order_by('video_start_time')
-        
-        # Get detailed time range with coverage info
         time_range = group.get_detailed_time_range()
-        
-        # Get coverage summary
         coverage_summary = group.get_coverage_summary()
-        
-        # Get hourly distribution
         hourly_dist = group.hourly_distribution or group.calculate_hourly_distribution()
         
-        # Prepare video data
         videos_data = []
         for video in videos:
             analysis = None
@@ -328,7 +545,6 @@ class LocationDateGroupDetailAPI(APIView):
                 'analysis': analysis
             })
         
-        # Prepare response
         response_data = {
             'id': group.id,
             'location': {
@@ -346,11 +562,9 @@ class LocationDateGroupDetailAPI(APIView):
         return Response(response_data)
 
 
+
 class GroupVideosAPI(APIView):
-    """Add/remove videos from location-date groups"""
-    
     def post(self, request, group_id):
-        """Add videos to a group"""
         try:
             group = LocationDateGroup.objects.get(id=group_id)
             video_ids = request.data.get('video_ids', [])
@@ -358,7 +572,6 @@ class GroupVideosAPI(APIView):
             if not video_ids:
                 return Response({'error': 'No video IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
             
-            # Get videos that are completed and not already in a group
             videos = VideoFile.objects.filter(
                 id__in=video_ids,
                 processing_status='completed',
@@ -381,7 +594,6 @@ class GroupVideosAPI(APIView):
             return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
     
     def delete(self, request, group_id):
-        """Remove videos from a group"""
         try:
             group = LocationDateGroup.objects.get(id=group_id)
             video_ids = request.data.get('video_ids', [])
@@ -410,8 +622,6 @@ class GroupVideosAPI(APIView):
 
 
 class UngroupedVideosAPI(APIView):
-    """Get videos that are not in any group"""
-    
     def get(self, request):
         videos = VideoFile.objects.filter(
             processing_status='completed',
@@ -423,13 +633,10 @@ class UngroupedVideosAPI(APIView):
 
 
 class GroupAnalysisAPI(APIView):
-    """Get aggregated analysis for a location-date group with coverage info"""
-    
     def get(self, request, group_id):
         try:
             group = LocationDateGroup.objects.get(id=group_id)
             
-            # Ensure coverage metrics are up to date
             coverage = group.calculate_coverage_metrics()
             hourly = group.calculate_hourly_distribution()
             
@@ -440,7 +647,6 @@ class GroupAnalysisAPI(APIView):
                 return Response({'error': 'No analyses found for this group'}, 
                               status=status.HTTP_404_NOT_FOUND)
             
-            # Calculate aggregated statistics
             aggregated_data = {
                 'total_vehicles': sum(analysis.total_vehicles for analysis in analyses),
                 'car_count': sum(analysis.car_count for analysis in analyses),
@@ -463,60 +669,57 @@ class GroupAnalysisAPI(APIView):
             return Response({'error': 'Group not found'}, status=status.HTTP_404_NOT_FOUND)
     
     def get_average_congestion(self, analyses):
-        """Calculate average congestion level"""
         congestion_levels = {
-            'none': 0,
-            'very_low': 1,
-            'low': 2, 
-            'medium': 3,
-            'high': 4,
-            'severe': 5
+            'none': 0, 'very_low': 1, 'low': 2, 'medium': 3, 'high': 4, 'severe': 5
         }
-        
-        reverse_map = {
-            0: 'none',
-            1: 'very_low',
-            2: 'low',
-            3: 'medium',
-            4: 'high',
-            5: 'severe'
-        }
+        reverse_map = {v: k for k, v in congestion_levels.items()}
         
         if not analyses:
             return 'low'
         
-        total_score = sum(congestion_levels.get(analysis.congestion_level, 2) 
-                         for analysis in analyses)
+        total_score = sum(congestion_levels.get(analysis.congestion_level, 2) for analysis in analyses)
         avg_score = total_score / len(analyses)
-        
-        # Find closest level
         closest_level = min(reverse_map.keys(), key=lambda x: abs(x - avg_score))
         return reverse_map[closest_level]
 
 
 
+
 class AnalysisOverviewAPI(APIView):
     """
-    Home-page overview — FIXED VERSION.
+    Home-page overview — WEEK-SCOPED VERSION (fixed).
 
-    Changes vs original:
-    1. Every sub-call is wrapped in its own try/except so one failure
-       doesn't kill the whole response.
-    2. peak_hours_service returns a LIST of day-dicts; we now pass that
-       list directly to the frontend as `peak_hours_data`.  The legacy
-       `areas` key is kept for backward compat.
-    3. `traffic_analysis` is included in the response when a most-recent
-       analysis exists, so the EnhancedMetricsPanel can render.
-    4. All DB errors are caught and logged; the endpoint always returns
-       HTTP 200 with whatever data it could collect.
+    Accepts `week_offset` (int ≤ 0, default 0 = current week, -1 = last week, …).
+    All filtering is done at the DB level so changing weeks actually returns
+    different data instead of always showing the same aggregated totals.
     """
 
     def get(self, request):
+        from datetime import timedelta
+        from django.utils import timezone as tz
+
         location_id = request.query_params.get('location_id', 'all')
 
-        # ── 1. Weekly data ────────────────────────────────────────────────
+        # ── Parse + cap week_offset (no future weeks) ─────────────────────
         try:
-            weekly_data = self.calculate_real_weekly_data(location_id=location_id)
+            week_offset = int(request.query_params.get('week_offset', 0))
+        except (TypeError, ValueError):
+            week_offset = 0
+        week_offset = min(0, week_offset)   # cap: never allow positive values
+
+        # ── Mon–Sun window using Django-aware local date ───────────────────
+        today = tz.localdate()              # respects settings.TIME_ZONE
+        dow = today.weekday()               # 0 = Mon … 6 = Sun
+        week_monday = today - timedelta(days=dow) + timedelta(weeks=week_offset)
+        week_sunday = week_monday + timedelta(days=6)
+
+        # ── 1. Weekly bar/line data ────────────────────────────────────────
+        try:
+            weekly_data = self.calculate_real_weekly_data(
+                location_id=location_id,
+                week_monday=week_monday,
+                week_sunday=week_sunday,
+            )
         except Exception as e:
             logger.error(f"weekly_data error: {e}")
             weekly_data = [0, 0, 0, 0, 0, 0, 0]
@@ -528,41 +731,27 @@ class AnalysisOverviewAPI(APIView):
             logger.error(f"system_stats error: {e}")
             system_stats = {}
 
-        # ── 3. Peak hours (from dedicated service) ────────────────────────
-        # peak_hours_service.get_peak_hours_analysis() returns a LIST of
-        # day-dict objects shaped like:
-        #   { name, morning_peak, evening_peak, morning_confidence,
-        #     evening_confidence, total_vehicles, hourly_distribution,
-        #     warnings, ... }
-        # We pass it straight through.
+        # ── 3. Peak-hours data scoped to this week ────────────────────────
         try:
-            peak_hours_data = peak_hours_service.get_peak_hours_analysis(
+            peak_hours_data = self.get_weekly_peak_hours(
                 location_id=location_id,
-                days_back=30,
-                include_warnings=True,
+                week_monday=week_monday,
+                week_sunday=week_sunday,
             )
-            # Guard: service might return a dict with a 'peak_hours' key
-            # instead of a plain list (EnhancedPeakHoursAPI shape).
-            if isinstance(peak_hours_data, dict):
-                peak_hours_data = peak_hours_data.get('peak_hours', [])
-            if not isinstance(peak_hours_data, list):
-                peak_hours_data = []
         except Exception as e:
             logger.error(f"peak_hours_data error: {e}")
             peak_hours_data = self.get_default_peak_hours()
 
-        # ── 4. Peak statistics ────────────────────────────────────────────
+        # ── 4. Overall peak stats (all-time, header badge) ────────────────
         try:
             peak_stats = peak_hours_service.get_peak_hour_statistics(location_id)
         except Exception as e:
             logger.error(f"peak_stats error: {e}")
             peak_stats = {}
 
-        # ── 5. Most-recent traffic_analysis for EnhancedMetricsPanel ──────
+        # ── 5. Most-recent TrafficAnalysis for EnhancedMetricsPanel ───────
         try:
-            q = TrafficAnalysis.objects.select_related(
-                'video_file', 'location'
-            )
+            q = TrafficAnalysis.objects.select_related('video_file', 'location')
             if location_id != 'all' and location_id:
                 q = q.filter(location_id=location_id)
             latest = q.order_by('-analyzed_at').first()
@@ -577,66 +766,276 @@ class AnalysisOverviewAPI(APIView):
                 traffic_analysis_data = TrafficAnalysisSerializer(latest).data
             except Exception as e:
                 logger.error(f"TrafficAnalysisSerializer error: {e}")
-                # Minimal fallback — just the fields EnhancedMetricsPanel needs
                 traffic_analysis_data = {
-                    'congestion_index':      latest.congestion_index,
-                    'queue_length_meters':   latest.queue_length_meters,
-                    'incident_risk_score':   latest.incident_risk_score,
-                    'congestion_trend':      latest.congestion_trend,
-                    'lane_statistics':       latest.lane_statistics or {},
-                    'turning_movements':     latest.turning_movements or {},
+                    'congestion_index':       latest.congestion_index,
+                    'queue_length_meters':    latest.queue_length_meters,
+                    'incident_risk_score':    latest.incident_risk_score,
+                    'congestion_trend':       latest.congestion_trend,
+                    'lane_statistics':        latest.lane_statistics or {},
+                    'turning_movements':      latest.turning_movements or {},
                     'stopped_vehicles_count': latest.stopped_vehicles_count,
-                    'detector_version':      latest.detector_version,
-                    'metrics_summary':       latest.metrics_summary or {},
+                    'detector_version':       latest.detector_version,
+                    'metrics_summary':        latest.metrics_summary or {},
                 }
 
         total_vehicles = sum(weekly_data) if weekly_data else 0
 
         response_data = {
             'weekly_data':      weekly_data,
+            'week_start':       week_monday.isoformat(),   # frontend labels chart axes
+            'week_end':         week_sunday.isoformat(),   # NEW: front-end sanity check
+            'week_offset':      week_offset,               # NEW: echo back so frontend can verify
             'total_vehicles':   total_vehicles,
             'congested_roads':  system_stats.get('congested_roads', 0),
             'peak_hour':        peak_stats.get('overall_peak_hour', '8:00 AM'),
             'daily_average':    total_vehicles // 7 if total_vehicles > 0 else 0,
             'system_stats':     system_stats,
-            # Both keys for backward compat with older frontend versions
             'peak_hours_data':  peak_hours_data,
-            'areas':            peak_hours_data,
+            'areas':            peak_hours_data,           # backward compat
             'peak_stats':       peak_stats,
-            # New — consumed by EnhancedMetricsPanel
             'traffic_analysis': traffic_analysis_data,
         }
 
         logger.info(
-            f"📊 AnalysisOverviewAPI: weekly={weekly_data}, "
-            f"peak_days={len(peak_hours_data)}, "
-            f"has_enhanced={'yes' if traffic_analysis_data else 'no'}"
+            f"📊 AnalysisOverviewAPI: offset={week_offset} "
+            f"week={week_monday}→{week_sunday}, "
+            f"weekly={weekly_data}, total={total_vehicles}"
         )
         return Response(response_data)
 
-    # ── helpers (unchanged from original, kept here for completeness) ─────
+    # ── Weekly totals: DB-level date-range filter ─────────────────────────────
 
-    def calculate_real_weekly_data(self, location_id='all'):
+    def calculate_real_weekly_data(self, location_id='all', week_monday=None, week_sunday=None):
+        """
+        Returns a [Mon, Tue, Wed, Thu, Fri, Sat, Sun] list of vehicle totals
+        for EXACTLY the requested Mon–Sun window.
+
+        Uses two annotated querysets (one per date-source branch) so the
+        aggregation is done in the database, not in Python.
+        """
+        from datetime import timedelta
+        from django.utils import timezone as tz
+        from django.db.models import Sum
+
+        if week_monday is None:
+            today = tz.localdate()
+            week_monday = today - timedelta(days=today.weekday())
+        if week_sunday is None:
+            week_sunday = week_monday + timedelta(days=6)
+
         try:
-            base_query = Q()
+            base_q = Q()
             if location_id != 'all' and location_id is not None:
-                base_query &= Q(location_id=location_id)
+                base_q &= Q(location_id=location_id)
 
-            analyses = TrafficAnalysis.objects.filter(base_query)
             weekly_data = [0] * 7
 
-            for analysis in analyses:
-                if analysis.video_file and analysis.video_file.video_date:
-                    day_of_week = analysis.video_file.video_date.weekday()
-                else:
-                    day_of_week = analysis.analyzed_at.weekday()
-                if 0 <= day_of_week <= 6:
-                    weekly_data[day_of_week] += analysis.total_vehicles
+            # Branch 1: analyses whose video has a recorded video_date in range
+            rows_with_date = (
+                TrafficAnalysis.objects
+                .filter(base_q)
+                .filter(
+                    video_file__video_date__gte=week_monday,
+                    video_file__video_date__lte=week_sunday,
+                )
+                .values('video_file__video_date')
+                .annotate(day_total=Sum('total_vehicles'))
+            )
+            for row in rows_with_date:
+                d = row['video_file__video_date']
+                if d is not None:
+                    weekly_data[d.weekday()] += row['day_total'] or 0
 
+            # Branch 2: analyses WITHOUT a video_date — fall back to analyzed_at
+            rows_no_date = (
+                TrafficAnalysis.objects
+                .filter(base_q)
+                .filter(
+                    Q(video_file__video_date__isnull=True) | Q(video_file__isnull=True)
+                )
+                .filter(
+                    analyzed_at__date__gte=week_monday,
+                    analyzed_at__date__lte=week_sunday,
+                )
+                .values('analyzed_at__date')
+                .annotate(day_total=Sum('total_vehicles'))
+            )
+            for row in rows_no_date:
+                d = row['analyzed_at__date']
+                if d is not None:
+                    weekly_data[d.weekday()] += row['day_total'] or 0
+
+            logger.debug(
+                f"calculate_real_weekly_data: {week_monday}→{week_sunday} "
+                f"loc={location_id} → {weekly_data}"
+            )
             return weekly_data
+
         except Exception as e:
-            logger.error(f"calculate_real_weekly_data: {e}")
+            logger.error(f"calculate_real_weekly_data: {e}", exc_info=True)
             return [0, 0, 0, 0, 0, 0, 0]
+
+    # ── Per-day hourly breakdown: DB-level week filter ────────────────────────
+
+    def get_weekly_peak_hours(self, location_id='all', week_monday=None, week_sunday=None):
+        """
+        Build the 7-day peak-hours list for the requested week.
+        Filters at the DB level before distributing vehicles across hours.
+        """
+        from datetime import timedelta
+        from django.utils import timezone as tz
+
+        if week_monday is None:
+            today = tz.localdate()
+            week_monday = today - timedelta(days=today.weekday())
+        if week_sunday is None:
+            week_sunday = week_monday + timedelta(days=6)
+
+        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday",
+                     "Friday", "Saturday", "Sunday"]
+
+        def empty_day(name):
+            return {
+                'name':                name,
+                'morning_peak':        'No data',
+                'evening_peak':        'No data',
+                'morning_confidence':  0,
+                'evening_confidence':  0,
+                'total_vehicles':      0,
+                'hourly_distribution': {},
+                'warnings':            [],
+            }
+
+        base_q = Q()
+        if location_id != 'all' and location_id is not None:
+            base_q &= Q(location_id=location_id)
+
+        # ── DB-level week filter: two branches ───────────────────────────────
+        in_range_with_date = (
+            TrafficAnalysis.objects
+            .filter(base_q)
+            .filter(
+                video_file__video_date__gte=week_monday,
+                video_file__video_date__lte=week_sunday,
+            )
+            .select_related('video_file')
+        )
+
+        in_range_no_date = (
+            TrafficAnalysis.objects
+            .filter(base_q)
+            .filter(
+                Q(video_file__video_date__isnull=True) | Q(video_file__isnull=True)
+            )
+            .filter(
+                analyzed_at__date__gte=week_monday,
+                analyzed_at__date__lte=week_sunday,
+            )
+            .select_related('video_file')
+        )
+
+        # Bucket by day-of-week index
+        day_analyses = defaultdict(list)
+
+        for analysis in in_range_with_date:
+            day_analyses[analysis.video_file.video_date.weekday()].append(analysis)
+
+        for analysis in in_range_no_date:
+            day_analyses[analysis.analyzed_at.date().weekday()].append(analysis)
+
+        result = []
+
+        for day_index, day_name in enumerate(day_names):
+            day_list = day_analyses.get(day_index, [])
+
+            if not day_list:
+                result.append(empty_day(day_name))
+                continue
+
+            # Distribute vehicles across hours proportionally
+            hourly = defaultdict(lambda: {'vehicles': 0.0, 'minutes': 0.0})
+
+            for analysis in day_list:
+                video = analysis.video_file
+                has_times = (
+                    video and
+                    video.video_start_time and
+                    video.video_end_time and
+                    analysis.duration_seconds and
+                    analysis.duration_seconds > 0
+                )
+
+                if not has_times:
+                    hour = analysis.analyzed_at.hour
+                    hourly[hour]['vehicles'] += analysis.total_vehicles
+                    hourly[hour]['minutes']  += 60.0
+                    continue
+
+                start_min = video.video_start_time.hour * 60 + video.video_start_time.minute
+                end_min   = video.video_end_time.hour   * 60 + video.video_end_time.minute
+                if end_min <= start_min:
+                    end_min += 24 * 60
+                duration_min = end_min - start_min
+                if duration_min <= 0:
+                    continue
+
+                vpm = analysis.total_vehicles / duration_min
+                cur = start_min
+                while cur < end_min:
+                    hour = (cur // 60) % 24
+                    next_hour_boundary = ((cur // 60) + 1) * 60
+                    segment = min(next_hour_boundary, end_min) - cur
+                    hourly[hour]['vehicles'] += vpm * segment
+                    hourly[hour]['minutes']  += segment
+                    cur = next_hour_boundary
+
+            # Build hourly_distribution for this day
+            hourly_out = {}
+            for h in range(24):
+                if h in hourly and hourly[h]['minutes'] > 0:
+                    mins = hourly[h]['minutes']
+                    conf = min(100.0, (mins / 60.0) * 100.0)
+                    hourly_out[h] = {
+                        'vehicles':   round(hourly[h]['vehicles']),
+                        'minutes':    round(mins, 1),
+                        'confidence': round(conf, 1),
+                    }
+
+            total_vehicles = sum(v['vehicles'] for v in hourly_out.values())
+
+            morning_hours = {h: hourly_out[h]['vehicles'] for h in hourly_out if 6 <= h <= 10}
+            evening_hours = {h: hourly_out[h]['vehicles'] for h in hourly_out if 16 <= h <= 20}
+
+            if morning_hours:
+                mph = max(morning_hours, key=morning_hours.get)
+                morning_peak = f"{mph}:00"
+                morning_conf = round(hourly_out[mph]['confidence'])
+            else:
+                morning_peak = 'No data'
+                morning_conf = 0
+
+            if evening_hours:
+                eph = max(evening_hours, key=evening_hours.get)
+                evening_peak = f"{eph}:00"
+                evening_conf = round(hourly_out[eph]['confidence'])
+            else:
+                evening_peak = 'No data'
+                evening_conf = 0
+
+            result.append({
+                'name':                day_name,
+                'morning_peak':        morning_peak,
+                'evening_peak':        evening_peak,
+                'morning_confidence':  morning_conf,
+                'evening_confidence':  evening_conf,
+                'total_vehicles':      total_vehicles,
+                'hourly_distribution': hourly_out,
+                'warnings':            [],
+            })
+
+        return result
+
+    # ── Unchanged helpers ─────────────────────────────────────────────────────
 
     def get_system_overview_stats(self, location_id='all'):
         try:
@@ -645,8 +1044,8 @@ class AnalysisOverviewAPI(APIView):
                 base_query &= Q(location_id=location_id)
             total_analyses = TrafficAnalysis.objects.filter(base_query).count()
             return {
-                'total_analyses': total_analyses,
-                'congested_roads': 0,
+                'total_analyses':   total_analyses,
+                'congested_roads':  0,
                 'active_locations': 0,
             }
         except Exception as e:
@@ -654,19 +1053,18 @@ class AnalysisOverviewAPI(APIView):
             return {'total_analyses': 0}
 
     def get_default_peak_hours(self):
-        """Fallback when peak_hours_service fails."""
         day_names = ["Monday", "Tuesday", "Wednesday", "Thursday",
                      "Friday", "Saturday", "Sunday"]
         return [
             {
-                'name': day,
-                'morning_peak': 'No data',
-                'evening_peak': 'No data',
-                'morning_confidence': 0,
-                'evening_confidence': 0,
-                'total_vehicles': 0,
+                'name':                day,
+                'morning_peak':        'No data',
+                'evening_peak':        'No data',
+                'morning_confidence':  0,
+                'evening_confidence':  0,
+                'total_vehicles':      0,
                 'hourly_distribution': {},
-                'warnings': [],
+                'warnings':            [],
             }
             for day in day_names
         ]
@@ -2136,121 +2534,260 @@ class AutoGroupVideosAPI(APIView):
 
 
 class VideoManagementAPI(APIView):
-    """Handle video metadata updates and management - FIXED VERSION"""
-    
-    def put(self, request, video_id):
-        """Update video metadata (date, time, location) - FIXED"""
+    def get(self, request, video_id):
+        """
+        GET /api/videos/<video_id>/manage/
+        Returns full video details including duration_seconds.
+        Used by EditVideoModal to hydrate duration when the list API omits it.
+        """
         try:
-            print(f"🔍 UPDATE VIDEO: Processing update for video {video_id}")
-            print(f"📦 Request data: {request.data}")
-            
-            video = VideoFile.objects.get(id=video_id)
-            
-            # Allowed fields to update
-            allowed_fields = ['video_date', 'video_start_time', 'video_end_time', 'title']
-            update_data = {}
-            
-            # Parse date/time fields properly
-            for field in allowed_fields:
-                if field in request.data:
-                    value = request.data.get(field)
-                    if value:  # Only update if value is provided and not empty
-                        if field == 'video_date':
-                            # Parse date string to Date object
-                            try:
-                                update_data[field] = datetime.strptime(value, '%Y-%m-%d').date()
-                            except ValueError:
-                                return Response(
-                                    {'error': f'Invalid date format for {field}. Use YYYY-MM-DD.'},
-                                    status=status.HTTP_400_BAD_REQUEST
-                                )
-                        elif field in ['video_start_time', 'video_end_time']:
-                            # Parse time string to Time object
-                            try:
-                                update_data[field] = datetime.strptime(value, '%H:%M').time()
-                            except ValueError:
-                                return Response(
-                                    {'error': f'Invalid time format for {field}. Use HH:MM.'},
-                                    status=status.HTTP_400_BAD_REQUEST
-                                )
-                        else:
-                            update_data[field] = value
-            
-            print(f"📝 Parsed fields to update: {update_data}")
-            
-            # Handle location change
-            new_location_id = request.data.get('location_id')
-            if new_location_id:
-                try:
-                    new_location = Location.objects.get(id=new_location_id)
-                    # Update associated traffic analysis if exists
-                    if hasattr(video, 'traffic_analysis'):
-                        video.traffic_analysis.location = new_location
-                        video.traffic_analysis.save()
-                        print(f"📍 Updated location to: {new_location.display_name}")
-                except Location.DoesNotExist:
-                    return Response(
-                        {'error': 'Location not found'}, 
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-            
-            # Update video fields
-            for field, value in update_data.items():
-                setattr(video, field, value)
-                print(f"✅ Updated {field} to: {value}")
-            
-            video.save()
-            
-            # If date changed, update the location-date group
-            if 'video_date' in update_data:
-                self.update_video_grouping(video)
-            
-            # Return the updated video with properly formatted dates/times
-            serializer = VideoFileSerializer(video)
-            response_data = {
-                'status': 'success',
-                'message': 'Video metadata updated successfully',
-                'video': serializer.data
-            }
-            
-            print(f"✅ UPDATE COMPLETE: Video {video_id} updated successfully")
-            return Response(response_data)
-            
+            video = VideoFile.objects.select_related(
+                'location_date_group__location',
+            ).get(id=video_id)
         except VideoFile.DoesNotExist:
-            return Response(
-                {'error': 'Video not found'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            print(f"❌ Error updating video: {e}")
-            import traceback
-            traceback.print_exc()
-            return Response(
-                {'error': f'Error updating video: {str(e)}'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-    
-    def update_video_grouping(self, video):
-        """Update video's location-date group after date change"""
+            return Response({'error': 'Video not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({'video': self._serialize_video(video)})
+
+    def put(self, request, video_id):
+        from django.db import transaction
+        from .utils.time_slot_validator import check_time_slot_conflict
+
+        print(f"✏️  VideoManagementAPI.put — video {video_id}")
+        print(f"   payload: {request.data}")
+
+        # ── 1. Fetch video ────────────────────────────────────────────────
         try:
-            if hasattr(video, 'traffic_analysis') and video.traffic_analysis.location:
-                location = video.traffic_analysis.location
-                group_date = video.video_date
-                
-                if group_date:
-                    # Get or create new group for updated date
-                    group, created = LocationDateGroup.objects.get_or_create(
-                        location=location,
-                        date=group_date
-                    )
-                    
-                    # Update video's group
-                    video.location_date_group = group
-                    video.save()
-                    print(f"✅ Updated video group to: {location.display_name} - {group_date}")
-                    
-        except Exception as e:
-            print(f"⚠️ Warning: Could not update video grouping: {e}")
+            video = VideoFile.objects.select_related(
+                'location_date_group__location',
+                'processing_profile',
+            ).get(id=video_id)
+        except VideoFile.DoesNotExist:
+            return Response({'error': 'Video not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # ── 2. Parse incoming fields ──────────────────────────────────────
+        def _parse_date(s):
+            if not s:
+                return None
+            try:
+                return datetime.strptime(s, '%Y-%m-%d').date()
+            except ValueError:
+                return None
+
+        def _parse_time(s):
+            if not s:
+                return None
+            s = s.strip()
+            for fmt in ('%H:%M:%S', '%H:%M'):
+                try:
+                    return datetime.strptime(s, fmt).time()
+                except ValueError:
+                    continue
+            return None
+
+        new_title      = request.data.get('title')
+        new_date       = _parse_date(request.data.get('video_date'))
+        new_start      = _parse_time(request.data.get('video_start_time') or request.data.get('start_time'))
+        new_end        = _parse_time(request.data.get('video_end_time')   or request.data.get('end_time'))
+        new_location_id = request.data.get('location_id')
+
+        # ── 3. Detect what actually changed ───────────────────────────────
+        changed_fields = []
+
+        if new_title is not None and new_title != video.title:
+            changed_fields.append('title')
+        if new_date and new_date != video.video_date:
+            changed_fields.append('video_date')
+        if new_start and new_start != video.video_start_time:
+            changed_fields.append('video_start_time')
+        if new_end and new_end != video.video_end_time:
+            changed_fields.append('video_end_time')
+
+        # If nothing changed and no location swap, return early
+        if not changed_fields and not new_location_id:
+            return Response({
+                'status':  'no_change',
+                'message': 'No changes detected.',
+                'video':   self._serialize_video(video),
+            })
+
+        # ── 4. Time-slot conflict check (when times / date change) ────────
+        check_start = new_start or video.video_start_time
+        check_end   = new_end   or video.video_end_time
+        check_date  = new_date  or video.video_date
+
+        # Resolve which location we're checking against
+        if new_location_id:
+            try:
+                new_location = Location.objects.get(id=new_location_id)
+            except Location.DoesNotExist:
+                return Response(
+                    {'error': 'Location not found'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            check_location_id = new_location_id
+        else:
+            new_location = (
+                video.location_date_group.location
+                if video.location_date_group else None
+            )
+            check_location_id = new_location.id if new_location else None
+
+        if check_start and check_end and check_date and check_location_id:
+            conflict = check_time_slot_conflict(
+                location_id=check_location_id,
+                video_date=check_date,
+                start_time=check_start,
+                end_time=check_end,
+                exclude_video_id=str(video_id),   # always exclude self
+            )
+            if conflict['has_conflict']:
+                return Response(
+                    {
+                        'error':    'Time slot conflict detected',
+                        'detail':   conflict['message'],
+                        'conflicts': conflict['conflicts'],
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        # ── 5. Apply changes inside a transaction ─────────────────────────
+        with transaction.atomic():
+            old_group = video.location_date_group  # may be None
+
+            # Apply simple field updates — only save fields that changed
+            fields_to_save = []
+            if new_title is not None and new_title != video.title:
+                video.title = new_title
+                fields_to_save.append('title')
+            if new_date and new_date != video.video_date:
+                video.video_date = new_date
+                fields_to_save.append('video_date')
+            if new_start and new_start != video.video_start_time:
+                video.video_start_time = new_start
+                fields_to_save.append('video_start_time')
+            if new_end and new_end != video.video_end_time:
+                video.video_end_time = new_end
+                fields_to_save.append('video_end_time')
+
+            if fields_to_save:
+                video.save(update_fields=fields_to_save)
+
+            # ── 5a. Update TrafficAnalysis location if location changed ───
+            if new_location_id and new_location:
+                if hasattr(video, 'traffic_analysis'):
+                    analysis = video.traffic_analysis
+                    analysis.location = new_location
+                    analysis.save(update_fields=['location'])
+                    print(f"   📍 Analysis location → {new_location.display_name}")
+
+            # ── 5b. Re-assign to the correct LocationDateGroup ────────────
+            target_location = new_location or (
+                video.location_date_group.location
+                if video.location_date_group else None
+            )
+            target_date = video.video_date  # already updated above
+
+            if target_location and target_date:
+                new_group, group_created = LocationDateGroup.objects.get_or_create(
+                    location=target_location,
+                    date=target_date,
+                )
+                video.location_date_group = new_group
+                video.save(update_fields=['location_date_group'])
+                print(
+                    f"   📁 Group → {target_location.display_name} / {target_date} "
+                    f"({'created' if group_created else 'existing'})"
+                )
+            else:
+                new_group = old_group
+
+            # ── 5c. Refresh statistics on affected groups ─────────────────
+            groups_to_refresh = set()
+            if old_group and old_group != new_group:
+                groups_to_refresh.add(old_group.id)
+            if new_group:
+                groups_to_refresh.add(new_group.id)
+
+            for gid in groups_to_refresh:
+                try:
+                    g = LocationDateGroup.objects.get(id=gid)
+                    g.update_statistics()
+                    print(f"   📊 Refreshed stats for group {gid}")
+                except Exception as e:
+                    print(f"   ⚠️  Could not refresh group {gid}: {e}")
+
+        # ── 6. Return consistent response ─────────────────────────────────
+        video.refresh_from_db()
+
+        print(f"✅ VideoManagementAPI: video {video_id} updated successfully")
+        return Response({
+            'status':  'success',
+            'message': 'Video updated successfully.',
+            'video':   self._serialize_video(video),
+            'group':   self._serialize_group(video.location_date_group),
+        })
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _serialize_video(self, video):
+        """
+        Return a flat dict the frontend can use directly.
+        All time fields normalised to "HH:MM" strings.
+        """
+        def _fmt_time(t):
+            return t.strftime('%H:%M') if t else None
+
+        def _fmt_date(d):
+            return d.isoformat() if d else None
+
+        location = None
+        if video.location_date_group:
+            loc = video.location_date_group.location
+            location = {'id': loc.id, 'name': loc.name, 'display_name': loc.display_name}
+        else:
+            # fall back to analysis location
+            try:
+                loc = video.traffic_analysis.location
+                if loc:
+                    location = {'id': loc.id, 'name': loc.name, 'display_name': loc.display_name}
+            except Exception:
+                pass
+
+        return {
+            'id':              str(video.id),
+            'filename':        video.filename,
+            'title':           video.title,
+            'processing_status': video.processing_status,
+
+            # date / time — consistent keys
+            'video_date':       _fmt_date(video.video_date),
+            'video_start_time': _fmt_time(video.video_start_time),
+            'video_end_time':   _fmt_time(video.video_end_time),
+            # aliases used by some frontend components
+            'start_time':       _fmt_time(video.video_start_time),
+            'end_time':         _fmt_time(video.video_end_time),
+
+            'duration_seconds': video.duration_seconds,
+            'location':         location,
+            'location_date_group': str(video.location_date_group.id) if video.location_date_group else None,
+        }
+
+    def _serialize_group(self, group):
+        if not group:
+            return None
+        return {
+            'id':   str(group.id),
+            'date': group.date.isoformat(),
+            'location': {
+                'id':           group.location.id,
+                'display_name': group.location.display_name,
+            },
+            'total_directional_count':  group.total_directional_count,
+            'coverage_continuity_score': group.coverage_continuity_score,
+        }
+
+
 
 
 class VideoDeleteAPI(APIView):
